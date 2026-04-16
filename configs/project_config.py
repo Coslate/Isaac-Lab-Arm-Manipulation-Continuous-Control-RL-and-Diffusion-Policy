@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .task_config import ACTION_DIM, ACTION_NAMES, ISAAC_FRANKA_IK_REL_ENV_ID
+
 
 @dataclass(frozen=True)
 class ProjectPaths:
@@ -36,20 +38,12 @@ class ProjectConfig:
 
     project_name: str = "isaac_lab_arm_manipulation"
     seed: int = 0
-    env_id: str = "Isaac-Lift-Cube-Franka-IK-Rel-v0"
+    env_id: str = ISAAC_FRANKA_IK_REL_ENV_ID
     num_envs: int = 64
     image_shape: tuple[int, int, int] = (3, 84, 84)
     proprio_dim: int = 14
-    action_dim: int = 7
-    action_names: tuple[str, ...] = (
-        "dx",
-        "dy",
-        "dz",
-        "droll",
-        "dpitch",
-        "dyaw",
-        "gripper",
-    )
+    action_dim: int = ACTION_DIM
+    action_names: tuple[str, ...] = ACTION_NAMES
     paths: ProjectPaths = field(default_factory=ProjectPaths)
 
     def validate(self) -> None:
@@ -65,8 +59,7 @@ class ProjectConfig:
             raise ValueError("proprio_dim must be positive")
         if self.action_dim != len(self.action_names):
             raise ValueError("action_dim must match action_names length")
-        if self.action_dim != 7:
+        if self.action_dim != ACTION_DIM:
             raise ValueError("action_dim must be 7: 6D arm delta + 1D gripper")
-        if self.env_id != "Isaac-Lift-Cube-Franka-IK-Rel-v0":
+        if self.env_id != ISAAC_FRANKA_IK_REL_ENV_ID:
             raise ValueError("env_id must use the IK-relative Franka lift task")
-
