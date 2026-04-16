@@ -29,7 +29,7 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 |---|---|---|---|
 | PR 0 | Project scaffold | Done | Package layout, config, reproducibility utilities, output directory helpers, and scaffold tests are already implemented. |
 | PR 1 | Task/action contract | Done | Defines the tested 7D Franka IK-relative action contract, clipping helper, action splitter, and gripper open/close rule. |
-| PR 2 | Mock/Isaac observation wrapper | Pending | Add stable `{"image", "proprio"}` output, starting with a mock backend. |
+| PR 2 | Formal Isaac Lab observation wrapper | Done | Adds a tested formal Isaac Lab adapter for `Isaac-Lift-Cube-Franka-IK-Rel-v0`; local unit tests use an injected Gymnasium test double because Isaac Lab is not installed in this environment. |
 | PR 8-lite | Rollout dataset | Pending | Store rollouts by episode so future action chunks never cross episode boundaries. |
 | PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
 | PR 12-lite | GIF output | Pending | Save visual rollout GIFs for random and heuristic policies. |
@@ -59,6 +59,18 @@ Known PR1 result:
 9 passed
 ```
 
+PR2 verification command:
+
+```bash
+conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
+```
+
+Known PR2 result:
+
+```text
+13 passed
+```
+
 ---
 
 ## 3. Demo Scope
@@ -73,7 +85,7 @@ Do now:
 
 - PR 0 Project scaffold
 - PR 1 Task/action contract
-- PR 2 Mock/Isaac observation wrapper
+- PR 2 Formal Isaac Lab observation wrapper
 - PR 8-lite Rollout dataset
 - PR 11-lite Evaluation metrics
 - PR 12-lite GIF output
@@ -98,7 +110,7 @@ Final target command:
 
 ```bash
 conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend mock \
+  --backend isaac \
   --policy heuristic \
   --num_episodes 3 \
   --save_dataset ./data/heuristic_rollouts.h5 \
@@ -200,7 +212,7 @@ git commit -m "chore: scaffold robotics data-loop demo"
 
 **Goal / Why**
 
-Define the robot interface clearly. Even if the first demo uses `backend=mock`, the interface should match the intended Isaac Lab environment.
+Define the robot interface clearly for the intended Isaac Lab environment.
 
 **Task**
 
@@ -259,47 +271,30 @@ git commit -m "feat(env): define Franka 7D action contract"
 
 ---
 
-## 7. PR 2 - Mock/Isaac Observation Wrapper
+## 7. PR 2 - Formal Isaac Lab Observation Wrapper
 
-**Status:** Pending
+**Status:** Done
 
 **Goal / Why**
 
-Create a stable observation interface used by every policy and every future algorithm.
-
-The first demo should support:
+Create a stable observation interface around the official Isaac Lab environment:
 
 ```text
-backend=mock
+Isaac-Lift-Cube-Franka-IK-Rel-v0
 ```
 
-Future work can add:
-
-```text
-backend=isaac
-```
-
-The mock backend is important because it makes the demo robust even when Isaac Sim is not available during the interview.
+This subplan no longer includes a mock backend. The demo uses the formal Isaac adapter and therefore requires Isaac Sim / Isaac Lab to be installed and launched with camera support.
 
 **Observation Contract**
 
 ```python
 obs = {
-    "image": np.ndarray,    # shape: (3, 84, 84), dtype uint8
-    "proprio": np.ndarray,  # shape: (proprio_dim,), dtype float32
-}
-```
-
-For batched/vectorized envs:
-
-```python
-obs = {
     "image": np.ndarray,    # shape: (num_envs, 3, 84, 84), dtype uint8
-    "proprio": np.ndarray,  # shape: (num_envs, proprio_dim), dtype float32
+    "proprio": np.ndarray,  # shape: (num_envs, 40), dtype float32
 }
 ```
 
-Recommended proprio feature order for the Isaac-compatible wrapper:
+Formal proprio feature order:
 
 ```text
 [
@@ -316,31 +311,21 @@ Recommended proprio feature order for the Isaac-compatible wrapper:
 ]
 ```
 
-The mock backend may use a simplified proprio vector, but it must keep the same conceptual meaning and document any reduced dimensions.
+The wrapper computes:
 
-**Mock Environment Design**
+```text
+ee_to_cube = cube_pos_base - ee_pos_base
+cube_to_target = target_pos_base - cube_pos_base
+```
 
-The mock environment can be a simple 2D top-view/canvas world:
-
-- A gripper/cursor has x, y, and z-like lift state.
-- A cube has x, y, and lifted/not-lifted state.
-- The first 3 action dims move the gripper/cursor.
-- Rotation dims can be accepted but ignored in mock mode.
-- The gripper action opens or closes the mock gripper.
-- If the gripper is close enough and closes, the cube is grasped.
-- If grasped, upward motion lifts the cube.
-- Success is true when the cube reaches the target height/region.
-- Each step renders a simple RGB image for `obs["image"]`.
+Local unit tests may inject a Gymnasium-compatible Isaac test double to verify the adapter without launching Isaac Sim. This is not a project backend and must not appear in user-facing demo commands.
 
 **Suggested Files**
 
 ```text
-env/mock_arm_env.py
 env/isaac_env.py
 tests/test_observation_wrapper.py
 ```
-
-`env/isaac_env.py` can start as a thin wrapper or readable stub if Isaac Lab is not installed yet.
 
 **Test Command**
 
@@ -352,17 +337,19 @@ conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 
 - `reset()` returns an observation dict.
 - `step(action)` returns `(obs, reward, terminated, truncated, info)`.
-- Image shape is `(3, 84, 84)` and dtype is `uint8`.
-- Proprio shape and dtype are correct.
-- Action shape is `(7,)` for single env or `(num_envs, 7)` for batched env.
+- Image shape is `(num_envs, 3, 84, 84)` and dtype is `uint8`.
+- Proprio shape is `(num_envs, 40)` and dtype is `float32`.
+- Action shape is `(7,)` for `num_envs=1` or `(num_envs, 7)` for batched envs.
+- Action is clipped to `[-1, 1]` before passing into Isaac Lab.
+- Derived features `ee_to_cube` and `cube_to_target` are computed correctly.
 - Done/truncated behavior is correct.
-- `info` includes debug fields such as `success`, `cube_pos`, `target_pos`, and `is_grasped`.
 - If Isaac camera mode is requested without camera support, the error message explains `--enable_cameras`.
+- If Isaac Lab runtime is not installed, construction fails with a readable error.
 
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(env): add mock image-proprio arm environment"
+git commit -m "feat(env): add Isaac Lab image-proprio wrapper"
 ```
 
 ---
@@ -398,7 +385,7 @@ Simple rules:
 Purpose:
 
 - Sanity policy.
-- Should outperform random in the mock env.
+- Should be easier to interpret than random in the formal Isaac env.
 - Produces a more meaningful GIF for interview discussion.
 
 ### ReplayPolicy
@@ -582,7 +569,7 @@ conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v
 ```json
 {
   "policy_name": "heuristic",
-  "env_backend": "mock",
+  "env_backend": "isaac",
   "num_episodes": 3,
   "mean_return": 0.0,
   "success_rate": 0.0,
@@ -591,7 +578,7 @@ conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v
 }
 ```
 
-Values above are placeholders. Tests should validate keys/types/ranges, not exact real rollout performance unless using a deterministic mock fixture.
+Values above are placeholders. Tests should validate keys/types/ranges; live Isaac performance should be measured in an installed Isaac Lab runtime.
 
 **Suggested Commit**
 
@@ -656,7 +643,7 @@ One command should generate dataset, metrics, and GIF. This is the command to ru
 
 ```bash
 conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend mock \
+  --backend isaac \
   --policy heuristic \
   --num_episodes 3 \
   --save_dataset ./data/heuristic_rollouts.h5 \
@@ -667,16 +654,16 @@ conda run -n isaac_arm python -m scripts.demo_data_loop \
 **Required Policy Options**
 
 ```bash
-conda run -n isaac_arm python -m scripts.demo_data_loop --backend mock --policy random
-conda run -n isaac_arm python -m scripts.demo_data_loop --backend mock --policy heuristic
-conda run -n isaac_arm python -m scripts.demo_data_loop --backend mock --policy replay --replay_dataset ./data/heuristic_rollouts.h5
+conda run -n isaac_arm python -m scripts.demo_data_loop --backend isaac --policy random
+conda run -n isaac_arm python -m scripts.demo_data_loop --backend isaac --policy heuristic
+conda run -n isaac_arm python -m scripts.demo_data_loop --backend isaac --policy replay --replay_dataset ./data/heuristic_rollouts.h5
 ```
 
 Replay command with explicit outputs:
 
 ```bash
 conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend mock \
+  --backend isaac \
   --policy replay \
   --replay_dataset ./data/heuristic_rollouts.h5 \
   --num_episodes 3 \
@@ -724,7 +711,7 @@ git commit -m "feat(demo): add one-command robotics data loop"
 Finish in this order:
 
 1. One-command script skeleton.
-2. Mock env.
+2. Formal Isaac env wrapper.
 3. Random and heuristic policies.
 4. Metrics JSON.
 5. GIF output.
@@ -737,7 +724,7 @@ If time is tight:
 - GIF and metrics are mandatory for the interview.
 - Dataset can be simplified, but keep episode-safe design.
 - Replay policy is nice to have.
-- Isaac backend is optional for this first demo.
+- Isaac backend is required for this no-mock demo.
 
 ---
 
@@ -747,7 +734,7 @@ The demo is ready when these commands work:
 
 ```bash
 conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend mock \
+  --backend isaac \
   --policy random \
   --num_episodes 3 \
   --save_dataset ./data/random_rollouts.h5 \
@@ -757,7 +744,7 @@ conda run -n isaac_arm python -m scripts.demo_data_loop \
 
 ```bash
 conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend mock \
+  --backend isaac \
   --policy heuristic \
   --num_episodes 3 \
   --save_dataset ./data/heuristic_rollouts.h5 \
@@ -767,7 +754,7 @@ conda run -n isaac_arm python -m scripts.demo_data_loop \
 
 ```bash
 conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend mock \
+  --backend isaac \
   --policy replay \
   --replay_dataset ./data/heuristic_rollouts.h5 \
   --num_episodes 3 \
