@@ -1,0 +1,25 @@
+[project]
+name = "isaac-lab-arm-manipulation"
+version = "0.1.0"
+description = "Isaac Lab Franka manipulation data-loop and continuous-control learning scaffold."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+ml = [
+  "torch>=2.0",
+  "torchvision>=0.15",
+]
+isaac = [
+  "gymnasium>=0.29",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+

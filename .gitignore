@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments
+.venv/
+venv/
+
+# Project outputs
+logs/
+checkpoints/
+data/
+out/
+plots/
+
