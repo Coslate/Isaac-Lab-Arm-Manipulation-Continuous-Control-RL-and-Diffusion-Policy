@@ -352,6 +352,45 @@ conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 git commit -m "feat(env): add Isaac Lab image-proprio wrapper"
 ```
 
+**Env Install Recipe**
+
+The formal Isaac adapter needs Isaac Sim 5.1 + Isaac Lab 2.3.2 + cu126 PyTorch inside the `isaac_arm` conda env. All top-level dependencies are pinned in `requirement.txt`; Isaac Lab ships two in-wheel sub-packages (`isaaclab_assets`, `isaaclab_tasks`) that must be editable-installed afterwards. `scripts/install_isaac.sh` does both steps.
+
+Fresh restore after rebuilding the container:
+
+```bash
+conda activate isaac_arm
+bash scripts/install_isaac.sh
+```
+
+Equivalent manual flow:
+
+```bash
+pip install -r ./requirement.txt
+ISAACLAB_DIR=$(python -c "import isaaclab, os; print(os.path.dirname(isaaclab.__file__))")
+pip install -e "$ISAACLAB_DIR/source/isaaclab_assets"
+pip install -e "$ISAACLAB_DIR/source/isaaclab_tasks"
+```
+
+Docker run flags that must be present (without them Isaac Sim's Vulkan/RTX renderer has no driver to talk to, even though `torch.cuda.is_available()` returns `True`):
+
+```bash
+docker run --gpus all \
+  -e NVIDIA_DRIVER_CAPABILITIES=all \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e ACCEPT_EULA=Y \
+  -e PRIVACY_CONSENT=Y \
+  ...
+```
+
+Install verification:
+
+```bash
+conda run -n isaac_arm pytest tests/test_isaac_installation.py -v
+```
+
+Expected result: `2 passed`.
+
 ---
 
 ## 8. Policies For The Demo
