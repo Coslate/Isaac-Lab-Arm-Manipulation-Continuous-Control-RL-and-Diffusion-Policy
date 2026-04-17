@@ -66,6 +66,15 @@ Camera-based runs must launch Isaac Sim with camera rendering enabled:
 
 If the camera is requested without `--enable_cameras`, the wrapper must fail with a readable error explaining how to launch the environment correctly.
 
+**WSL2 runtime note (confirmed 2026-04-17):** On WSL2 + Docker, `SimulationApp._app.update()` deadlocks at C++ GPU Foundation level without a virtual display. Always run Xvfb before Isaac Sim:
+
+```bash
+pkill Xvfb 2>/dev/null; Xvfb :1 -screen 0 1280x720x24 &
+export DISPLAY=:1
+```
+
+`scripts/isaac_runtime_smoke.py` sets `DISPLAY=:1` automatically. No-camera (`--no-enable-cameras`) mode is confirmed working. Camera mode requires `nvcr.io/nvidia/isaac-sim:5.1.0` (official container with correct Vulkan passthrough).
+
 ### 3.2 Observation space
 
 The policy receives a dictionary:

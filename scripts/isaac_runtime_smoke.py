@@ -7,8 +7,6 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-import torch
-
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 
 
@@ -23,15 +21,32 @@ def _shape_tree(value: Any) -> Any:
 
 
 def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
-    # Isaac Lab requires the simulation app to be launched before importing task
-    # configs or constructing Gym environments.
+    # Isaac Lab requires the simulation app to be launched before importing torch
+    # or any other Omniverse/Isaac Sim modules. Importing torch at module level
+    # creates a CUDA context that races with the RTX renderer during AppLauncher
+    # startup, causing a deadlock on WSL2 with NVIDIA_DRIVER_CAPABILITIES=all.
+    import os
     from isaaclab.app import AppLauncher
 
-    app_launcher = AppLauncher(headless=args.headless, enable_cameras=args.enable_cameras, device=args.device)
+    # WSL2 fix: the Kit GPU Foundation requires a Vulkan display surface.
+    # Without a real display, _app.update() deadlocks in the C++ render loop.
+    # Setting DISPLAY=:1 (Xvfb virtual display) unblocks the Vulkan surface
+    # creation so Kit can proceed. neuraylib warns "nvidia kernel module not
+    # loaded" but exits gracefully; PhysX uses CUDA directly and is unaffected.
+    if not os.environ.get("DISPLAY"):
+        os.environ["DISPLAY"] = ":1"
+
+    launcher_args: dict = dict(
+        headless=args.headless,
+        enable_cameras=args.enable_cameras,
+        device=args.device,
+    )
+    app_launcher = AppLauncher(**launcher_args)
     simulation_app = app_launcher.app
 
     env = None
     try:
+        import torch
         import gymnasium as gym
         import isaaclab_tasks  # noqa: F401
         from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
@@ -52,7 +67,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         else:
             _, reward, terminated, truncated, _ = transition
 
-        return {
+        result = {
             "task": args.task,
             "num_envs": args.num_envs,
             "steps": args.steps,
@@ -65,6 +80,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "action_shape": [args.num_envs, action_dim],
             "status": "ok",
         }
+        # Print before closing: simulation_app.close() calls sys.exit(0) internally,
+        # so any code in main() after run_smoke() returns would never execute.
+        print(json.dumps(result, indent=2, sort_keys=True), flush=True)
+        return result
     finally:
         if env is not None:
             env.close()
@@ -84,8 +103,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    result = run_smoke(parse_args())
-    print(json.dumps(result, indent=2, sort_keys=True))
+    run_smoke(parse_args())
 
 
 if __name__ == "__main__":

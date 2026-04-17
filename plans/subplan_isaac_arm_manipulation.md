@@ -29,7 +29,9 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 |---|---|---|---|
 | PR 0 | Project scaffold | Done | Package layout, config, reproducibility utilities, output directory helpers, and scaffold tests are already implemented. |
 | PR 1 | Task/action contract | Done | Defines the tested 7D Franka IK-relative action contract, clipping helper, action splitter, and gripper open/close rule. |
-| PR 2 | Formal Isaac Lab observation wrapper | Done | Adds a tested formal Isaac Lab adapter for `Isaac-Lift-Cube-Franka-IK-Rel-v0`; local unit tests use an injected Gymnasium test double because Isaac Lab is not installed in this environment. |
+| PR 2 | Formal Isaac Lab observation wrapper | Done | Adds a tested formal Isaac Lab adapter for `Isaac-Lift-Cube-Franka-IK-Rel-v0`; local unit tests use an injected Gymnasium test double. **No-camera env.reset()/env.step() confirmed working on 2026-04-17 with Xvfb fix.** |
+| Runtime env | WSL2 Xvfb fix | Done | `_app.update()` deadlock resolved. No-camera smoke test passes (`status: ok`, reward on `cuda:0`). See CLAUDE.md WSL2 section. |
+| Runtime env | Camera mode | Blocked | RTX renderer requires Vulkan GPU enumeration. Xvfb is software-only; NVIDIA GPU not visible to Vulkan. **Unblocked by switching to `nvcr.io/nvidia/isaac-sim:5.1.0`.** |
 | PR 8-lite | Rollout dataset | Pending | Store rollouts by episode so future action chunks never cross episode boundaries. |
 | PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
 | PR 12-lite | GIF output | Pending | Save visual rollout GIFs for random and heuristic policies. |
@@ -383,6 +385,18 @@ docker run --gpus all \
   ...
 ```
 
+**WSL2 Xvfb requirement (2026-04-17):** After container start, always run before Isaac Sim:
+
+```bash
+pkill Xvfb 2>/dev/null
+Xvfb :1 -screen 0 1280x720x24 &
+export DISPLAY=:1
+```
+
+Without Xvfb, `SimulationApp._app.update()` deadlocks at the C++ GPU Foundation level. The fix is in `scripts/isaac_runtime_smoke.py` — it sets `os.environ["DISPLAY"] = ":1"` automatically if `DISPLAY` is not already set.
+
+**Camera mode** requires the official `nvcr.io/nvidia/isaac-sim:5.1.0` container — the current DIY container cannot pass the NVIDIA GPU through to Vulkan even with Xvfb.
+
 Install verification:
 
 ```bash
@@ -390,6 +404,14 @@ conda run -n isaac_arm pytest tests/test_isaac_installation.py -v
 ```
 
 Expected result: `2 passed`.
+
+No-camera smoke test verification (requires Xvfb on :1):
+
+```bash
+conda activate isaac_arm
+python -m scripts.isaac_runtime_smoke --device cuda:0 --headless --no-enable-cameras
+# Expected: JSON with "status": "ok", reward on cuda:0
+```
 
 ---
 
