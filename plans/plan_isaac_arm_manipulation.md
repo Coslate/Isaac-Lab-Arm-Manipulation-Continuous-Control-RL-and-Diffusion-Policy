@@ -66,6 +66,14 @@ Camera-based runs must launch Isaac Sim with camera rendering enabled:
 
 If the camera is requested without `--enable_cameras`, the wrapper must fail with a readable error explaining how to launch the environment correctly.
 
+Important runtime finding, confirmed 2026-04-19:
+- The stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` task can boot with `--enable_cameras`, `gym.make()`, `env.reset()`, `env.step()`, and `env.close()` in camera mode.
+- `--enable_cameras` only enables Isaac Sim rendering and camera sensors. It does **not** automatically add RGB image terms to a task's observations.
+- The stock task's active observation group is still only `policy` with shape `(num_envs, 35)`.
+- The stock task has no RGB/image/camera observation term in its scene or policy observation contract.
+- Therefore the project must not treat the stock 35D `policy` tensor as the final image-proprio observation contract.
+- The correct project direction is to keep `Isaac-Lift-Cube-Franka-IK-Rel-v0` and customize its Isaac Lab `env_cfg` before `gym.make()` so the task exposes a policy wrist camera and named low-dimensional observation terms.
+
 **WSL2 runtime note (confirmed 2026-04-17):** On WSL2 + Docker, `SimulationApp._app.update()` deadlocks at C++ GPU Foundation level without a virtual display. Always run Xvfb before Isaac Sim:
 
 ```bash
@@ -94,6 +102,32 @@ proprio_dim = 14
 
 PR2 should update `proprio_dim` to match the exact enabled feature list and test that the configured dimension equals the sum of feature dimensions.
 
+The stock Isaac Lab policy observation is useful as a diagnostic baseline, but it is **not** the formal project observation:
+
+```text
+stock policy observation = [
+    joint_pos,                 # 9 dims, mdp.joint_pos_rel for all Franka joints
+    joint_vel,                 # 9 dims, mdp.joint_vel_rel for all Franka joints
+    object_position,           # 3 dims, cube/object position in robot root frame
+    target_object_position,    # 7 dims, generated object_pose command: 3D position + 4D quaternion
+    actions,                   # 7 dims, previous action
+]
+```
+
+The stock 35D vector is not missing "just 5 padded values." It contains four target-orientation quaternion dimensions that the 40D project contract does not use, and it omits the end-effector position term needed by the project:
+
+```text
+35 stock dims - 4 target quaternion dims + 3 ee_pos_base dims + 3 ee_to_cube dims + 3 cube_to_target dims = 40 dims
+```
+
+This arithmetic only tracks the dimension count. It **does not** mean the 40D vector can be produced by slicing the 35D tensor. The gripper bookkeeping in particular breaks the slicing assumption:
+
+- Stock `joint_pos`/`joint_vel` are `joint_pos_rel`/`joint_vel_rel` across all 9 Franka joints (arm 7 + gripper 2), i.e. relative-to-default.
+- The formal contract wants `gripper_finger_pos`/`gripper_finger_vel` as **raw** (absolute) joint coordinates, not relative-to-default values.
+- Therefore the wrapper must pull gripper terms from separate raw `mdp.joint_pos` / `mdp.joint_vel` queries over `panda_finger.*`, not by slicing the last 2 entries of the stock 9D relative joint vectors.
+
+Do **not** pad the stock vector with zeros. Do **not** slice the 35D tensor to fabricate a 40D one. Do **not** infer the end-effector position from the flat vector. The formal wrapper must build the 40D vector from named observation terms and scene state.
+
 `proprio` means the low-dimensional numeric state used by the policy. Strictly speaking,
 robot proprioception is the robot's internal body state, such as joint positions, joint
 velocities, and gripper finger positions. In this project, the `proprio` vector may also
@@ -112,6 +146,8 @@ Arm and gripper position convention:
 - Use `gripper_finger_pos` for the gripper: actual/raw left and right finger joint positions.
 - Use `gripper_finger_vel` for the gripper: actual/raw left and right finger joint velocities.
 - Do not encode gripper finger positions only as relative-to-default values, because the raw finger coordinate has direct physical meaning.
+- The stock 35D `joint_pos` and `joint_vel` terms are `joint_pos_rel` and `joint_vel_rel` for all 9 Franka joints. The first 7 dimensions can supply arm-relative state, but the last 2 gripper position dimensions are relative-to-default and should not be used as the formal raw gripper opening state.
+- For the formal contract, get gripper finger state from raw joint terms over `panda_finger.*`, not from the flat stock 35D vector.
 
 Franka gripper intuition:
 
@@ -147,6 +183,44 @@ This recommended contract has `proprio_dim = 40`. If the wrapper also exposes
 `gripper_width = left_finger_pos + right_finger_pos` as a separate scalar, then
 `proprio_dim = 41`.
 
+Formal source of each 40D term:
+
+| Feature | Dims | Source |
+|---|---:|---|
+| `arm_joint_pos_rel` | 7 | `mdp.joint_pos_rel` with `SceneEntityCfg("robot", joint_names=["panda_joint.*"])` |
+| `arm_joint_vel_rel` | 7 | `mdp.joint_vel_rel` with `SceneEntityCfg("robot", joint_names=["panda_joint.*"])` |
+| `gripper_finger_pos` | 2 | raw `mdp.joint_pos` with `SceneEntityCfg("robot", joint_names=["panda_finger.*"])` |
+| `gripper_finger_vel` | 2 | raw `mdp.joint_vel` with `SceneEntityCfg("robot", joint_names=["panda_finger.*"])` |
+| `ee_pos_base` | 3 | `scene["ee_frame"]` end-effector target position transformed from world frame into robot root/base frame |
+| `cube_pos_base` | 3 | `mdp.object_position_in_robot_root_frame`, equivalent to stock `object_position` |
+| `target_pos_base` | 3 | `mdp.generated_commands("object_pose")[:, :3]`, the position part of stock `target_object_position` |
+| `ee_to_cube` | 3 | `cube_pos_base - ee_pos_base` computed by the wrapper |
+| `cube_to_target` | 3 | `target_pos_base - cube_pos_base` computed by the wrapper |
+| `previous_action` | 7 | `mdp.last_action`, equivalent to stock `actions` |
+
+`ee_pos_base` details:
+- The stock Franka lift config already defines `scene.ee_frame` using a `FrameTransformerCfg`.
+- Its first and only target frame is named `end_effector`, attached to `Robot/panda_hand` with an offset of roughly 10.34 cm.
+- The end-effector world position is:
+
+```python
+ee_frame = env.scene["ee_frame"]
+ee_pos_w = ee_frame.data.target_pos_w[:, 0, :]
+```
+
+- The formal base-frame position is obtained with Isaac Lab's frame transform helper:
+
+```python
+robot = env.scene["robot"]
+ee_pos_base, _ = subtract_frame_transforms(
+    robot.data.root_pos_w,
+    robot.data.root_quat_w,
+    ee_pos_w,
+)
+```
+
+- The index `0` is used because the current Franka lift `ee_frame.target_frames` list contains exactly one target frame: `end_effector`. If future configs add finger frames, the implementation must assert the target frame identity instead of silently assuming index 0.
+
 Why include derived relative features:
 - `cube_pos_base` and `target_pos_base` are useful, but the policy still has to subtract positions internally.
 - `ee_to_cube` tells the policy how to move the gripper toward the cube.
@@ -160,6 +234,45 @@ Why include actual gripper state:
 - Therefore PR2 should expose actual finger joint positions or `gripper_width`, not only the previous gripper command.
 
 The wrapper is responsible for converting Isaac Lab native observations into this stable project contract.
+
+### 3.2.1 Camera Observation Contract
+
+The project uses an eye-in-hand policy camera by default:
+
+```text
+policy camera: wrist_cam
+debug camera: table_cam or front_cam, optional, human/GIF only
+```
+
+The policy image must come from a camera attached to the robot wrist/end-effector area, not from a fixed external workcell camera. This is the more realistic setup for a single-arm manipulation policy and better matches the project's visuomotor / Diffusion Policy narrative.
+
+Implementation requirements:
+- Add `wrist_cam` to the customized Isaac Lab `env_cfg`, attached under the Franka hand/end-effector prim, for example under `Robot/panda_hand`.
+- Add a policy RGB observation term using `mdp.image` / `SceneEntityCfg("wrist_cam")`.
+- Keep the wrapper's public policy image as `obs["image"]` with shape `(num_envs, 3, 84, 84)` and dtype `uint8`.
+- Keep `--enable_cameras` as a hard runtime requirement for camera observations.
+- Do not assume the stock env's camera mode adds this term; the customized config must add the camera sensor and the observation term explicitly.
+
+The wrist camera is meaningful only after its pose is validated. A valid wrist camera frame should show useful manipulation context such as the gripper fingers, table surface, and cube during the approach/grasp portion of a rollout. It may not see the full workspace at reset, so low-dimensional proprio/task state remains part of the observation contract.
+
+### 3.2.2 Debug Camera And GIF Recording
+
+A fixed external camera may be added for debugging and visualization, but it must not be used as the policy input by default.
+
+```text
+debug camera purpose = human inspection, GIFs, failure diagnosis
+policy camera purpose = learning observation
+```
+
+Recommended debug design:
+- Add an optional fixed `table_cam` or `front_cam` to the customized Isaac cfg.
+- Position it outside the robot, fixed in the workcell, looking at the table, cube, gripper, and lift region.
+- Use it only through a wrapper method such as `get_debug_frame(camera_name="table_cam")` or `render_debug()`.
+- Return debug frames as `(H, W, 3)` `uint8` arrays for GIF recording.
+- Do not pass debug frames into `policy.act()`, SAC replay buffers, Diffusion Policy datasets, or the formal `obs["image"]` field.
+- If debug frames are stored in an HDF5 rollout file, store them under a clearly separate key such as `debug_images`, never under the training `images` key.
+
+This separation keeps the project realistic: the robot policy uses the wrist camera, while the fixed camera acts like a lab recording camera for humans.
 
 ### 3.3 Action space: 6D arm + 1D gripper
 
@@ -559,6 +672,8 @@ The project must produce GIFs for side-by-side visual inspection:
 | `out/gifs/dagger_diffusion_seed0.gif` | DAgger-Diffusion | Final distilled behavior. |
 | `out/gifs/comparison_grid_seed0.gif` | All methods | Same seed, same camera, side-by-side comparison. |
 
+GIFs should be recorded from the debug camera by default, not the wrist policy camera. The wrist camera is the robot's observation; the debug camera is the human-readable rollout view. A GIF recorder may optionally save wrist-camera thumbnails for diagnosis, but comparison GIFs should use the fixed debug view so failures are understandable.
+
 Each GIF should overlay:
 - method name,
 - episode return,
@@ -640,7 +755,7 @@ Define the exact Isaac Lab task and action contract. This PR makes the project u
 **Pytest**
 
 ```bash
-pytest tests/test_isaac_task_config.py -v
+conda run -n isaac_arm python -m pytest tests/test_task_contract.py -v
 ```
 
 **Suggested Commit**
@@ -655,13 +770,22 @@ git commit -m "feat(env): add Franka IK-relative lift task config"
 
 **Goal / Why**
 
-Convert Isaac Lab native observations into one stable project observation format: `{"image": ..., "proprio": ...}`. This lets all algorithms share the same input contract.
+Define the stable project observation API:
+
+```python
+obs = {
+    "image": ...,    # (num_envs, 3, 84, 84), uint8
+    "proprio": ...,  # (num_envs, 40), float32
+}
+```
+
+PR2 is the local/unit-tested wrapper contract. It lets project code call `reset()`, `step()`, `close()`, and consume a consistent observation dictionary. It does not create live Isaac camera sensors or mutate the Isaac Lab task config; that belongs to PR2.5.
 
 **Implementation**
 - Implement `IsaacArmEnv` wrapper around the configured Isaac Lab environment.
 - Return batched observations with image shape `(num_envs, 3, 84, 84)`.
 - Return `proprio` as float32 with config-driven `proprio_dim`.
-- Define a stable proprio feature order and expose it in config, for example:
+- Define a stable 40D proprio feature order and expose it in config:
 
 ```text
 [
@@ -678,46 +802,175 @@ Convert Isaac Lab native observations into one stable project observation format
 ]
 ```
 
-- Compute relative task features in the wrapper:
+- Compute wrapper-owned derived features:
   - `ee_to_cube = cube_pos_base - ee_pos_base`,
   - `cube_to_target = target_pos_base - cube_pos_base`.
-- Compute arm joint features as relative-to-default:
-  - `arm_joint_pos_rel = arm_joint_pos - default_arm_joint_pos`,
-  - `arm_joint_vel_rel = arm_joint_vel - default_arm_joint_vel`.
-- Expose actual gripper state using finger joint positions/velocities or `gripper_width`, not only the previous gripper command.
-- Treat `gripper_finger_pos` as actual/raw finger joint coordinates, not relative-to-default arm-style features.
-- Keep privileged simulator task state clearly named so future real-robot variants can replace cube state with perception output.
+- Accept named low-dimensional terms from the configured environment:
+  - `arm_joint_pos_rel`,
+  - `arm_joint_vel_rel`,
+  - `gripper_finger_pos`,
+  - `gripper_finger_vel`,
+  - `ee_pos_base`,
+  - `cube_pos_base` or `object_position`,
+  - `target_pos_base` or a 3D target-position term,
+  - `previous_action` or `actions`.
+- These named terms only exist in live Isaac after PR2.5 customizes the cfg. Until PR2.5 lands, PR2's unit tests source them from the `FakeIsaacGymEnv` test double via `gym_make` constructor injection. That is intentional; PR2 is the unit-tested wrapper contract, not the live-env proof.
+- Reject flat stock 35D observations by shape. Do not pad 35D to 40D.
 - Support `reset()`, `step(actions)`, `close()`, and `max_episode_steps`.
 - Handle `done` and `truncated` separately.
-- Auto-reset completed environments if the underlying Isaac Lab vector env supports it; otherwise document and implement explicit reset handling.
 - Do not implement reward shaping beyond exposing environment reward and success info.
 
 **How To Test**
 - Verify reset and step shapes.
 - Verify image dtype is uint8 and proprio dtype is float32.
 - Verify `proprio_dim` equals the sum of configured feature dimensions and that feature ordering is stable.
-- Verify `arm_joint_pos_rel` is computed as `arm_joint_pos - default_arm_joint_pos`.
-- Verify `arm_joint_vel_rel` is computed as `arm_joint_vel - default_arm_joint_vel`.
-- Verify `gripper_finger_pos` equals actual/raw finger joint positions, for example open fingers near `[0.04, 0.04]` and closed fingers near `[0.0, 0.0]` in mock data.
-- Verify optional `gripper_width` is computed as `left_finger_pos + right_finger_pos`.
 - Verify `ee_to_cube` is computed as `cube_pos_base - ee_pos_base`.
 - Verify `cube_to_target` is computed as `target_pos_base - cube_pos_base`.
-- Verify actual gripper state comes from finger joint positions or `gripper_width`, not from `previous_action[-1]`.
-- Verify a test case where `previous_action[-1]` commands close while finger joints remain open; the wrapper must report the actual open finger state.
+- Verify a flat stock 35D policy tensor is not accepted as formal 40D proprio.
 - Verify batch size is preserved for `num_envs=1` and `num_envs>1`.
 - Verify done/truncated arrays have shape `(num_envs,)`.
 - Verify camera errors are readable.
 
+PR2's current 13 passing tests cover shape/dtype/derived-feature assembly using a 3D injected `target_object_position` and a `wrist_rgb` image key. They **do not yet cover**:
+
+- a 7D stock `target_object_position` (3D pos + 4D quat) being sliced to its `[:, :3]` position component — add this regression inside PR2.5 before the live smoke.
+- explicit rejection of a flat `(num_envs, 35)` stock tensor — add a shape-failure test inside PR2.5.
+- a non-wrist/debug camera key being refused as the policy image when `policy_camera_name` / `policy_image_obs_key` are configured — add once those config fields exist.
+
+Treat "PR2 = 13 passed" as the unit-test contract baseline, not as full invariant coverage.
+
+**Boundary With PR2.5**
+
+PR2.5 owns the live Isaac work:
+
+```text
+camera sensors
+policy wrist camera selection
+debug camera separation
+7D target_object_position -> 3D target_pos_base
+custom Isaac Lab env_cfg
+dedicated live camera observation smoke
+```
+
 **Pytest**
 
 ```bash
-pytest tests/test_isaac_observation_wrapper.py -v
+conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 ```
 
 **Suggested Commit**
 
 ```bash
 git commit -m "feat(env): add image-proprio observation wrapper"
+```
+
+---
+
+### PR 2.5 — Camera-Enabled Franka Lift Config
+
+**Goal / Why**
+
+The stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` task does not expose RGB camera observations even when Isaac Sim is launched with `--enable_cameras`. This PR keeps the same task and 7D IK-relative action contract, but customizes the Isaac Lab `env_cfg` before `gym.make()` so the environment has a real policy wrist camera and named low-dimensional observation terms.
+
+**Implementation**
+- Add a small config helper rather than burying all cfg mutation inside `IsaacArmEnv.__init__`.
+- Put that helper in a dedicated file such as `env/franka_lift_camera_cfg.py`.
+- Start from `parse_env_cfg("Isaac-Lift-Cube-Franka-IK-Rel-v0", device=device, num_envs=num_envs)`.
+- Mutate or subclass the parsed cfg to add:
+  - `wrist_cam`: an RGB camera attached under the Franka hand/end-effector prim, used as the policy camera.
+  - optional `table_cam` or `front_cam`: fixed workcell camera used only for GIF/debug recording.
+  - non-concatenated named low-dimensional policy terms for the 40D proprio contract.
+- Use Isaac Lab `CameraCfg` or `TiledCameraCfg` according to the local Isaac Lab 2.3.2 camera API and batching requirements.
+- Add a wrist RGB observation term with `mdp.image`, `SceneEntityCfg("wrist_cam")`, `data_type="rgb"`, and `normalize=False`.
+- Keep sensor names and observation keys distinct:
+  - `wrist_cam` is the Isaac scene camera sensor.
+  - `wrist_rgb` is the observation term / key mapped to wrapper `obs["image"]`.
+  - `table_cam` is the fixed debug camera sensor.
+  - `table_rgb` is the optional debug image term / key.
+- Keep `obs["image"]` mapped to the wrist RGB observation only.
+- Provide a debug-frame accessor for the fixed camera, such as `get_debug_frame("table_cam")`, without adding it to the policy observation contract.
+- Make camera names configurable, with defaults:
+
+```python
+policy_camera_name = "wrist_cam"
+policy_image_obs_key = "wrist_rgb"
+debug_camera_name = "table_cam"
+debug_image_obs_key = "table_rgb"
+```
+
+- Fail readably if `enable_cameras=True` but the customized cfg does not produce the requested policy camera term.
+- Do not change `env_id`, `action_dim`, or the 7D action order.
+- Do not switch the project to another task just because another task already has camera examples. Existing Isaac Lab visuomotor examples should be used as implementation references only.
+
+Keep `env/isaac_env.py` thin. It should select the cfg and then call `gym.make(...)`, not own all camera and observation mutation logic:
+
+```python
+if enable_cameras:
+    env_cfg = make_camera_enabled_franka_lift_cfg(
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+        device=device,
+        num_envs=num_envs,
+        policy_camera_name="wrist_cam",
+        policy_image_obs_key="wrist_rgb",
+        debug_camera_name="table_cam",
+        debug_image_obs_key="table_rgb",
+    )
+else:
+    env_cfg = parse_env_cfg(
+        "Isaac-Lift-Cube-Franka-IK-Rel-v0",
+        device=device,
+        num_envs=num_envs,
+    )
+
+env = gym.make("Isaac-Lift-Cube-Franka-IK-Rel-v0", cfg=env_cfg)
+```
+
+**Policy Camera Semantics**
+- `wrist_cam` is the robot's learning camera. It is the only camera that goes into `obs["image"]`, replay buffers, and Diffusion Policy datasets by default.
+- It should be mounted close to `panda_hand` / the gripper frame so it moves with the end effector.
+- It should be validated during approach/grasp, not only at reset, because a wrist camera may not see the cube before the arm moves toward the workspace.
+
+**Debug Camera Semantics**
+- `table_cam` / `front_cam` is a human inspection camera.
+- It is fixed in the workcell and may see the full robot, table, cube, and lift region.
+- It is used for GIFs, saved sample frames, and failure diagnosis.
+- It must not be passed to `policy.act()` or used as the default training image.
+- If stored in datasets, use a separate key such as `debug_images`.
+
+**How To Test**
+- Unit-test cfg creation without launching Isaac Sim by checking requested camera names, observation names, and feature dimensions where possible.
+- Unit-test wrapper behavior with injected named observations:
+  - `wrist_rgb` becomes `obs["image"]`.
+  - debug camera frames do not appear in `obs["image"]`.
+  - 40D proprio is assembled from named terms.
+- Add wrapper-level regression tests (deferred from PR2, but strictly PR2.5's acceptance set):
+  - 7D `target_object_position` (3D pos + 4D quat) is sliced to `[:, :3]` so proprio still shapes to `(num_envs, 40)`.
+  - A flat stock `(num_envs, 35)` observation is rejected with a readable shape error; the wrapper must not zero-pad or slice it into 40D.
+  - When `policy_camera_name` / `policy_image_obs_key` are set (for example `"wrist_cam"` / `"wrist_rgb"`), a debug-camera or generic `camera` key must not be silently used as `obs["image"]`; the wrapper raises rather than falling back to the first-match tuple.
+  - `get_debug_frame(camera_name)` / `render_debug()` exists and returns a `(H, W, 3)` `uint8` array that is distinct from `obs["image"]` when both cameras are configured.
+- Live-smoke camera mode in `isaac_arm`:
+
+```bash
+timeout 240s conda run -n isaac_arm python -m scripts.isaac_runtime_smoke \
+  --device cuda:0 \
+  --headless \
+  --enable-cameras \
+  --steps 1
+```
+
+- Add a dedicated live camera observation smoke that verifies:
+  - `wrist_cam` RGB term exists.
+  - wrapper returns `image.shape == (1, 3, 84, 84)`.
+  - wrapper returns `proprio.shape == (1, 40)`.
+  - image dtype is `uint8`.
+  - pixel variance is nonzero.
+  - a sample wrist frame is saved for manual inspection.
+  - a sample debug frame is saved if `debug_camera_name` is configured.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(env): add camera-enabled Franka lift cfg"
 ```
 
 ---
@@ -1035,7 +1288,7 @@ Provide one evaluator that works for RL agents and Diffusion Policy agents, so a
 **Pytest**
 
 ```bash
-pytest tests/test_eval_continuous.py -v
+conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v
 ```
 
 **Suggested Commit**
@@ -1056,7 +1309,9 @@ Create visual artifacts that make the project easy to inspect. GIFs show whether
 - Add rollout GIF recording script.
 - Add side-by-side GIF/grid generation.
 - Add plots for return, success rate, steps-to-threshold, and jerk.
-- Use consistent seed, camera pose, and episode length across methods.
+- Use consistent seed, debug camera pose, and episode length across methods.
+- Use the fixed debug camera for human-facing GIFs.
+- Keep the wrist policy camera separate from the GIF/debug camera unless explicitly recording policy-view diagnostics.
 - Overlay method name, return, success, jerk, and seed.
 - Do not change agent training code.
 
@@ -1086,8 +1341,9 @@ git commit -m "feat(viz): add rollout GIFs and comparison plots"
 | PR | What it does | Test command | Suggested commit |
 |---|---|---|---|
 | PR 0 | Project scaffold | `pytest tests/test_project_scaffold.py -v` | `chore: scaffold Isaac Lab manipulation project` |
-| PR 1 | IK-relative Franka task + 7D action | `pytest tests/test_isaac_task_config.py -v` | `feat(env): add Franka IK-relative lift task config` |
-| PR 2 | Image-proprio observation wrapper | `pytest tests/test_isaac_observation_wrapper.py -v` | `feat(env): add image-proprio observation wrapper` |
+| PR 1 | IK-relative Franka task + 7D action | `conda run -n isaac_arm python -m pytest tests/test_task_contract.py -v` | `feat(env): add Franka IK-relative lift task config` |
+| PR 2 | Image-proprio observation wrapper | `conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v` | `feat(env): add image-proprio observation wrapper` |
+| PR 2.5 | Camera-enabled Franka lift cfg | `pytest tests/test_camera_enabled_env_cfg.py -v` (test file created by PR2.5; not runnable today) | `feat(env): add camera-enabled Franka lift cfg` |
 | PR 3 | Shared backbone | `pytest tests/test_nn_backbone.py -v` | `feat(model): add image-proprio fusion backbone` |
 | PR 4 | PPO baseline | `pytest tests/test_ppo_continuous.py -v` | `feat(rl): add continuous PPO baseline` |
 | PR 5 | Pure GRPO baseline | `pytest tests/test_grpo_continuous.py -v` | `feat(rl): add pure GRPO baseline` |
@@ -1096,7 +1352,7 @@ git commit -m "feat(viz): add rollout GIFs and comparison plots"
 | PR 8 | Demo dataset | `pytest tests/test_demo_dataset.py -v` | `feat(data): add episode-safe demonstration dataset` |
 | PR 9 | Diffusion BC | `pytest tests/test_diffusion_policy.py -v` | `feat(il): add diffusion policy behavior cloning` |
 | PR 10 | DAgger | `pytest tests/test_dagger_diffusion.py -v` | `feat(il): add DAgger fine-tuning loop` |
-| PR 11 | Evaluation metrics | `pytest tests/test_eval_continuous.py -v` | `feat(eval): add continuous-control evaluation metrics` |
+| PR 11 | Evaluation metrics | `conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v` | `feat(eval): add continuous-control evaluation metrics` |
 | PR 12 | GIFs and plots | `pytest tests/test_visual_outputs.py -v` | `feat(viz): add rollout GIFs and comparison plots` |
 
 ---
@@ -1111,6 +1367,9 @@ PR 1 Isaac Task Config
   |
   v
 PR 2 Observation Wrapper
+  |
+  v
+PR 2.5 Camera-Enabled Franka Lift Cfg
   |
   v
 PR 3 Shared Backbone
@@ -1140,15 +1399,23 @@ Fast CPU/unit tests, no Isaac Sim required:
 
 ```bash
 pytest tests/ -v \
-  --ignore=tests/test_isaac_task_config.py \
-  --ignore=tests/test_isaac_observation_wrapper.py
+  --ignore=tests/test_task_contract.py \
+  --ignore=tests/test_observation_wrapper.py
 ```
 
 Isaac Lab / GPU / camera tests:
 
 ```bash
-pytest tests/test_isaac_task_config.py tests/test_isaac_observation_wrapper.py -v
+conda run -n isaac_arm python -m pytest \
+  tests/test_task_contract.py \
+  tests/test_observation_wrapper.py \
+  tests/test_camera_enabled_env_cfg.py \
+  -v
 ```
+
+`tests/test_camera_enabled_env_cfg.py` is created by PR2.5; the command above is the intended command once PR2.5 is merged, and is not runnable in the current tree.
+
+Camera runtime verification must prove that the customized cfg produces an RGB observation term. A successful stock `--enable_cameras` smoke with only `policy: (num_envs, 35)` is not sufficient.
 
 Full project test suite after Isaac Lab is installed:
 

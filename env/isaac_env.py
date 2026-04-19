@@ -34,6 +34,7 @@ class IsaacArmEnvConfig:
     env_id: str = ISAAC_FRANKA_IK_REL_ENV_ID
     num_envs: int = 1
     seed: int = 0
+    device: str = "cuda:0"
     image_shape: tuple[int, int, int] = (3, 84, 84)
     proprio_dim: int = 40
     enable_cameras: bool = False
@@ -77,6 +78,10 @@ class IsaacArmEnv:
         make = gym_make or self._load_gym_make()
         kwargs = dict(self.config.gym_kwargs)
         kwargs.setdefault("num_envs", self.config.num_envs)
+        # device is consumed by _make_with_cfg (the real Isaac Lab factory).
+        # Injected test doubles don't expect it, so only set when using the real factory.
+        if gym_make is None:
+            kwargs.setdefault("device", self.config.device)
         self._env = make(self.config.env_id, **kwargs)
         self._last_info: dict[str, Any] = {}
 
@@ -316,9 +321,21 @@ class IsaacArmEnv:
         try:
             import isaaclab_tasks  # noqa: F401
             import gymnasium as gym
+            from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 "Isaac Lab runtime is not installed in this environment. Install Isaac Sim/Isaac Lab, "
                 "then launch with --enable_cameras before constructing IsaacArmEnv."
             ) from exc
-        return gym.make
+
+        def _make_with_cfg(env_id: str, **kwargs: Any) -> Any:
+            # Isaac Lab envs require an explicit cfg produced by parse_env_cfg.
+            # num_envs must be resolved before calling parse_env_cfg so the
+            # physics scene is sized correctly at construction time.
+            device = kwargs.pop("device", "cuda:0")
+            num_envs = kwargs.get("num_envs", 1)
+            env_cfg = parse_env_cfg(env_id, device=device, num_envs=num_envs)
+            kwargs.setdefault("cfg", env_cfg)
+            return gym.make(env_id, **kwargs)
+
+        return _make_with_cfg

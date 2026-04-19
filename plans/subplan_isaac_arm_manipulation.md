@@ -29,12 +29,14 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 |---|---|---|---|
 | PR 0 | Project scaffold | Done | Package layout, config, reproducibility utilities, output directory helpers, and scaffold tests are already implemented. |
 | PR 1 | Task/action contract | Done | Defines the tested 7D Franka IK-relative action contract, clipping helper, action splitter, and gripper open/close rule. |
-| PR 2 | Formal Isaac Lab observation wrapper | Done | Adds a tested formal Isaac Lab adapter for `Isaac-Lift-Cube-Franka-IK-Rel-v0`; local unit tests use an injected Gymnasium test double. **No-camera env.reset()/env.step() confirmed working on 2026-04-17 with Xvfb fix.** |
+| PR 2 | Formal Isaac Lab observation wrapper | Done | Adds a tested formal Isaac Lab adapter contract for `Isaac-Lift-Cube-Franka-IK-Rel-v0`; local unit tests use an injected Gymnasium test double. The **2026-04-17 no-camera env.reset()/env.step() confirmation was a stock Isaac runtime smoke**, not a proof that the wrapper has live image-proprio observations yet. |
 | Runtime env | WSL2 Xvfb fix | Done | `_app.update()` deadlock resolved. No-camera smoke test passes (`status: ok`, reward on `cuda:0`). See CLAUDE.md WSL2 section. |
-| Runtime env | Camera mode | Blocked | RTX renderer requires Vulkan GPU enumeration. Xvfb is software-only; NVIDIA GPU not visible to Vulkan. **Unblocked by switching to `nvcr.io/nvidia/isaac-sim:5.1.0`.** |
+| Runtime env | Camera renderer boot | Done | Camera mode boots in the current `isaac_arm` Isaac Sim / Isaac Lab runtime when run with GPU access. `gym.make()`, `env.reset()`, `env.step()`, and `env.close()` succeed with `--enable-cameras`. |
+| Runtime env | Stock task camera observation | Blocked | Confirmed 2026-04-19: stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` still exposes only `policy` obs with shape `(num_envs, 35)` in camera mode. `--enable-cameras` enables rendering but does not add RGB observation terms. |
+| PR 2.5 | Camera-enabled Franka lift cfg | Pending | Keep the same IK-relative lift task, but customize `env_cfg` before `gym.make()` to add `wrist_cam`, optional debug camera, and named 40D proprio terms. |
 | PR 8-lite | Rollout dataset | Pending | Store rollouts by episode so future action chunks never cross episode boundaries. |
 | PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
-| PR 12-lite | GIF output | Pending | Save visual rollout GIFs for random and heuristic policies. |
+| PR 12-lite | GIF output | Pending | Save visual rollout GIFs from a fixed debug camera, while policy/dataset images come from wrist camera. |
 | Demo PR | One-command script | Pending | One command creates dataset, metrics JSON, and GIF. |
 
 PR0 verification command:
@@ -88,6 +90,7 @@ Do now:
 - PR 0 Project scaffold
 - PR 1 Task/action contract
 - PR 2 Formal Isaac Lab observation wrapper
+- PR 2.5 Camera-enabled Franka lift cfg
 - PR 8-lite Rollout dataset
 - PR 11-lite Evaluation metrics
 - PR 12-lite GIF output
@@ -103,6 +106,13 @@ Do not do before the first interview demo:
 - DAgger
 
 Reason: those are training/research modules. The interview demo should first prove the infrastructure loop works.
+
+Important scope correction from live testing:
+- Do not switch to a different task just because another Isaac Lab task already has camera observations.
+- Keep `Isaac-Lift-Cube-Franka-IK-Rel-v0` and the 7D IK-relative action contract.
+- Add camera and named observation terms by customizing the Isaac Lab env config.
+- Treat stock 35D `policy` observations as a diagnostic only, not as the formal project contract.
+- Use wrist RGB as the learning image. Use a fixed table/front camera only for GIF/debug output.
 
 ---
 
@@ -279,24 +289,26 @@ git commit -m "feat(env): define Franka 7D action contract"
 
 **Goal / Why**
 
-Create a stable observation interface around the official Isaac Lab environment:
+Create a stable Python wrapper contract around the intended Isaac Lab task:
 
 ```text
 Isaac-Lift-Cube-Franka-IK-Rel-v0
 ```
 
-This subplan no longer includes a mock backend. The demo uses the formal Isaac adapter and therefore requires Isaac Sim / Isaac Lab to be installed and launched with camera support.
+PR2 is the local/unit-tested adapter layer. It defines how project code calls `reset()`, `step()`, and receives observations. It does **not** create Isaac camera sensors, mutate Isaac Lab `env_cfg`, or prove live camera observations. Those live environment changes belong to PR2.5.
 
 **Observation Contract**
 
 ```python
 obs = {
-    "image": np.ndarray,    # shape: (num_envs, 3, 84, 84), dtype uint8
+    "image": np.ndarray,    # policy image, shape: (num_envs, 3, 84, 84), dtype uint8
     "proprio": np.ndarray,  # shape: (num_envs, 40), dtype float32
 }
 ```
 
-Formal proprio feature order:
+PR2's unit tests may inject this observation with a Gymnasium-compatible test double. The test double is not a project backend and must not appear in user-facing demo commands.
+
+Formal 40D proprio feature order:
 
 ```text
 [
@@ -313,14 +325,27 @@ Formal proprio feature order:
 ]
 ```
 
-The wrapper computes:
+Wrapper-owned derived terms:
 
 ```text
 ee_to_cube = cube_pos_base - ee_pos_base
 cube_to_target = target_pos_base - cube_pos_base
 ```
 
-Local unit tests may inject a Gymnasium-compatible Isaac test double to verify the adapter without launching Isaac Sim. This is not a project backend and must not appear in user-facing demo commands.
+Expected named low-dimensional inputs:
+
+```text
+arm_joint_pos_rel
+arm_joint_vel_rel
+gripper_finger_pos
+gripper_finger_vel
+ee_pos_base
+cube_pos_base or object_position
+target_pos_base or target_object_position already reduced to 3D
+previous_action or actions
+```
+
+PR2 should reject a flat stock 35D observation by shape. Converting stock 35D into the final live `image + 40D` contract is not PR2's job; PR2.5 must make the Isaac cfg expose the needed image and named terms.
 
 **Suggested Files**
 
@@ -347,6 +372,21 @@ conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 - Done/truncated behavior is correct.
 - If Isaac camera mode is requested without camera support, the error message explains `--enable_cameras`.
 - If Isaac Lab runtime is not installed, construction fails with a readable error.
+- Batched reset/step preserves the configured `num_envs`.
+- `render()` and `close()` forward to the underlying environment when available.
+
+**Boundary With PR2.5**
+
+PR2.5 owns the live Isaac details that PR2 intentionally does not solve:
+
+```text
+camera sensors
+policy wrist camera selection
+debug camera separation
+7D target_object_position -> 3D target_pos_base
+custom Isaac Lab env_cfg
+dedicated live camera observation smoke
+```
 
 **Suggested Commit**
 
@@ -354,63 +394,160 @@ conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 git commit -m "feat(env): add Isaac Lab image-proprio wrapper"
 ```
 
-**Env Install Recipe**
+---
 
-The formal Isaac adapter needs Isaac Sim 5.1 + Isaac Lab 2.3.2 + cu126 PyTorch inside the `isaac_arm` conda env. All top-level dependencies are pinned in `requirement.txt`; Isaac Lab ships two in-wheel sub-packages (`isaaclab_assets`, `isaaclab_tasks`) that must be editable-installed afterwards. `scripts/install_isaac.sh` does both steps.
+## 7.5 PR 2.5 - Camera-Enabled Franka Lift Config
 
-Fresh restore after rebuilding the container:
+**Status:** Pending
 
-```bash
-conda activate isaac_arm
-bash scripts/install_isaac.sh
+**Goal / Why**
+
+Make the live Isaac task satisfy the tested image-proprio wrapper contract. Keep the same task and action interface:
+
+```text
+env_id = Isaac-Lift-Cube-Franka-IK-Rel-v0
+action = [dx, dy, dz, droll, dpitch, dyaw, gripper]
 ```
 
-Equivalent manual flow:
+but customize the Isaac Lab `env_cfg` before `gym.make()` so the scene includes a policy wrist camera, optional debug camera, and named observation terms for the 40D proprio vector.
 
-```bash
-pip install -r ./requirement.txt
-ISAACLAB_DIR=$(python -c "import isaaclab, os; print(os.path.dirname(isaaclab.__file__))")
-pip install -e "$ISAACLAB_DIR/source/isaaclab_assets"
-pip install -e "$ISAACLAB_DIR/source/isaaclab_tasks"
+**Camera Design**
+
+Policy camera:
+
+```text
+name: wrist_cam
+mount: near Robot/panda_hand / end-effector
+purpose: policy input, rollout dataset image, future Diffusion Policy image
+wrapper field: obs["image"]
+shape after wrapper: (num_envs, 3, 84, 84), uint8
 ```
 
-Docker run flags that must be present (without them Isaac Sim's Vulkan/RTX renderer has no driver to talk to, even though `torch.cuda.is_available()` returns `True`):
+Debug camera:
 
-```bash
-docker run --gpus all \
-  -e NVIDIA_DRIVER_CAPABILITIES=all \
-  -e NVIDIA_VISIBLE_DEVICES=all \
-  -e ACCEPT_EULA=Y \
-  -e PRIVACY_CONSENT=Y \
-  ...
+```text
+name: table_cam or front_cam
+mount: fixed in the workcell, not attached to robot
+purpose: human inspection, GIF recording, failure diagnosis
+wrapper access: get_debug_frame("table_cam") or render_debug()
+not used by: policy.act(), SAC replay buffer, Diffusion Policy dataset image
 ```
 
-**WSL2 Xvfb requirement (2026-04-17):** After container start, always run before Isaac Sim:
+The fixed debug camera is allowed because it is an experiment recorder, not the robot policy's eye. The robot-learning observation remains eye-in-hand wrist RGB plus proprio/task-state features.
 
-```bash
-pkill Xvfb 2>/dev/null
-Xvfb :1 -screen 0 1280x720x24 &
-export DISPLAY=:1
+**Scope Clarification**
+
+PR2.5 includes all work needed to move from the current unit-tested wrapper contract to a live camera-capable Isaac observation contract. In other words, the next seven steps belong to PR2.5:
+
+1. Fix `target_object_position` handling so a 7D stock target pose becomes a 3D `target_pos_base`.
+2. Make policy image extraction explicitly use the wrist policy camera, not any generic/debug camera key.
+3. Add the camera-enabled Franka lift cfg helper.
+4. Wire `IsaacArmEnv` to use that helper when camera observations are enabled.
+5. Add PR2.5 cfg/wrapper unit tests.
+6. Add a dedicated camera observation smoke script.
+7. Run the live camera observation smoke and require `image + 40D proprio`, not stock `policy: (1, 35)`.
+
+This means PR2.5 is not just "add a camera object." It is the acceptance gate for the real live observation contract:
+
+```text
+obs["image"]   = wrist camera RGB, shape (num_envs, 3, 84, 84), uint8
+obs["proprio"] = named 40D contract, shape (num_envs, 40), float32
 ```
 
-Without Xvfb, `SimulationApp._app.update()` deadlocks at the C++ GPU Foundation level. The fix is in `scripts/isaac_runtime_smoke.py` — it sets `os.environ["DISPLAY"] = ":1"` automatically if `DISPLAY` is not already set.
+**Implementation**
 
-**Camera mode** requires the official `nvcr.io/nvidia/isaac-sim:5.1.0` container — the current DIY container cannot pass the NVIDIA GPU through to Vulkan even with Xvfb.
+- Fix the PR2 wrapper edge case before or inside this PR:
+  - stock `target_object_position` is 7D: 3D target position plus 4D quaternion;
+  - formal `target_pos_base` must use only `target_object_position[:, :3]`;
+  - add a regression test where the fake Isaac observation uses a 7D target pose and the wrapper still returns `(num_envs, 40)` proprio.
+- Make policy image extraction strict:
+  - keep sensor names and observation keys distinct:
+    - `wrist_cam` is the Isaac scene camera sensor;
+    - `wrist_rgb` is the observation term / key mapped to wrapper `obs["image"]`;
+    - `table_cam` is the fixed debug camera sensor;
+    - `table_rgb` is the optional debug image term / key;
+  - `obs["image"]` must come from `policy_image_obs_key`, defaulting to `wrist_rgb`;
+  - do not accept `front_rgb`, `table_rgb`, or generic `camera` as a fallback for policy input;
+  - expose debug camera frames only through `get_debug_frame(...)` or `render_debug(...)`.
+- Add a helper such as `make_camera_enabled_franka_lift_cfg(...)` in `env/franka_lift_camera_cfg.py`.
+- Internally call `parse_env_cfg(ISAAC_FRANKA_IK_REL_ENV_ID, device=device, num_envs=num_envs)`.
+- Add `wrist_cam` using Isaac Lab `CameraCfg` or `TiledCameraCfg` with `data_types=["rgb"]` or `["rgb", "distance_to_image_plane"]`.
+- Add optional fixed `table_cam` / `front_cam` for debug frames.
+- Replace or extend the observation config so policy observations are non-concatenated named terms.
+- Add `wrist_rgb = ObsTerm(func=mdp.image, params={"sensor_cfg": SceneEntityCfg("wrist_cam"), "data_type": "rgb", "normalize": False})`.
+- Add named low-dimensional terms listed in PR2 instead of relying on stock flat 35D.
+- Keep `policy_camera_name="wrist_cam"`, `policy_image_obs_key="wrist_rgb"`, `debug_camera_name="table_cam"`, and `debug_image_obs_key="table_rgb"` configurable.
+- Keep debug camera out of the formal `obs["image"]` contract.
+- Save sample wrist/debug frames during live smoke for manual inspection.
 
-Install verification:
+Keep `env/isaac_env.py` as the thin integration layer:
 
-```bash
-conda run -n isaac_arm pytest tests/test_isaac_installation.py -v
+```python
+if enable_cameras:
+    env_cfg = make_camera_enabled_franka_lift_cfg(...)
+else:
+    env_cfg = parse_env_cfg(...)
+
+env = gym.make(ISAAC_FRANKA_IK_REL_ENV_ID, cfg=env_cfg)
 ```
 
-Expected result: `2 passed`.
+Do not place all camera sensor creation, observation-term replacement, and frame validation directly inside `IsaacArmEnv.__init__`.
 
-No-camera smoke test verification (requires Xvfb on :1):
+**What To Test**
+
+- Unit test 7D `target_object_position` is sliced to 3D `target_pos_base`.
+- Unit test that when `policy_camera_name` / `policy_image_obs_key` are configured, generic or debug image keys are not silently used as policy `obs["image"]`.
+- Unit test config helper sets the policy and debug camera names.
+- Unit test wrapper maps `wrist_rgb` to `obs["image"]`.
+- Unit test debug frames are accessible separately and are not returned as policy `obs["image"]`.
+- Unit test 40D proprio assembly from named terms.
+- Live test camera observation:
 
 ```bash
-conda activate isaac_arm
-python -m scripts.isaac_runtime_smoke --device cuda:0 --headless --no-enable-cameras
-# Expected: JSON with "status": "ok", reward on cuda:0
+timeout 240s conda run -n isaac_arm python -m scripts.isaac_runtime_smoke \
+  --device cuda:0 \
+  --headless \
+  --enable-cameras \
+  --steps 1
+```
+
+plus a dedicated wrapper smoke proving:
+
+```text
+obs["image"].shape == (1, 3, 84, 84)
+obs["image"].dtype == uint8
+obs["proprio"].shape == (1, 40)
+wrist image pixel variance > 0
+sample wrist frame saved
+sample debug frame saved, if debug camera is enabled
+```
+
+The old stock runtime smoke is still useful but is not a PR2.5 pass condition:
+
+```text
+stock result: observation.policy.shape == (1, 35)
+```
+
+PR2.5 passes only when the customized cfg plus wrapper returns:
+
+```text
+obs["image"].shape == (1, 3, 84, 84)
+obs["proprio"].shape == (1, 40)
+```
+
+**Suggested Files**
+
+```text
+env/franka_lift_camera_cfg.py
+env/isaac_env.py
+tests/test_camera_enabled_env_cfg.py
+scripts/isaac_camera_observation_smoke.py
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(env): add camera-enabled Franka lift cfg"
 ```
 
 ---
@@ -532,19 +669,31 @@ The important design is episode-safe storage. For larger scale, the backend can 
 
 ```text
 episode_000/
-  images        (T, 3, 84, 84) uint8
+  images        (T, 3, 84, 84) uint8    # source = wrist_cam (policy_camera_name); training image stream
   proprios      (T, proprio_dim) float32
   actions       (T, 7) float32
   rewards       (T,) float32
   dones         (T,) bool
   truncateds    (T,) bool
+  debug_images  (optional) (T, H, W, 3) uint8  # source = table_cam (debug_camera_name); human/GIF only
   metadata/
     policy_name
     env_backend
+    policy_camera_name
+    policy_image_obs_key
+    debug_camera_name
+    debug_image_obs_key
     action_dim
     proprio_dim
     seed
 ```
+
+Camera-source tagging is a hard rule:
+
+- `images` **must** come from the wrist policy camera sensor (`policy_camera_name`, default `wrist_cam`) through the policy image observation key (`policy_image_obs_key`, default `wrist_rgb`). This is the stream a training loader reads.
+- `debug_images` **must** come from the fixed debug camera (`debug_camera_name`, default `table_cam`). These are optional and never touch the training loader.
+- Do not write fixed-camera frames under the `images` key "because the wrist frame is hard to see." Debugging ease is what `debug_images` exists for.
+- The `policy_camera_name` / `policy_image_obs_key` and `debug_camera_name` / `debug_image_obs_key` metadata entries let a reader verify which camera produced each stream without re-running the collector.
 
 **Suggested Files**
 
@@ -567,7 +716,8 @@ conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v
 - `actions` shape is `(T, 7)`.
 - `images` shape is `(T, 3, 84, 84)`.
 - `proprios` shape is `(T, proprio_dim)`.
-- Metadata includes policy name, backend, seed, action dim, and proprio dim.
+- Metadata includes policy name, backend, seed, action dim, proprio dim, and policy camera name.
+- If debug images are stored, they are under `debug_images` and not used by the training loader by default.
 - Action chunk sampling never crosses episode boundaries.
 - Done/truncated flags terminate sampling windows correctly.
 
@@ -660,8 +810,24 @@ Create the most interview-friendly artifact. Robotics failures are often easier 
 **Pipeline**
 
 ```text
-rollout frames -> save GIF -> optionally overlay policy/return/success/jerk
+rollout debug frames -> save GIF -> optionally overlay policy/return/success/jerk
 ```
+
+GIFs should use the fixed debug camera by default. The policy wrist camera is useful for learning and diagnostics, but it is narrow, moving, and may be hard for humans to interpret in a demo. The debug camera is the human-facing recorder.
+
+Recommended wrapper usage:
+
+```python
+obs = env.reset()
+frames = []
+for _ in range(max_steps):
+    action = policy.act(obs)
+    obs, reward, terminated, truncated, info = env.step(action)
+    frames.append(env.get_debug_frame("table_cam"))
+save_gif(frames, out_path)
+```
+
+The debug camera must not be passed to `policy.act()` and must not replace `obs["image"]`.
 
 **Suggested Files**
 
@@ -683,6 +849,8 @@ conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py -v
 - GIF has more than one frame.
 - Missing output directory is created automatically.
 - Recorder handles `uint8` RGB frames.
+- GIF recorder can consume frames from `env.get_debug_frame(...)`.
+- Policy observations remain wrist-camera images while GIF frames come from the debug camera.
 
 **Suggested Commit**
 
@@ -773,23 +941,28 @@ Finish in this order:
 
 1. One-command script skeleton.
 2. Formal Isaac env wrapper.
-3. Random and heuristic policies.
-4. Metrics JSON.
-5. GIF output.
-6. Episode dataset.
-7. Replay policy.
-8. Tests.
+3. Camera-enabled Franka lift cfg with wrist policy camera and debug camera.
+4. Random and heuristic policies.
+5. Metrics JSON.
+6. GIF output from debug camera.
+7. Episode dataset with wrist policy images.
+8. Replay policy.
+9. Tests.
 
 If time is tight:
 
 - GIF and metrics are mandatory for the interview.
 - Dataset can be simplified, but keep episode-safe design.
 - Replay policy is nice to have.
-- Isaac backend is required for this no-mock demo.
+- The final interview-facing demo runs against live Isaac. Unit-level PRs (PR0/PR1/PR2) intentionally use a Gymnasium test double injected through `gym_make` — that is constructor injection, not `unittest.mock`, and it is only for wrapper/contract tests. "No-mock" here means the demo rollout itself does not substitute a fake env for the live Isaac task; it does not mean every test in the slice avoids test doubles.
+- The demo is not ready if live Isaac only returns stock `policy: (num_envs, 35)` observations.
+- The demo is ready only when the customized cfg (PR2.5) produces wrist RGB plus 40D proprio.
 
 ---
 
 ## 14. Acceptance Criteria For Interview Demo
+
+**Dependency note:** every acceptance criterion in this section assumes PR2.5 (Camera-Enabled Franka Lift Config) is merged. PR2.5 is currently Pending per Section 2; until it lands, the "runtime observation acceptance" block below cannot be satisfied because live Isaac only returns `policy: (num_envs, 35)` and no camera image term. Do not mark the demo accepted on the strength of PR0/PR1/PR2 passing alone.
 
 The demo is ready when these commands work:
 
@@ -840,6 +1013,15 @@ data/heuristic_rollouts.h5
 data/replay_from_heuristic_rollouts.h5
 ```
 
+Runtime observation acceptance:
+
+```text
+policy observation image = wrist_cam RGB, stored as dataset images
+policy observation proprio = 40D named feature contract
+GIF frames = fixed debug camera frames
+debug camera = not passed to policy.act()
+```
+
 Optional full test command for the demo slice:
 
 ```bash
@@ -847,6 +1029,7 @@ conda run -n isaac_arm python -m pytest \
   tests/test_project_scaffold.py \
   tests/test_task_contract.py \
   tests/test_observation_wrapper.py \
+  tests/test_camera_enabled_env_cfg.py \
   tests/test_demo_policies.py \
   tests/test_demo_dataset.py \
   tests/test_eval_metrics.py \
@@ -854,6 +1037,8 @@ conda run -n isaac_arm python -m pytest \
   tests/test_demo_data_loop.py \
   -v
 ```
+
+Of the demo-slice test files listed in the command above, only `test_project_scaffold.py`, `test_task_contract.py`, and `test_observation_wrapper.py` exist today. The repository also has separate Isaac installation/runtime smoke tests. The other six demo-slice files are created by their owning PRs (PR2.5 and the lite PRs above). The command is the full intended invocation after the demo slice is implemented; running it in the current tree will error on missing files.
 
 ---
 
@@ -868,7 +1053,7 @@ Suggested explanation order:
    The robot interface is 7D continuous control: 6D end-effector delta plus 1D gripper.
 
 3. Observation  
-   Every method consumes the same image-proprio observation dictionary.
+   Every method consumes the same wrist-image plus 40D proprio observation dictionary. The stock 35D Isaac policy tensor is only a diagnostic baseline.
 
 4. Rollout dataset  
    Rollouts are stored by episode, so future action chunks never cross episode boundaries.
@@ -877,7 +1062,7 @@ Suggested explanation order:
    I compute return, success, episode length, and action jerk.
 
 6. GIF  
-   I record visual outputs because robotics failures are often easiest to debug visually.
+   I record visual outputs from a fixed debug camera because robotics failures are often easiest to debug visually. The debug camera is not the policy input.
 
 7. Next step  
    SAC can plug in as the expert oracle, then Diffusion Policy BC and DAgger can use the same dataset and evaluation interfaces.
