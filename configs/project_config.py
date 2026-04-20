@@ -40,7 +40,7 @@ class ProjectConfig:
     seed: int = 0
     env_id: str = ISAAC_FRANKA_IK_REL_ENV_ID
     num_envs: int = 64
-    image_shape: tuple[int, int, int] = (3, 84, 84)
+    image_shape: tuple[int, int, int] = (3, 224, 224)
     proprio_dim: int = 14
     action_dim: int = ACTION_DIM
     action_names: tuple[str, ...] = ACTION_NAMES
@@ -53,8 +53,8 @@ class ProjectConfig:
             raise ValueError("seed must be non-negative")
         if self.num_envs <= 0:
             raise ValueError("num_envs must be positive")
-        if self.image_shape != (3, 84, 84):
-            raise ValueError("image_shape must be (3, 84, 84) for the PR0 contract")
+        if self.image_shape != (3, 224, 224):
+            raise ValueError("image_shape must be (3, 224, 224) for the project contract")
         if self.proprio_dim <= 0:
             raise ValueError("proprio_dim must be positive")
         if self.action_dim != len(self.action_names):

@@ -33,7 +33,8 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 | Runtime env | WSL2 Xvfb fix | Done | `_app.update()` deadlock resolved. No-camera smoke test passes (`status: ok`, reward on `cuda:0`). See CLAUDE.md WSL2 section. |
 | Runtime env | Camera renderer boot | Done | Camera mode boots in the current `isaac_arm` Isaac Sim / Isaac Lab runtime when run with GPU access. `gym.make()`, `env.reset()`, `env.step()`, and `env.close()` succeed with `--enable-cameras`. |
 | Runtime env | Stock task camera observation | Blocked | Confirmed 2026-04-19: stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` still exposes only `policy` obs with shape `(num_envs, 35)` in camera mode. `--enable-cameras` enables rendering but does not add RGB observation terms. |
-| PR 2.5 | Camera-enabled Franka lift cfg | Pending | Keep the same IK-relative lift task, but customize `env_cfg` before `gym.make()` to add `wrist_cam`, optional debug camera, and named 40D proprio terms. |
+| PR 2.5 | Camera-enabled Franka lift cfg | Done | Keeps the same IK-relative lift task, customizes `env_cfg` before `gym.make()` to add `wrist_cam`, optional `table_cam`, named 40D proprio terms, and has a live camera smoke result. |
+| Image aug | `utils/image_aug.py` | Done | Three-tier contract: wrapper = deterministic resize; training = `PadAndRandomCrop` (primary) or `CenterBiasedResizedCrop` (alternative); eval/GIF/smoke = `IdentityAug`. Utility layer and tests are done; wiring the aug into future trainers/loaders is owned by later training PRs. |
 | PR 8-lite | Rollout dataset | Pending | Store rollouts by episode so future action chunks never cross episode boundaries. |
 | PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
 | PR 12-lite | GIF output | Pending | Save visual rollout GIFs from a fixed debug camera, while policy/dataset images come from wrist camera. |
@@ -72,7 +73,29 @@ conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 Known PR2 result:
 
 ```text
-13 passed
+18 passed
+```
+
+PR2.5 verification commands:
+
+```bash
+conda run -n isaac_arm python -m pytest tests/test_camera_enabled_env_cfg.py -v
+timeout 360s conda run -n isaac_arm python -m scripts.isaac_camera_observation_smoke --steps 1 --output-dir out/camera_smoke
+```
+
+Known PR2.5 result:
+
+```text
+tests/test_camera_enabled_env_cfg.py: 6 passed
+live camera smoke: status ok, image (1, 3, 224, 224) uint8, proprio (1, 40) float32
+```
+
+Current full local test result:
+
+```text
+conda run -n isaac_arm python -m pytest -q -rs
+66 passed, 1 skipped
+skipped: tests/test_isaac_runtime_smoke.py requires RUN_ISAAC_RUNTIME_SMOKE=1 to launch Isaac Sim / Isaac Lab
 ```
 
 ---
@@ -301,7 +324,7 @@ PR2 is the local/unit-tested adapter layer. It defines how project code calls `r
 
 ```python
 obs = {
-    "image": np.ndarray,    # policy image, shape: (num_envs, 3, 84, 84), dtype uint8
+    "image": np.ndarray,    # policy image, shape: (num_envs, 3, 224, 224), dtype uint8
     "proprio": np.ndarray,  # shape: (num_envs, 40), dtype float32
 }
 ```
@@ -364,7 +387,7 @@ conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v
 
 - `reset()` returns an observation dict.
 - `step(action)` returns `(obs, reward, terminated, truncated, info)`.
-- Image shape is `(num_envs, 3, 84, 84)` and dtype is `uint8`.
+- Image shape is `(num_envs, 3, 224, 224)` and dtype is `uint8`.
 - Proprio shape is `(num_envs, 40)` and dtype is `float32`.
 - Action shape is `(7,)` for `num_envs=1` or `(num_envs, 7)` for batched envs.
 - Action is clipped to `[-1, 1]` before passing into Isaac Lab.
@@ -398,7 +421,30 @@ git commit -m "feat(env): add Isaac Lab image-proprio wrapper"
 
 ## 7.5 PR 2.5 - Camera-Enabled Franka Lift Config
 
-**Status:** Pending
+**Status:** Done
+
+Implemented 2026-04-19:
+
+- Added `env/franka_lift_camera_cfg.py` to build the camera-enabled Franka lift cfg from the stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` config.
+- Added wrist policy camera `wrist_cam`, policy RGB term `wrist_rgb`, optional debug camera `table_cam`, and debug RGB term `table_rgb`.
+- Replaced the stock concatenated 35D policy obs with non-concatenated named terms for the 40D project proprio contract.
+- Added 7D `target_object_position` / command pose slicing so only the XYZ target position contributes to `target_pos_base`.
+- Made `IsaacArmEnv` strict about policy image source: `obs["image"]` comes from `policy_image_obs_key` only, not from debug or generic camera keys.
+- Added `get_debug_frame(...)` for human-facing debug images, separate from policy input.
+- Added a torch action bridge for the live Isaac backend while keeping numpy actions for injected unit-test envs.
+- Added `tests/test_camera_enabled_env_cfg.py`, PR2.5 wrapper regressions, and `scripts/isaac_camera_observation_smoke.py`.
+- Live camera smoke passed in `isaac_arm` with GPU access:
+
+```text
+Observation Manager policy terms:
+wrist_rgb, arm_joint_pos_rel, arm_joint_vel_rel, gripper_finger_pos,
+gripper_finger_vel, ee_pos_base, cube_pos_base, target_pos_base, previous_action
+
+obs["image"]:   (1, 3, 224, 224), uint8, nonzero variance
+obs["proprio"]: (1, 40), float32
+debug table_rgb: (720, 1280, 3), uint8
+saved frames: out/camera_smoke/wrist_policy_rgb.png, out/camera_smoke/debug_rgb.png
+```
 
 **Goal / Why**
 
@@ -420,7 +466,7 @@ name: wrist_cam
 mount: near Robot/panda_hand / end-effector
 purpose: policy input, rollout dataset image, future Diffusion Policy image
 wrapper field: obs["image"]
-shape after wrapper: (num_envs, 3, 84, 84), uint8
+shape after wrapper: (num_envs, 3, 224, 224), uint8
 ```
 
 Debug camera:
@@ -450,7 +496,7 @@ PR2.5 includes all work needed to move from the current unit-tested wrapper cont
 This means PR2.5 is not just "add a camera object." It is the acceptance gate for the real live observation contract:
 
 ```text
-obs["image"]   = wrist camera RGB, shape (num_envs, 3, 84, 84), uint8
+obs["image"]   = wrist camera RGB, shape (num_envs, 3, 224, 224), uint8
 obs["proprio"] = named 40D contract, shape (num_envs, 40), float32
 ```
 
@@ -514,7 +560,7 @@ timeout 240s conda run -n isaac_arm python -m scripts.isaac_runtime_smoke \
 plus a dedicated wrapper smoke proving:
 
 ```text
-obs["image"].shape == (1, 3, 84, 84)
+obs["image"].shape == (1, 3, 224, 224)
 obs["image"].dtype == uint8
 obs["proprio"].shape == (1, 40)
 wrist image pixel variance > 0
@@ -531,7 +577,7 @@ stock result: observation.policy.shape == (1, 35)
 PR2.5 passes only when the customized cfg plus wrapper returns:
 
 ```text
-obs["image"].shape == (1, 3, 84, 84)
+obs["image"].shape == (1, 3, 224, 224)
 obs["proprio"].shape == (1, 40)
 ```
 
@@ -549,6 +595,54 @@ scripts/isaac_camera_observation_smoke.py
 ```bash
 git commit -m "feat(env): add camera-enabled Franka lift cfg"
 ```
+
+---
+
+## 7.6 Image Augmentation Utilities
+
+**Status:** Done
+
+Implemented in `utils/image_aug.py`. Augmentation is applied in the training pipeline only; the env wrapper stays deterministic.
+
+Three-tier contract:
+
+```text
+Env wrapper     : native → deterministic resize → 224×224        (obs contract)
+Training aug    : 224×224 → pad 8 px → random crop 224×224       (primary)
+Eval/GIF/smoke  : no augmentation
+```
+
+**Primary: `PadAndRandomCrop`**
+
+DrQ/RAD-style augmentation. Takes wrapper-output 224×224 images and applies a small random translation (pad 8 px → random crop back to 224×224). Safe for this task because the maximum pixel shift is ≤ 16 px, unlikely to remove gripper or cube.
+
+**Alternative: `CenterBiasedResizedCrop`**
+
+Takes native-resolution images (e.g. 400×400 from `get_policy_frame()`). Randomly samples a crop with scale ∈ [0.75, 1.0] biased toward image center, then resizes to 224×224. Requires the dataset to store native-resolution frames; if the dataset stores 224×224 (PR8-lite default), use `PadAndRandomCrop` instead.
+
+**Eval: `IdentityAug`**
+
+No-op. Used for eval, GIF recording, and smoke tests. Ensures the obs contract is deterministic and reproducible.
+
+**Factory helpers:**
+
+```python
+from utils.image_aug import make_train_aug, make_eval_aug
+
+train_aug = make_train_aug(mode="pad_crop", pad=8)        # primary
+train_aug = make_train_aug(mode="resized_crop", min_scale=0.75)  # alternative
+eval_aug  = make_eval_aug()
+```
+
+**Test command:**
+
+```bash
+pytest tests/test_image_aug.py -v
+```
+
+Known result: `24 passed`.
+
+**Boundary:** this PR provides the reusable augmentation utilities and tests. It does not yet connect augmentation to an actual SAC/TD3/PPO/Diffusion Policy trainer or dataloader. That integration belongs to the future training/dataset PRs.
 
 ---
 
@@ -669,7 +763,7 @@ The important design is episode-safe storage. For larger scale, the backend can 
 
 ```text
 episode_000/
-  images        (T, 3, 84, 84) uint8    # source = wrist_cam (policy_camera_name); training image stream
+  images        (T, 3, 224, 224) uint8    # source = wrist_cam (policy_camera_name); training image stream
   proprios      (T, proprio_dim) float32
   actions       (T, 7) float32
   rewards       (T,) float32
@@ -714,7 +808,7 @@ conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v
 - Dataset file is created.
 - Each episode has required keys.
 - `actions` shape is `(T, 7)`.
-- `images` shape is `(T, 3, 84, 84)`.
+- `images` shape is `(T, 3, 224, 224)`.
 - `proprios` shape is `(T, proprio_dim)`.
 - Metadata includes policy name, backend, seed, action dim, proprio dim, and policy camera name.
 - If debug images are stored, they are under `debug_images` and not used by the training loader by default.
@@ -962,7 +1056,7 @@ If time is tight:
 
 ## 14. Acceptance Criteria For Interview Demo
 
-**Dependency note:** every acceptance criterion in this section assumes PR2.5 (Camera-Enabled Franka Lift Config) is merged. PR2.5 is currently Pending per Section 2; until it lands, the "runtime observation acceptance" block below cannot be satisfied because live Isaac only returns `policy: (num_envs, 35)` and no camera image term. Do not mark the demo accepted on the strength of PR0/PR1/PR2 passing alone.
+**Dependency note:** PR2.5 (Camera-Enabled Franka Lift Config) is now merged into the working tree and live-smoked. The remaining demo acceptance work can assume the wrapper returns wrist RGB plus 40D proprio, but the later rollout/dataset/metrics/GIF PRs still need their own live Isaac verification.
 
 The demo is ready when these commands work:
 

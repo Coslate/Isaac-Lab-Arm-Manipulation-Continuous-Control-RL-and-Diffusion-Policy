@@ -33,7 +33,7 @@ def test_project_config_defaults_are_valid() -> None:
         "dyaw",
         "gripper",
     )
-    assert config.image_shape == (3, 84, 84)
+    assert config.image_shape == (3, 224, 224)
     assert config.proprio_dim > 0
 
 

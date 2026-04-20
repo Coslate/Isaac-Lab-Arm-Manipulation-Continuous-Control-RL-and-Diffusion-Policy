@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID, TaskConfig, clip_action
+from env.franka_lift_camera_cfg import make_camera_enabled_franka_lift_cfg
 
 
 GymMake = Callable[..., Any]
@@ -25,6 +26,7 @@ PROPRIO_FEATURE_GROUPS: tuple[str, ...] = (
     "cube_to_target",
     "previous_action",
 )
+POLICY_IMAGE_SHAPE: tuple[int, int, int] = (3, 224, 224)
 
 
 @dataclass(frozen=True)
@@ -35,9 +37,13 @@ class IsaacArmEnvConfig:
     num_envs: int = 1
     seed: int = 0
     device: str = "cuda:0"
-    image_shape: tuple[int, int, int] = (3, 84, 84)
+    image_shape: tuple[int, int, int] = POLICY_IMAGE_SHAPE
     proprio_dim: int = 40
     enable_cameras: bool = False
+    policy_camera_name: str = "wrist_cam"
+    policy_image_obs_key: str = "wrist_rgb"
+    debug_camera_name: str | None = "table_cam"
+    debug_image_obs_key: str | None = "table_rgb"
     gym_kwargs: dict[str, Any] = field(default_factory=dict)
     proprio_feature_groups: tuple[str, ...] = PROPRIO_FEATURE_GROUPS
 
@@ -48,12 +54,18 @@ class IsaacArmEnvConfig:
             raise ValueError("num_envs must be positive")
         if self.seed < 0:
             raise ValueError("seed must be non-negative")
-        if self.image_shape != (3, 84, 84):
-            raise ValueError("image_shape must be (3, 84, 84)")
+        if self.image_shape != POLICY_IMAGE_SHAPE:
+            raise ValueError(f"image_shape must be {POLICY_IMAGE_SHAPE}")
         if self.proprio_dim != 40:
             raise ValueError("formal Isaac proprio_dim must be 40")
         if self.proprio_feature_groups != PROPRIO_FEATURE_GROUPS:
             raise ValueError(f"proprio_feature_groups must be {PROPRIO_FEATURE_GROUPS!r}")
+        if not self.policy_camera_name:
+            raise ValueError("policy_camera_name must be non-empty")
+        if not self.policy_image_obs_key:
+            raise ValueError("policy_image_obs_key must be non-empty")
+        if (self.debug_camera_name is None) != (self.debug_image_obs_key is None):
+            raise ValueError("debug_camera_name and debug_image_obs_key must both be set or both be None")
 
 
 class IsaacArmEnv:
@@ -82,8 +94,14 @@ class IsaacArmEnv:
         # Injected test doubles don't expect it, so only set when using the real factory.
         if gym_make is None:
             kwargs.setdefault("device", self.config.device)
+            kwargs.setdefault("enable_cameras", self.config.enable_cameras)
+            kwargs.setdefault("policy_camera_name", self.config.policy_camera_name)
+            kwargs.setdefault("policy_image_obs_key", self.config.policy_image_obs_key)
+            kwargs.setdefault("debug_camera_name", self.config.debug_camera_name)
+            kwargs.setdefault("debug_image_obs_key", self.config.debug_image_obs_key)
         self._env = make(self.config.env_id, **kwargs)
         self._last_info: dict[str, Any] = {}
+        self._last_native_obs: Any | None = None
 
     @property
     def env_id(self) -> str:
@@ -104,6 +122,7 @@ class IsaacArmEnv:
     def reset(self, seed: int | None = None) -> dict[str, np.ndarray]:
         reset_result = self._env.reset(seed=self.config.seed if seed is None else seed)
         native_obs, info = self._split_reset(reset_result)
+        self._last_native_obs = native_obs
         self._last_info = info
         return self._convert_observation(native_obs, info)
 
@@ -112,7 +131,8 @@ class IsaacArmEnv:
         action: np.ndarray | list[float] | tuple[float, ...],
     ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
         clipped = self._format_action(action)
-        native_obs, reward, terminated, truncated, info = self._env.step(clipped)
+        native_obs, reward, terminated, truncated, info = self._env.step(self._to_backend_action(clipped))
+        self._last_native_obs = native_obs
         self._last_info = info
         obs = self._convert_observation(native_obs, info)
         return (
@@ -129,6 +149,45 @@ class IsaacArmEnv:
             return self._prepare_render_frame(frame)
         raise RuntimeError("Underlying Isaac Lab env does not expose render(). Use camera observations instead.")
 
+    def get_debug_frame(self, camera_name: str | None = None) -> np.ndarray:
+        """Return a human-facing debug frame, separate from policy obs image."""
+
+        selected_camera = camera_name or self.config.debug_camera_name
+        if selected_camera is None or self.config.debug_image_obs_key is None:
+            raise RuntimeError("No debug camera is configured.")
+
+        get_debug_frame = getattr(self._env, "get_debug_frame", None)
+        if callable(get_debug_frame):
+            return self._prepare_render_frame(get_debug_frame(selected_camera))
+
+        render_debug = getattr(self._env, "render_debug", None)
+        if callable(render_debug):
+            return self._prepare_render_frame(render_debug(selected_camera))
+
+        debug_image = None
+        if self._last_native_obs is not None:
+            debug_image = self._find_first(self._last_native_obs, (self.config.debug_image_obs_key,))
+        if debug_image is None:
+            debug_image = self._find_first(self._last_info, (self.config.debug_image_obs_key,))
+        if debug_image is None:
+            raise KeyError(
+                f"Could not find debug image term {self.config.debug_image_obs_key!r} "
+                f"for camera {selected_camera!r}."
+            )
+        return self._prepare_render_frame(debug_image)
+
+    def get_policy_frame(self) -> np.ndarray:
+        """Return the native policy RGB frame before wrapper resizing."""
+
+        image = None
+        if self._last_native_obs is not None:
+            image = self._find_first(self._last_native_obs, (self.config.policy_image_obs_key,))
+        if image is None:
+            image = self._find_first(self._last_info, (self.config.policy_image_obs_key,))
+        if image is None:
+            raise KeyError(f"Could not find policy image term {self.config.policy_image_obs_key!r}.")
+        return self._prepare_render_frame(image)
+
     def close(self) -> None:
         close = getattr(self._env, "close", None)
         if callable(close):
@@ -143,18 +202,30 @@ class IsaacArmEnv:
             raise ValueError(f"action must have shape {expected} or (7,), got {clipped.shape}")
         return clipped
 
+    def _to_backend_action(self, action: np.ndarray) -> Any:
+        backend = getattr(self._env, "unwrapped", self._env)
+        device = getattr(backend, "device", getattr(self._env, "device", None))
+        if device is None:
+            return action
+        try:
+            import torch
+        except ModuleNotFoundError:
+            return action
+        return torch.as_tensor(action, dtype=torch.float32, device=device)
+
     def _convert_observation(self, native_obs: Any, info: dict[str, Any]) -> dict[str, np.ndarray]:
         image = self._extract_image(native_obs, info)
         proprio = self._extract_proprio(native_obs)
         return {"image": image, "proprio": proprio}
 
     def _extract_image(self, native_obs: Any, info: dict[str, Any]) -> np.ndarray:
-        image = self._find_first(native_obs, ("image", "rgb", "wrist_rgb", "front_rgb", "camera"))
+        image_key = self.config.policy_image_obs_key
+        image = self._find_first(native_obs, (image_key,))
         if image is None:
-            image = self._find_first(info, ("image", "rgb", "wrist_rgb", "front_rgb", "camera"))
+            image = self._find_first(info, (image_key,))
         if image is None:
             raise KeyError(
-                "Could not find RGB image in Isaac observation/info. "
+                f"Could not find policy RGB image term {image_key!r} in Isaac observation/info. "
                 "Ensure the task config exposes a camera term and Isaac Sim was launched with --enable_cameras."
             )
         return self._prepare_image(image)
@@ -175,17 +246,20 @@ class IsaacArmEnv:
             "gripper_finger_vel": self._required(native_obs, "gripper_finger_vel"),
             "ee_pos_base": self._required(native_obs, "ee_pos_base"),
             "cube_pos_base": self._find_first(native_obs, ("cube_pos_base", "object_position")),
-            "target_pos_base": self._find_first(native_obs, ("target_pos_base", "target_object_position")),
             "previous_action": self._find_first(native_obs, ("previous_action", "actions")),
         }
+        target_pos_base = self._find_first(native_obs, ("target_pos_base",))
+        if target_pos_base is None:
+            target_pos_base = self._find_first(native_obs, ("target_object_position",))
         if required["cube_pos_base"] is None:
             raise KeyError("Could not find cube position term: expected cube_pos_base or object_position")
-        if required["target_pos_base"] is None:
+        if target_pos_base is None:
             raise KeyError("Could not find target position term: expected target_pos_base or target_object_position")
         if required["previous_action"] is None:
             raise KeyError("Could not find previous action term: expected previous_action or actions")
 
         arrays = {key: self._as_2d_float(value) for key, value in required.items()}
+        arrays["target_pos_base"] = self._prepare_target_position(target_pos_base)
         ee_to_cube = arrays["cube_pos_base"] - arrays["ee_pos_base"]
         cube_to_target = arrays["target_pos_base"] - arrays["cube_pos_base"]
         proprio = np.concatenate(
@@ -206,6 +280,14 @@ class IsaacArmEnv:
         if proprio.shape != (self.config.num_envs, self.config.proprio_dim):
             raise ValueError(f"proprio must have shape ({self.config.num_envs}, 40), got {proprio.shape}")
         return proprio
+
+    def _prepare_target_position(self, value: Any) -> np.ndarray:
+        target = self._as_2d_float(value)
+        if target.shape[1] == 7:
+            return target[:, :3]
+        if target.shape[1] != 3:
+            raise ValueError(f"target position must have 3 dims or 7D pose, got shape {target.shape}")
+        return target
 
     def _prepare_image(self, image: Any) -> np.ndarray:
         image_array = self._to_numpy(image)
@@ -230,8 +312,9 @@ class IsaacArmEnv:
             raise ValueError(f"image must have {target_channels} channels, got {channels}")
         if (height, width) != (target_height, target_width):
             image_array = self._resize_chw_batch(image_array, target_height, target_width)
-        if image_array.shape != (self.config.num_envs, *self.config.image_shape):
-            raise ValueError(f"image must have shape ({self.config.num_envs}, 3, 84, 84), got {image_array.shape}")
+        expected_shape = (self.config.num_envs, *self.config.image_shape)
+        if image_array.shape != expected_shape:
+            raise ValueError(f"image must have shape {expected_shape}, got {image_array.shape}")
         return image_array
 
     def _prepare_proprio_array(self, proprio: Any) -> np.ndarray:
@@ -333,8 +416,25 @@ class IsaacArmEnv:
             # num_envs must be resolved before calling parse_env_cfg so the
             # physics scene is sized correctly at construction time.
             device = kwargs.pop("device", "cuda:0")
+            enable_cameras = kwargs.pop("enable_cameras", False)
+            policy_camera_name = kwargs.pop("policy_camera_name", "wrist_cam")
+            policy_image_obs_key = kwargs.pop("policy_image_obs_key", "wrist_rgb")
+            debug_camera_name = kwargs.pop("debug_camera_name", "table_cam")
+            debug_image_obs_key = kwargs.pop("debug_image_obs_key", "table_rgb")
             num_envs = kwargs.get("num_envs", 1)
-            env_cfg = parse_env_cfg(env_id, device=device, num_envs=num_envs)
+            if enable_cameras:
+                env_cfg = make_camera_enabled_franka_lift_cfg(
+                    env_id=env_id,
+                    device=device,
+                    num_envs=num_envs,
+                    policy_camera_name=policy_camera_name,
+                    policy_image_obs_key=policy_image_obs_key,
+                    debug_camera_name=debug_camera_name,
+                    debug_image_obs_key=debug_image_obs_key,
+                    parse_env_cfg_fn=parse_env_cfg,
+                )
+            else:
+                env_cfg = parse_env_cfg(env_id, device=device, num_envs=num_envs)
             kwargs.setdefault("cfg", env_cfg)
             return gym.make(env_id, **kwargs)
 

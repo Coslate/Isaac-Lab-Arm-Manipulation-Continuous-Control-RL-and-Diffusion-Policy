@@ -89,7 +89,7 @@ The policy receives a dictionary:
 
 ```python
 obs_dict = {
-    "image":   uint8 array,   # shape: (num_envs, 3, 84, 84), wrist RGB image
+    "image":   uint8 array,   # shape: (num_envs, 3, 224, 224), wrist RGB image
     "proprio": float32 array, # shape: (num_envs, proprio_dim)
 }
 ```
@@ -249,7 +249,7 @@ The policy image must come from a camera attached to the robot wrist/end-effecto
 Implementation requirements:
 - Add `wrist_cam` to the customized Isaac Lab `env_cfg`, attached under the Franka hand/end-effector prim, for example under `Robot/panda_hand`.
 - Add a policy RGB observation term using `mdp.image` / `SceneEntityCfg("wrist_cam")`.
-- Keep the wrapper's public policy image as `obs["image"]` with shape `(num_envs, 3, 84, 84)` and dtype `uint8`.
+- Keep the wrapper's public policy image as `obs["image"]` with shape `(num_envs, 3, 224, 224)` and dtype `uint8`.
 - Keep `--enable_cameras` as a hard runtime requirement for camera observations.
 - Do not assume the stock env's camera mode adds this term; the customized config must add the camera sensor and the observation term explicitly.
 
@@ -273,6 +273,43 @@ Recommended debug design:
 - If debug frames are stored in an HDF5 rollout file, store them under a clearly separate key such as `debug_images`, never under the training `images` key.
 
 This separation keeps the project realistic: the robot policy uses the wrist camera, while the fixed camera acts like a lab recording camera for humans.
+
+### 3.2.3 Image Augmentation Contract
+
+Augmentation is applied in the **training pipeline**, not in the env wrapper. The wrapper always produces a deterministic 224×224 image.
+
+Three-tier contract:
+
+```text
+Env wrapper     : native (e.g. 400×400) → deterministic resize → 224×224  (obs contract, no randomness)
+Training aug    : 224×224 → pad 8 px → random crop 224×224                 (primary, DrQ/RAD-style)
+Eval/GIF/smoke  : no augmentation
+```
+
+Rationale for keeping augmentation out of the wrapper:
+- Random crop inside `env.step()` breaks reproducibility: same simulator state → different `obs["image"]`.
+- Direct 400×400 → random 224×224 crop retains only 56 % of image area, risking removal of gripper or cube from frame.
+- Pad + random crop with `pad ≤ 16 px` provides small translation variance without discarding task-relevant content.
+
+Implementation: `utils/image_aug.py` provides:
+
+| Class | Input | Use |
+|---|---|---|
+| `PadAndRandomCrop(pad=8)` | `(B, 3, 224, 224)` wrapper output | Primary training aug |
+| `CenterBiasedResizedCrop(min_scale=0.75)` | `(B, 3, H, W)` native resolution | Alternative; requires dataset to store native-res images |
+| `IdentityAug()` | any | Eval, GIF, smoke |
+
+Factory helpers: `make_train_aug(mode="pad_crop"|"resized_crop")` and `make_eval_aug()`.
+
+When `CenterBiasedResizedCrop` is used as the training aug, eval should fix `scale=1.0` (center resize) to minimise the train/eval distribution gap.
+
+Test command:
+
+```bash
+pytest tests/test_image_aug.py -v
+```
+
+Known result: `24 passed`.
 
 ### 3.3 Action space: 6D arm + 1D gripper
 
@@ -387,7 +424,7 @@ oracle_action = sac_agent.act(obs_dict, deterministic=True)
 
 ```text
 ImageEncoder:
-  image (B, 3, 84, 84)
+  image (B, 3, 224, 224)
   -> CNN
   -> image_feat (B, 256)
 
@@ -447,7 +484,7 @@ Training target:
 
 ```text
 actions: (B, H, 7)
-images:  (B, T_obs, 3, 84, 84)
+images:  (B, T_obs, 3, 224, 224)
 proprio: (B, T_obs, proprio_dim)
 ```
 
@@ -774,7 +811,7 @@ Define the stable project observation API:
 
 ```python
 obs = {
-    "image": ...,    # (num_envs, 3, 84, 84), uint8
+    "image": ...,    # (num_envs, 3, 224, 224), uint8
     "proprio": ...,  # (num_envs, 40), float32
 }
 ```
@@ -783,7 +820,7 @@ PR2 is the local/unit-tested wrapper contract. It lets project code call `reset(
 
 **Implementation**
 - Implement `IsaacArmEnv` wrapper around the configured Isaac Lab environment.
-- Return batched observations with image shape `(num_envs, 3, 84, 84)`.
+- Return batched observations with image shape `(num_envs, 3, 224, 224)`.
 - Return `proprio` as float32 with config-driven `proprio_dim`.
 - Define a stable 40D proprio feature order and expose it in config:
 
@@ -831,13 +868,14 @@ PR2 is the local/unit-tested wrapper contract. It lets project code call `reset(
 - Verify done/truncated arrays have shape `(num_envs,)`.
 - Verify camera errors are readable.
 
-PR2's current 13 passing tests cover shape/dtype/derived-feature assembly using a 3D injected `target_object_position` and a `wrist_rgb` image key. They **do not yet cover**:
+PR2's original 13 passing tests covered shape/dtype/derived-feature assembly using an injected observation and a `wrist_rgb` image key. PR2.5 has now added the missing wrapper regressions:
 
-- a 7D stock `target_object_position` (3D pos + 4D quat) being sliced to its `[:, :3]` position component — add this regression inside PR2.5 before the live smoke.
-- explicit rejection of a flat `(num_envs, 35)` stock tensor — add a shape-failure test inside PR2.5.
-- a non-wrist/debug camera key being refused as the policy image when `policy_camera_name` / `policy_image_obs_key` are configured — add once those config fields exist.
+- a 7D stock `target_object_position` / command pose is sliced to its `[:, :3]` position component;
+- a flat `(num_envs, 35)` stock tensor is rejected instead of padded or sliced into 40D;
+- debug/generic camera keys are refused as policy image input when `policy_image_obs_key` is configured;
+- live Isaac actions are converted to torch tensors for the real backend.
 
-Treat "PR2 = 13 passed" as the unit-test contract baseline, not as full invariant coverage.
+Current wrapper regression result: `conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -q` -> `18 passed`.
 
 **Boundary With PR2.5**
 
@@ -960,7 +998,7 @@ timeout 240s conda run -n isaac_arm python -m scripts.isaac_runtime_smoke \
 
 - Add a dedicated live camera observation smoke that verifies:
   - `wrist_cam` RGB term exists.
-  - wrapper returns `image.shape == (1, 3, 84, 84)`.
+  - wrapper returns `image.shape == (1, 3, 224, 224)`.
   - wrapper returns `proprio.shape == (1, 40)`.
   - image dtype is `uint8`.
   - pixel variance is nonzero.
@@ -1175,7 +1213,7 @@ Collect SAC expert demonstrations in an episode-safe format for Diffusion Policy
 - Verify metadata includes action_dim, action_horizon, obs_history, env_id, and seed.
 - Verify sampled windows never cross `done` or `truncated`.
 - Verify action chunks have shape `(H, 7)`.
-- Verify observation histories have shape `(T_obs, 3, 84, 84)` and `(T_obs, proprio_dim)`.
+- Verify observation histories have shape `(T_obs, 3, 224, 224)` and `(T_obs, proprio_dim)`.
 
 **Pytest**
 
@@ -1343,7 +1381,7 @@ git commit -m "feat(viz): add rollout GIFs and comparison plots"
 | PR 0 | Project scaffold | `pytest tests/test_project_scaffold.py -v` | `chore: scaffold Isaac Lab manipulation project` |
 | PR 1 | IK-relative Franka task + 7D action | `conda run -n isaac_arm python -m pytest tests/test_task_contract.py -v` | `feat(env): add Franka IK-relative lift task config` |
 | PR 2 | Image-proprio observation wrapper | `conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v` | `feat(env): add image-proprio observation wrapper` |
-| PR 2.5 | Camera-enabled Franka lift cfg | `pytest tests/test_camera_enabled_env_cfg.py -v` (test file created by PR2.5; not runnable today) | `feat(env): add camera-enabled Franka lift cfg` |
+| PR 2.5 | Camera-enabled Franka lift cfg | `conda run -n isaac_arm python -m pytest tests/test_camera_enabled_env_cfg.py -v` plus live camera smoke | `feat(env): add camera-enabled Franka lift cfg` |
 | PR 3 | Shared backbone | `pytest tests/test_nn_backbone.py -v` | `feat(model): add image-proprio fusion backbone` |
 | PR 4 | PPO baseline | `pytest tests/test_ppo_continuous.py -v` | `feat(rl): add continuous PPO baseline` |
 | PR 5 | Pure GRPO baseline | `pytest tests/test_grpo_continuous.py -v` | `feat(rl): add pure GRPO baseline` |
@@ -1413,7 +1451,24 @@ conda run -n isaac_arm python -m pytest \
   -v
 ```
 
-`tests/test_camera_enabled_env_cfg.py` is created by PR2.5; the command above is the intended command once PR2.5 is merged, and is not runnable in the current tree.
+`tests/test_camera_enabled_env_cfg.py` is now part of PR2.5 and passes in `isaac_arm`.
+
+Dedicated live PR2.5 camera smoke:
+
+```bash
+timeout 360s conda run -n isaac_arm python -m scripts.isaac_camera_observation_smoke \
+  --steps 1 \
+  --output-dir out/camera_smoke
+```
+
+Known result:
+
+```text
+status: ok
+obs["image"]:   (1, 3, 224, 224), uint8
+obs["proprio"]: (1, 40), float32
+debug table_rgb: (720, 1280, 3), uint8
+```
 
 Camera runtime verification must prove that the customized cfg produces an RGB observation term. A successful stock `--enable_cameras` smoke with only `policy: (num_envs, 35)` is not sufficient.
 
