@@ -35,6 +35,7 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 | Runtime env | Stock task camera observation | Blocked | Confirmed 2026-04-19: stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` still exposes only `policy` obs with shape `(num_envs, 35)` in camera mode. `--enable-cameras` enables rendering but does not add RGB observation terms. |
 | PR 2.5 | Camera-enabled Franka lift cfg | Done | Keeps the same IK-relative lift task, customizes `env_cfg` before `gym.make()` to add `wrist_cam`, optional `table_cam`, named 40D proprio terms, and has a live camera smoke result. |
 | Image aug | `utils/image_aug.py` | Done | Three-tier contract: wrapper = deterministic resize; training = `PadAndRandomCrop` (primary) or `CenterBiasedResizedCrop` (alternative); eval/GIF/smoke = `IdentityAug`. Utility layer and tests are done; wiring the aug into future trainers/loaders is owned by later training PRs. |
+| PR 8-pre | Demo policies | Done | Adds the lightweight demo policy interface plus RandomPolicy and HeuristicPolicy so rollout collection has policies to call. HDF5-backed ReplayPolicy is deferred until PR 8-lite defines the episode dataset schema. |
 | PR 8-lite | Rollout dataset | Pending | Store rollouts by episode so future action chunks never cross episode boundaries. |
 | PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
 | PR 12-lite | GIF output | Pending | Save visual rollout GIFs from a fixed debug camera, while policy/dataset images come from wrist camera. |
@@ -94,7 +95,7 @@ Current full local test result:
 
 ```text
 conda run -n isaac_arm python -m pytest -q -rs
-66 passed, 1 skipped
+76 passed, 1 skipped
 skipped: tests/test_isaac_runtime_smoke.py requires RUN_ISAAC_RUNTIME_SMOKE=1 to launch Isaac Sim / Isaac Lab
 ```
 
@@ -114,6 +115,7 @@ Do now:
 - PR 1 Task/action contract
 - PR 2 Formal Isaac Lab observation wrapper
 - PR 2.5 Camera-enabled Franka lift cfg
+- PR 8-pre Demo policies
 - PR 8-lite Rollout dataset
 - PR 11-lite Evaluation metrics
 - PR 12-lite GIF output
@@ -646,11 +648,42 @@ Known result: `24 passed`.
 
 ---
 
-## 8. Policies For The Demo
+## 8. PR 8-pre - Demo Policies
 
-**Status:** Pending
+**Status:** Done
 
-The demo only needs three lightweight policies.
+Implemented in:
+
+```text
+policies/__init__.py
+policies/base.py
+policies/random_policy.py
+policies/heuristic_policy.py
+tests/test_demo_policies.py
+```
+
+Known result:
+
+```text
+conda run -n isaac_arm python -m pytest tests/test_demo_policies.py -v
+10 passed
+```
+
+**Goal / Why**
+
+Define the lightweight policy interface used by the demo collector and evaluator before implementing the episode dataset. This PR provides policies that can be called as:
+
+```python
+action = policy.act(obs)
+```
+
+The action contract remains the project-wide normalized 7D action:
+
+```text
+[dx, dy, dz, droll, dpitch, dyaw, gripper]
+```
+
+PR 8-pre owns the base policy interface, RandomPolicy, and HeuristicPolicy. HDF5-backed ReplayPolicy is deferred until after PR 8-lite, because replay needs the finalized episode dataset schema.
 
 ### RandomPolicy
 
@@ -663,6 +696,7 @@ Purpose:
 - Baseline.
 - Verifies action handling.
 - Verifies dataset/eval/GIF pipeline works.
+- Serves as the first end-to-end policy once rollout collection exists.
 
 ### HeuristicPolicy
 
@@ -680,9 +714,9 @@ Purpose:
 - Should be easier to interpret than random in the formal Isaac env.
 - Produces a more meaningful GIF for interview discussion.
 
-### ReplayPolicy
+### Deferred ReplayPolicy
 
-Reads actions from a saved dataset and replays them.
+ReplayPolicy reads actions from a saved dataset and replays them. It is useful, but it should be implemented after PR 8-lite defines and tests the HDF5 episode dataset.
 
 Purpose:
 
@@ -701,12 +735,19 @@ output: data/replay_from_heuristic_rollouts.h5  # optional, but recommended
 
 The replay dataset output is optional because the policy already consumes a dataset. It is recommended for the demo because it proves replay uses the same collector/evaluator path as random and heuristic.
 
+ReplayPolicy suggested file, after PR 8-lite:
+
+```text
+policies/replay_policy.py
+```
+
 **Suggested Files**
 
 ```text
+policies/__init__.py
+policies/base.py
 policies/random_policy.py
 policies/heuristic_policy.py
-policies/replay_policy.py
 tests/test_demo_policies.py
 ```
 
@@ -718,16 +759,20 @@ conda run -n isaac_arm python -m pytest tests/test_demo_policies.py -v
 
 **What To Test**
 
-- Every policy returns shape `(7,)`.
+- Base policy interface documents `act(obs) -> action`.
+- RandomPolicy returns shape `(7,)`.
+- HeuristicPolicy returns shape `(7,)`.
 - Actions are finite.
 - Actions are clipped to `[-1, 1]`.
+- RandomPolicy is deterministic when constructed with a fixed seed.
+- Heuristic policy commands open when far from the cube.
 - Heuristic policy eventually commands close when near the cube.
-- Replay policy returns actions in saved order and handles end-of-episode cleanly.
+- Heuristic policy commands lift/upward motion after close/grasp conditions.
 
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(policy): add random heuristic and replay demo policies"
+git commit -m "feat(policy): add random and heuristic demo policies"
 ```
 
 ---
@@ -735,6 +780,11 @@ git commit -m "feat(policy): add random heuristic and replay demo policies"
 ## 9. PR 8-lite - Rollout Dataset
 
 **Status:** Pending
+
+**Depends On**
+
+- PR 8-pre demo policy interface.
+- The collector assumes policies expose `act(obs) -> action`.
 
 **Goal / Why**
 
@@ -1031,17 +1081,13 @@ git commit -m "feat(demo): add one-command robotics data loop"
 
 ## 13. Recommended Implementation Order
 
-Finish in this order:
+Finish the remaining demo slice in this order:
 
-1. One-command script skeleton.
-2. Formal Isaac env wrapper.
-3. Camera-enabled Franka lift cfg with wrist policy camera and debug camera.
-4. Random and heuristic policies.
-5. Metrics JSON.
-6. GIF output from debug camera.
-7. Episode dataset with wrist policy images.
-8. Replay policy.
-9. Tests.
+1. PR 8-lite: Episode-safe rollout dataset and collector.
+2. PR 11-lite: Evaluation metrics JSON.
+3. PR 12-lite: GIF output from the fixed debug camera.
+4. ReplayPolicy over saved rollout datasets.
+5. Demo PR: One-command data loop.
 
 If time is tight:
 
@@ -1132,7 +1178,7 @@ conda run -n isaac_arm python -m pytest \
   -v
 ```
 
-Of the demo-slice test files listed in the command above, only `test_project_scaffold.py`, `test_task_contract.py`, and `test_observation_wrapper.py` exist today. The repository also has separate Isaac installation/runtime smoke tests. The other six demo-slice files are created by their owning PRs (PR2.5 and the lite PRs above). The command is the full intended invocation after the demo slice is implemented; running it in the current tree will error on missing files.
+Of the demo-slice test files listed in the command above, `test_project_scaffold.py`, `test_task_contract.py`, `test_observation_wrapper.py`, `test_camera_enabled_env_cfg.py`, and `test_demo_policies.py` exist today. The repository also has separate Isaac installation/runtime smoke tests and `tests/test_image_aug.py` for the completed image augmentation utility. The remaining demo-slice files are created by the lite PRs above. The command is the full intended invocation after the demo slice is implemented; running it in the current tree will error on missing files until those PRs land.
 
 ---
 

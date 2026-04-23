@@ -13,7 +13,7 @@ from utils import ensure_output_dirs, set_global_seed
 
 
 def test_package_imports() -> None:
-    for module_name in ("agents", "configs", "dataset", "env", "eval", "scripts", "train", "utils"):
+    for module_name in ("agents", "configs", "dataset", "env", "eval", "policies", "scripts", "train", "utils"):
         module = importlib.import_module(module_name)
         assert module is not None
 

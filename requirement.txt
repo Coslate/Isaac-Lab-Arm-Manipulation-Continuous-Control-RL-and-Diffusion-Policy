@@ -5,12 +5,16 @@
 #
 # Or manually:
 #   pip install -r ./requirement.txt
-#   pip install -e <isaaclab-pkg>/source/isaaclab_assets
-#   pip install -e <isaaclab-pkg>/source/isaaclab_tasks
+#   ISAACLAB_SITE="$(python -m pip show isaaclab | awk -F': ' '/^Location:/ {print $2}')"
+#   pip install -e "${ISAACLAB_SITE}/isaaclab/source/isaaclab_assets"
+#   pip install -e "${ISAACLAB_SITE}/isaaclab/source/isaaclab_tasks"
 #
 # The two editable installs are not reachable from this file because they point
 # into the `isaaclab` wheel's own `source/` subdirectory after install; the
 # helper script resolves the path automatically.
+# Use `python -m pip show isaaclab` to locate the installed wheel instead of
+# `import isaaclab`: importing `isaaclab` may bootstrap Omniverse Kit and ask
+# for the NVIDIA EULA in non-interactive shells.
 #
 # Verified on:
 #   Ubuntu 24.04 (in Docker on WSL2)
@@ -18,13 +22,7 @@
 #   Docker run flags: --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all
 #                     -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y
 
---extra-index-url https://download.pytorch.org/whl/cu126
 --extra-index-url https://pypi.nvidia.com/simple
-
-# PyTorch (cu126). Pinned to 2.7 for Isaac Sim 5.1 compatibility.
-torch==2.7.0+cu126
-torchvision==0.22.0+cu126
-torchaudio==2.7.0+cu126
 
 # Project runtime deps (kept minimal; transitive deps pulled by pip).
 numpy==1.26.0
@@ -34,8 +32,14 @@ Pillow==11.3.0
 pytest==9.0.3
 
 # Isaac Sim 5.1 — the `[all]` extra pulls all 26 isaacsim-* sub-packages.
-isaacsim[all]==5.1.0.0
+#isaacsim[all]==5.1.0.0
 
 # Isaac Lab 2.3.2. Editable install of its `source/isaaclab_assets` and
 # `source/isaaclab_tasks` sub-packages is done by scripts/install_isaac.sh.
-isaaclab==2.3.2.post1
+#isaaclab==2.3.2.post1
+
+isaaclab[isaacsim,all]==2.3.2.post1
+
+#Use following commands to install:
+#pip install -r requirement.txt
+#pip install -U torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128

@@ -11,7 +11,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "[install_isaac] pip install -r ${REPO_ROOT}/requirement.txt"
 pip install -r "${REPO_ROOT}/requirement.txt"
 
-ISAACLAB_DIR="$(python -c 'import isaaclab, os; print(os.path.dirname(isaaclab.__file__))')"
+ISAACLAB_SITE="$(python -m pip show isaaclab | awk -F': ' '/^Location:/ {print $2}')"
+if [[ -z "${ISAACLAB_SITE}" ]]; then
+  echo "[install_isaac] ERROR: could not locate isaaclab with python -m pip show" >&2
+  exit 1
+fi
+ISAACLAB_DIR="${ISAACLAB_SITE}/isaaclab"
 echo "[install_isaac] isaaclab wheel installed at: ${ISAACLAB_DIR}"
 
 for subpkg in isaaclab_assets isaaclab_tasks; do
