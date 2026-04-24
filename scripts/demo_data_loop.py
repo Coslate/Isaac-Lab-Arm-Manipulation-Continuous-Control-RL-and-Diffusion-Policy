@@ -226,59 +226,42 @@ def _target_projection_payload(
     env: Any,
     debug_camera_name: str | None,
 ) -> dict[str, Any]:
-    target_position = metrics.get("target_position_base_m")
     payload: dict[str, Any] = {
         "target_debug_camera_name": debug_camera_name,
-        "target_debug_pixel": None,
         "target_debug_pixel_by_episode": {},
-        "target_debug_pixel_visible": None,
         "target_debug_pixel_visible_by_episode": {},
         "target_debug_pixel_source": "not_available",
     }
-    if target_position is None:
-        payload["target_debug_pixel_source"] = "not_available_no_target_position"
+    episode_targets = metrics.get("target_positions_base_m_by_episode", {})
+    if not isinstance(episode_targets, dict) or not episode_targets:
+        payload["target_debug_pixel_source"] = "not_available_no_episode_targets"
         return payload
     project = getattr(env, "project_base_point_to_debug_pixel", None)
     if not callable(project):
         payload["target_debug_pixel_source"] = "not_available_no_debug_camera_projection_api"
         return payload
-    try:
-        projection = project(target_position, camera_name=debug_camera_name, env_index=0)
-    except Exception as exc:
-        payload["target_debug_pixel_source"] = f"projection_failed:{type(exc).__name__}"
-        payload["target_debug_pixel_error"] = str(exc)
-        return payload
-    if not projection:
-        payload["target_debug_pixel_source"] = "not_available_projection_returned_none"
-        return payload
-
-    payload["target_debug_pixel_source"] = str(projection.get("source", "debug_camera_projection"))
-    payload["target_debug_camera_name"] = projection.get("camera_name", debug_camera_name)
-    payload["target_debug_pixel"] = projection.get("pixel")
-    payload["target_debug_pixel_visible"] = projection.get("visible")
-    if "pixel_float" in projection:
-        payload["target_debug_pixel_float"] = projection["pixel_float"]
-    if "depth_m" in projection:
-        payload["target_debug_depth_m"] = projection["depth_m"]
-    if "image_shape" in projection:
-        payload["target_debug_image_shape"] = projection["image_shape"]
-    if "point_world_m" in projection:
-        payload["target_position_world_m"] = projection["point_world_m"]
-    if "point_camera_m" in projection:
-        payload["target_position_debug_camera_m"] = projection["point_camera_m"]
-    if "reason" in projection:
-        payload["target_debug_pixel_reason"] = projection["reason"]
-    episode_targets = metrics.get("target_positions_base_m_by_episode", {})
-    if isinstance(episode_targets, dict):
-        for episode_key, episode_target in episode_targets.items():
-            try:
-                episode_projection = project(episode_target, camera_name=debug_camera_name, env_index=0)
-            except Exception:
-                continue
-            if not episode_projection:
-                continue
-            payload["target_debug_pixel_by_episode"][episode_key] = episode_projection.get("pixel")
-            payload["target_debug_pixel_visible_by_episode"][episode_key] = episode_projection.get("visible")
+    projection_error: Exception | None = None
+    for episode_key, episode_target in episode_targets.items():
+        try:
+            episode_projection = project(episode_target, camera_name=debug_camera_name, env_index=0)
+        except Exception as exc:
+            projection_error = exc
+            continue
+        if not episode_projection:
+            continue
+        if not payload["target_debug_pixel_by_episode"]:
+            payload["target_debug_pixel_source"] = str(episode_projection.get("source", "debug_camera_projection"))
+            payload["target_debug_camera_name"] = episode_projection.get("camera_name", debug_camera_name)
+            if "image_shape" in episode_projection:
+                payload["target_debug_image_shape"] = episode_projection["image_shape"]
+        payload["target_debug_pixel_by_episode"][episode_key] = episode_projection.get("pixel")
+        payload["target_debug_pixel_visible_by_episode"][episode_key] = episode_projection.get("visible")
+    if not payload["target_debug_pixel_by_episode"]:
+        if projection_error is not None:
+            payload["target_debug_pixel_source"] = f"projection_failed:{type(projection_error).__name__}"
+            payload["target_debug_pixel_error"] = str(projection_error)
+        else:
+            payload["target_debug_pixel_source"] = "not_available_projection_returned_none"
     return payload
 
 

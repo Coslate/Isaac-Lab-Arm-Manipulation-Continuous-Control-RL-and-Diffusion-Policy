@@ -1467,14 +1467,12 @@ Only `step` changes per GIF frame today. The other text fields summarize the met
 
 Current target metadata in the demo metrics JSON:
 
-- `target_position_base_m`: convenience summary target XYZ in the robot/base frame, currently `episode_000` step 0 from `proprio[:, 24:27]`.
-- `target_position_base_m_source`: exact provenance for the summary target, for example `episode_000_step_000_proprio_24_27`.
 - `target_positions_base_m_by_episode`: first target XYZ per saved HDF5 episode.
 - `target_position_constant_by_episode`: true when every episode's target stays constant over its recorded steps.
-- `target_debug_pixel`: projected first target pixel in the fixed debug-camera frame when the live wrapper can read camera intrinsics/extrinsics.
 - `target_debug_pixel_by_episode`: projected target pixel per episode when available.
-- `target_debug_pixel_visible`: whether the first projected target lands inside the debug image.
 - `target_debug_pixel_source`: `debug_camera_projection` when projection succeeded, or a `not_available...` / `projection_failed...` reason when it did not.
+
+The metrics intentionally do not expose single-target summary target/pixel fields, because target positions can differ by episode. Use the per-episode maps instead.
 
 Current target reticle overlay:
 
@@ -1861,14 +1859,10 @@ Metrics JSON fields:
 - `closest_target_approach_by_episode`: per-episode closest approach diagnostics. Each entry records `closest_step`, `closest_distance_m`, `closest_cube_position_base_m`, `target_position_base_m_at_closest_step`, `cube_to_target_base_m_at_closest_step`, `success`, and `success_source`.
 - `mean_episode_length`: average recorded transition count per episode, after settle warmup.
 - `mean_action_jerk`: mean norm of first action differences; lower means smoother commands.
-- `target_position_base_m`: convenience summary target XYZ in robot/base frame, currently `episode_000` step 0 from proprio slice `24:27`.
-- `target_position_base_m_source`: exact source of the summary value, for example `episode_000_step_000_proprio_24_27`.
 - `target_positions_base_m_by_episode`: per-episode first target XYZ in robot/base frame.
 - `target_position_constant_by_episode`: whether every episode's target remained constant across all recorded steps.
 - `target_debug_camera_name`: fixed debug camera used for target projection, usually `table_cam`.
-- `target_debug_pixel`: projected first target pixel `[u, v]` in the debug image, or `null` if projection was unavailable.
 - `target_debug_pixel_by_episode`: per-episode projected target pixel map when available.
-- `target_debug_pixel_visible`: whether `target_debug_pixel` is inside the debug camera frame.
 - `target_debug_pixel_source`: projection provenance or failure reason, for example `debug_camera_projection`.
 
 The expected story for the interview is: the HDF5 proves the data interface, the metrics JSON proves the evaluation loop, the GIF proves human-readable visual rollout inspection, and the debug PNGs make quick camera/source checks easy.

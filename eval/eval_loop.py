@@ -42,13 +42,9 @@ class EvalMetrics:
     success_distance_source: str = SUCCESS_DISTANCE_SOURCE
     episode_successes: dict[str, bool] = field(default_factory=dict)
     closest_target_approach_by_episode: dict[str, dict[str, Any]] = field(default_factory=dict)
-    target_position_base_m: list[float] | None = None
-    target_position_base_m_source: str | None = None
     target_positions_base_m_by_episode: dict[str, list[float]] = field(default_factory=dict)
     target_position_constant_by_episode: bool | None = None
     target_debug_camera_name: str | None = None
-    target_debug_pixel: list[int] | None = None
-    target_debug_pixel_visible: bool | None = None
     target_debug_pixel_source: str = "not_available"
 
     def as_dict(self) -> dict[str, Any]:
@@ -92,8 +88,6 @@ def evaluate_rollout_dataset(
     episode_lengths = np.asarray([episode_length(episode) for episode in episodes], dtype=np.float64)
     action_jerks = np.asarray([mean_action_jerk(episode.actions) for episode in episodes], dtype=np.float64)
     target_positions_by_episode = target_positions_by_episode_from_dataset(episode_keys, episodes)
-    first_target_position = next(iter(target_positions_by_episode.values()), None)
-    first_episode_key = next(iter(target_positions_by_episode), None)
 
     return EvalMetrics(
         policy_name=resolved_policy_name,
@@ -112,10 +106,6 @@ def evaluate_rollout_dataset(
             episodes,
             episode_successes=episode_successes_by_key,
             success_sources=success_sources_by_key,
-        ),
-        target_position_base_m=first_target_position,
-        target_position_base_m_source=(
-            None if first_episode_key is None else f"{first_episode_key}_step_000_proprio_24_27"
         ),
         target_positions_base_m_by_episode=target_positions_by_episode,
         target_position_constant_by_episode=target_position_constant_by_episode(episodes),

@@ -117,14 +117,10 @@ def test_demo_data_loop_creates_dataset_metrics_and_gif(tmp_path, policy: str) -
         "success_distance_source",
         "episode_successes",
         "closest_target_approach_by_episode",
-        "target_position_base_m",
-        "target_position_base_m_source",
         "target_positions_base_m_by_episode",
         "target_position_constant_by_episode",
         "target_debug_camera_name",
-        "target_debug_pixel",
         "target_debug_pixel_by_episode",
-        "target_debug_pixel_visible",
         "target_debug_pixel_visible_by_episode",
         "target_debug_pixel_source",
     } <= set(metrics)
@@ -133,12 +129,9 @@ def test_demo_data_loop_creates_dataset_metrics_and_gif(tmp_path, policy: str) -
     assert metrics["closest_target_approach_by_episode"]["episode_000"]["success"] is True
     assert metrics["closest_target_approach_by_episode"]["episode_000"]["closest_step"] >= 0
     assert metrics["closest_target_approach_by_episode"]["episode_000"]["closest_distance_m"] >= 0.0
-    assert metrics["target_position_base_m"] == pytest.approx([0.45, 0.0, 0.2])
-    assert metrics["target_position_base_m_source"] == "episode_000_step_000_proprio_24_27"
+    assert metrics["target_positions_base_m_by_episode"]["episode_000"] == pytest.approx([0.45, 0.0, 0.2])
     assert metrics["target_position_constant_by_episode"] is True
-    assert metrics["target_debug_pixel"] == [100, 32]
     assert metrics["target_debug_pixel_by_episode"] == {"episode_000": [100, 32]}
-    assert metrics["target_debug_pixel_visible"] is True
     assert metrics["target_debug_pixel_visible_by_episode"] == {"episode_000": True}
     assert metrics["target_debug_pixel_source"] == "debug_camera_projection"
 
