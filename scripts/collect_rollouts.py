@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -30,6 +30,7 @@ class _EpisodeBuffer:
     rewards: list[float] = field(default_factory=list)
     dones: list[bool] = field(default_factory=list)
     truncateds: list[bool] = field(default_factory=list)
+    successes: list[bool] = field(default_factory=list)
     raw_policy_images: list[np.ndarray] = field(default_factory=list)
     debug_images: list[np.ndarray] = field(default_factory=list)
 
@@ -121,6 +122,7 @@ def collect_rollout_episodes(
                 rewards = _as_batched_array(reward, num_envs, np.float32, "reward")
                 dones = _as_batched_array(terminated, num_envs, bool, "terminated")
                 truncateds = _as_batched_array(truncated, num_envs, bool, "truncated")
+                info_successes = _info_successes(_info, num_envs)
                 # Isaac Lab ManagerBasedRLEnv.step() auto-resets only the terminated lanes
                 # (see manager_based_rl_env.py reset_env_ids → _reset_idx). Siblings keep running,
                 # so we flush per-lane without touching neighbours.
@@ -130,6 +132,8 @@ def collect_rollout_episodes(
                     buffer.rewards.append(float(rewards[env_index]))
                     buffer.dones.append(done)
                     buffer.truncateds.append(trunc)
+                    if info_successes is not None:
+                        buffer.successes.append(bool(info_successes[env_index]))
                     if done or trunc:
                         if len(episodes) < num_episodes:
                             episodes.append(
@@ -432,6 +436,11 @@ def _buffer_to_episode(
         source_env_index=source_env_index,
         terminated_by=terminated_by,
     )
+    successes = None
+    if buffer.successes:
+        if len(buffer.successes) != len(buffer.rewards):
+            raise ValueError("info success must be present for every recorded transition in an episode")
+        successes = np.asarray(buffer.successes, dtype=bool)
     return EpisodeData(
         images=np.stack(buffer.images, axis=0).astype(np.uint8),
         proprios=np.stack(buffer.proprios, axis=0).astype(np.float32),
@@ -439,6 +448,7 @@ def _buffer_to_episode(
         rewards=np.asarray(buffer.rewards, dtype=np.float32),
         dones=np.asarray(buffer.dones, dtype=bool),
         truncateds=np.asarray(buffer.truncateds, dtype=bool),
+        successes=successes,
         raw_policy_images=(
             np.stack(buffer.raw_policy_images, axis=0).astype(np.uint8) if include_raw_policy_images else None
         ),
@@ -560,6 +570,38 @@ def _as_batched_array(value: Any, num_envs: int, dtype: Any, name: str) -> np.nd
     if array.shape != (num_envs,):
         raise ValueError(f"{name} must have shape ({num_envs},), got {array.shape}")
     return array
+
+
+def _info_successes(info: Any, num_envs: int) -> np.ndarray | None:
+    """Return per-env success flags from info when the env exposes them."""
+
+    for key in ("success", "is_success"):
+        if isinstance(info, Mapping) and key in info:
+            return _as_batched_array(_to_host_array(info[key]), num_envs, bool, f"info[{key!r}]")
+        if isinstance(info, (list, tuple)) and len(info) == num_envs:
+            values = []
+            for item in info:
+                if not isinstance(item, Mapping) or key not in item:
+                    values = []
+                    break
+                values.append(item[key])
+            if values:
+                return _as_batched_array(_to_host_array(values), num_envs, bool, f"info[{key!r}]")
+    return None
+
+
+def _to_host_array(value: Any) -> Any:
+    """Convert common tensor-like containers to CPU numpy-compatible values."""
+
+    if isinstance(value, (list, tuple)):
+        return [_to_host_array(item) for item in value]
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return value
 
 
 class _NoOpProgress:

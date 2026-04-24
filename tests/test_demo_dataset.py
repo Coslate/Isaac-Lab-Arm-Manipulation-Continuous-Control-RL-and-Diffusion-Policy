@@ -46,6 +46,7 @@ def _episode(
     length: int = 4,
     dones: np.ndarray | None = None,
     truncateds: np.ndarray | None = None,
+    successes: np.ndarray | None = None,
     raw_policy: bool = False,
     debug: bool = False,
     seed: int = 7,
@@ -74,6 +75,7 @@ def _episode(
         rewards=rewards,
         dones=dones,
         truncateds=truncateds,
+        successes=successes,
         raw_policy_images=raw_policy_images,
         debug_images=debug_images,
         metadata=_metadata(seed=seed),
@@ -98,6 +100,7 @@ def test_write_rollout_dataset_creates_episode_safe_hdf5_schema(tmp_path) -> Non
         assert group["rewards"].shape == (4,)
         assert group["dones"].shape == (4,)
         assert group["truncateds"].shape == (4,)
+        assert "successes" not in group
         assert group["raw_policy_images"].shape == (4, 400, 400, 3)
         assert group["debug_images"].shape == (4, 32, 48, 3)
         assert group["metadata"].attrs["policy_name"] == "heuristic"
@@ -141,6 +144,18 @@ def test_episode_metadata_round_trips_reset_round_and_reset_seed(tmp_path) -> No
     assert loaded.metadata["clean_demo_scene"] is True
     assert loaded.metadata["table_cleanup"] == "matte-overlay"
     assert loaded.metadata["min_clean_env_spacing"] == 6.0
+
+
+def test_episode_successes_are_optional_and_round_trip(tmp_path) -> None:
+    dataset_path = write_rollout_dataset(
+        tmp_path / "rollouts.h5",
+        [_episode(successes=np.array([False, True, False, False]))],
+    )
+
+    loaded = load_episode(dataset_path)
+
+    assert loaded.successes is not None
+    assert loaded.successes.tolist() == [False, True, False, False]
 
 
 def test_load_episode_omits_large_auxiliary_images_by_default(tmp_path) -> None:
@@ -250,6 +265,21 @@ class FakeRolloutEnv:
         return {"image": image, "proprio": proprio}
 
 
+class FakeInfoSuccessEnv(FakeRolloutEnv):
+    def step(self, action: np.ndarray) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, dict]:
+        assert action.shape == (7,)
+        self.step_index += 1
+        success = np.array([self.step_index == 2], dtype=bool)
+        done_this_step = self.step_index >= self.terminal_step
+        terminated = np.array([done_this_step], dtype=bool)
+        truncated = np.array([False], dtype=bool)
+        reward = np.array([float(self.step_index)], dtype=np.float32)
+        obs = self._obs()
+        if done_this_step:
+            self.step_index = 0
+        return obs, reward, terminated, truncated, {"success": success}
+
+
 class FakeVectorRolloutEnv:
     def __init__(self, num_envs: int = 3, terminal_step: int = 2) -> None:
         self.num_envs = num_envs
@@ -341,6 +371,24 @@ def test_collect_rollout_episodes_uses_policy_interface_and_debug_camera() -> No
         assert ep.metadata.clean_demo_scene is False
         assert ep.metadata.table_cleanup == "none"
         assert ep.metadata.min_clean_env_spacing == 5.0
+
+
+def test_collect_rollout_episodes_stores_optional_info_successes() -> None:
+    env = FakeInfoSuccessEnv(terminal_step=3)
+    policy = make_policy("random", seed=321)
+
+    episodes = collect_rollout_episodes(
+        env,
+        policy,
+        num_episodes=1,
+        max_steps=10,
+        seed=12,
+        env_backend="fake",
+    )
+
+    assert len(episodes) == 1
+    assert episodes[0].successes is not None
+    assert episodes[0].successes.tolist() == [False, True, False]
 
 
 class FakeStaggeredVecEnv:

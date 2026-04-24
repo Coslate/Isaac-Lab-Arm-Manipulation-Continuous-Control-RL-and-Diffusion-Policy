@@ -63,7 +63,7 @@ Isaac scripts already set `DISPLAY=:1` automatically when it is not present, so 
 | Image aug | `utils/image_aug.py` | Done | Three-tier contract: wrapper = deterministic resize; training = `PadAndRandomCrop` (primary) or `CenterBiasedResizedCrop` (alternative); eval/GIF/smoke = `IdentityAug`. Utility layer and tests are done; wiring the aug into future trainers/loaders is owned by later training PRs. |
 | PR 8-pre | Demo policies | Done | Adds the lightweight demo policy interface plus RandomPolicy and HeuristicPolicy so rollout collection has policies to call. HDF5-backed ReplayPolicy is deferred until PR 8-lite defines the episode dataset schema. |
 | PR 8-lite | Rollout dataset | Done | Stores rollouts by episode in HDF5, supports parallel env rollout collection by splitting each env into its own episode group, keeps resized wrist policy images separate from optional native-resolution wrist images and optional debug images, provides action-window sampling that never crosses done/truncated boundaries, and includes dataset inspection plus rollout-throughput benchmark helpers. Refactor 2026-04-24: renamed `--num-envs` → `--num-parallel-envs` (alias kept), metadata now records `reset_round` / `reset_seed` / `terminated_by`, per-lane collection no longer force-truncates sibling lanes when one lane ends early, and CLI collection shows a tqdm episode progress bar by default (`--no-progress` disables it). |
-| PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
+| PR 11-lite | Evaluation metrics | Done | `eval/eval_loop.py` computes return, project-level success, episode length, and action jerk from episode-safe rollout HDF5 files. Success uses stored `info["success"]` / `info["is_success"]` flags when present, otherwise falls back to the 40D proprio `cube_to_target` threshold because the stock Lift task does not expose an active success signal today. |
 | PR 12-lite | GIF output | Pending | Save visual rollout GIFs and sampled debug PNGs from a fixed debug camera, while policy/dataset images come from wrist camera. |
 | Demo PR | One-command script | Pending | One command creates dataset, metrics JSON, and GIF. |
 
@@ -1191,7 +1191,7 @@ git commit -m "feat(data): add episode-safe rollout dataset"
 
 ## 10. PR 11-lite - Evaluation Metrics
 
-**Status:** Pending
+**Status:** Done
 
 **Goal / Why**
 
@@ -1213,6 +1213,18 @@ jerk = mean(norm(action[t] - action[t - 1]))
 ```
 
 This is a simple smoothness proxy. Later the full project can use higher-order jerk based on acceleration changes if needed.
+
+Success for the lightweight demo has two sources, in priority order:
+
+1. If the rollout collector receives `info["success"]` or `info["is_success"]`, it stores those per-step flags as an optional HDF5 `successes` dataset and PR11 uses them first.
+2. If no explicit success flags exist, PR11 falls back to the camera-enabled wrapper's 40D proprio vector:
+
+```python
+cube_to_target = proprio[:, 30:33]
+success = any(norm(cube_to_target[t]) <= 0.02 for t in episode)
+```
+
+The JSON records `success_source` as `"info_success"` when explicit flags are used, `"proprio_cube_to_target_norm"` when the fallback is used, or `"mixed_info_success_and_proprio_cube_to_target_norm"` for mixed old/new datasets. It also records `success_threshold_m = 0.02` and `consecutive_success_steps = 1`. A stricter future run can require multiple consecutive success hits without changing the dataset schema. The fallback remains important because `Isaac-Lift-Cube-Franka-IK-Rel-v0` has a helper termination for reaching the goal, but the stock task config does not wire it as an active `success` termination/info field today.
 
 **Suggested Files**
 
@@ -1245,11 +1257,28 @@ conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v
   "mean_return": 0.0,
   "success_rate": 0.0,
   "mean_episode_length": 0.0,
-  "mean_action_jerk": 0.0
+  "mean_action_jerk": 0.0,
+  "success_threshold_m": 0.02,
+  "consecutive_success_steps": 1,
+  "success_source": "proprio_cube_to_target_norm"
 }
 ```
 
 Values above are placeholders. Tests should validate keys/types/ranges; live Isaac performance should be measured in an installed Isaac Lab runtime.
+
+Current implementation files:
+
+```text
+eval/eval_loop.py
+tests/test_eval_metrics.py
+```
+
+Verified:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -q
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py tests/test_demo_policies.py -q
+```
 
 **Suggested Commit**
 
@@ -1270,7 +1299,7 @@ Create the most interview-friendly artifact. Robotics failures are often easier 
 **Pipeline**
 
 ```text
-rollout debug frames -> save GIF + sampled debug PNGs -> optionally overlay policy/return/success/jerk
+rollout debug frames -> save GIF + sampled debug PNGs -> optionally overlay policy/return/success/jerk/target
 ```
 
 GIFs should use the fixed debug camera by default. The policy wrist camera is useful for learning and diagnostics, but it is narrow, moving, and may be hard for humans to interpret in a demo. The debug camera is the human-facing recorder.
@@ -1298,6 +1327,11 @@ save_gif(frames, out_path)
 ```
 
 The debug camera must not be passed to `policy.act()` and must not replace `obs["image"]`.
+
+The env does provide the target position through the camera-enabled proprio contract: `target_pos_base` is stored in proprio slice `24:27`, and `cube_to_target` is stored in slice `30:33`. PR12-lite can mark the target in GIFs in two levels:
+
+- Always available from saved datasets: overlay target XYZ, cube-to-target distance, and success state as text on debug frames.
+- Exact 2D reticle on the debug-camera image: requires projecting the 3D target point with the debug camera intrinsics/extrinsics or recording that projection during live rollout. Do this as a post-processing overlay for GIF/debug output only; do not re-enable Isaac debug visualizers or inject target markers into policy images.
 
 **Suggested Files**
 

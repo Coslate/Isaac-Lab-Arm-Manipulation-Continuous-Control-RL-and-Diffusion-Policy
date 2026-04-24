@@ -76,6 +76,7 @@ class EpisodeData:
     dones: np.ndarray
     truncateds: np.ndarray
     metadata: EpisodeMetadata | Mapping[str, Any]
+    successes: np.ndarray | None = None
     raw_policy_images: np.ndarray | None = None
     debug_images: np.ndarray | None = None
 
@@ -138,6 +139,7 @@ def load_episode(
         debug_images = None
         if include_debug_images and "debug_images" in group:
             debug_images = group["debug_images"][()]
+        successes = group["successes"][()].astype(bool) if "successes" in group else None
         return EpisodeData(
             images=group["images"][()],
             proprios=group["proprios"][()],
@@ -145,6 +147,7 @@ def load_episode(
             rewards=group["rewards"][()],
             dones=group["dones"][()].astype(bool),
             truncateds=group["truncateds"][()].astype(bool),
+            successes=successes,
             raw_policy_images=raw_policy_images,
             debug_images=debug_images,
             metadata=read_episode_metadata(group),
@@ -200,6 +203,8 @@ def _write_episode_group(h5_file: h5py.File, episode_index: int, episode: Episod
     group.create_dataset("rewards", data=arrays["rewards"])
     group.create_dataset("dones", data=arrays["dones"])
     group.create_dataset("truncateds", data=arrays["truncateds"])
+    if arrays["successes"] is not None:
+        group.create_dataset("successes", data=arrays["successes"])
     if arrays["raw_policy_images"] is not None:
         group.create_dataset("raw_policy_images", data=arrays["raw_policy_images"])
     if arrays["debug_images"] is not None:
@@ -221,6 +226,7 @@ def _validate_episode(episode: EpisodeData) -> tuple[dict[str, np.ndarray | None
     rewards = np.asarray(episode.rewards, dtype=np.float32)
     dones = np.asarray(episode.dones, dtype=bool)
     truncateds = np.asarray(episode.truncateds, dtype=bool)
+    successes = None if episode.successes is None else np.asarray(episode.successes, dtype=bool)
     raw_policy_images = None if episode.raw_policy_images is None else np.asarray(episode.raw_policy_images)
     debug_images = None if episode.debug_images is None else np.asarray(episode.debug_images)
 
@@ -238,6 +244,8 @@ def _validate_episode(episode: EpisodeData) -> tuple[dict[str, np.ndarray | None
     for name, array in (("rewards", rewards), ("dones", dones), ("truncateds", truncateds)):
         if array.shape != (episode_length,):
             raise ValueError(f"{name} must have shape ({episode_length},), got {array.shape}")
+    if successes is not None and successes.shape != (episode_length,):
+        raise ValueError(f"successes must have shape ({episode_length},), got {successes.shape}")
     if raw_policy_images is not None:
         if (
             raw_policy_images.ndim != 4
@@ -263,6 +271,7 @@ def _validate_episode(episode: EpisodeData) -> tuple[dict[str, np.ndarray | None
             "rewards": rewards,
             "dones": dones,
             "truncateds": truncateds,
+            "successes": successes,
             "raw_policy_images": raw_policy_images,
             "debug_images": debug_images,
         },
