@@ -24,6 +24,13 @@ from .eval_loop import (
     successful_steps_from_proprio,
     target_positions_from_proprio,
 )
+from .gif_recorder import (
+    GifRecordResult,
+    record_debug_gif,
+    sample_frame_indices,
+    save_gif,
+    save_sampled_debug_frames,
+)
 
 __all__ = [
     "CUBE_POS_BASE_SLICE",
@@ -48,4 +55,9 @@ __all__ = [
     "successful_steps_from_flags",
     "successful_steps_from_proprio",
     "target_positions_from_proprio",
+    "GifRecordResult",
+    "record_debug_gif",
+    "sample_frame_indices",
+    "save_gif",
+    "save_sampled_debug_frames",
 ]

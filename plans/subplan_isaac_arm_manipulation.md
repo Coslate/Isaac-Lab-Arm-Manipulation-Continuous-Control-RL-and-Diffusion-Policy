@@ -64,7 +64,7 @@ Isaac scripts already set `DISPLAY=:1` automatically when it is not present, so 
 | PR 8-pre | Demo policies | Done | Adds the lightweight demo policy interface plus RandomPolicy and HeuristicPolicy so rollout collection has policies to call. HDF5-backed ReplayPolicy is deferred until PR 8-lite defines the episode dataset schema. |
 | PR 8-lite | Rollout dataset | Done | Stores rollouts by episode in HDF5, supports parallel env rollout collection by splitting each env into its own episode group, keeps resized wrist policy images separate from optional native-resolution wrist images and optional debug images, provides action-window sampling that never crosses done/truncated boundaries, and includes dataset inspection plus rollout-throughput benchmark helpers. Refactor 2026-04-24: renamed `--num-envs` → `--num-parallel-envs` (alias kept), metadata now records `reset_round` / `reset_seed` / `terminated_by`, per-lane collection no longer force-truncates sibling lanes when one lane ends early, and CLI collection shows a tqdm episode progress bar by default (`--no-progress` disables it). |
 | PR 11-lite | Evaluation metrics | Done | `eval/eval_loop.py` computes return, project-level success, episode length, and action jerk from episode-safe rollout HDF5 files. Success uses stored `info["success"]` / `info["is_success"]` flags when present, otherwise falls back to the 40D proprio `cube_to_target` threshold because the stock Lift task does not expose an active success signal today. |
-| PR 12-lite | GIF output | Pending | Save visual rollout GIFs and sampled debug PNGs from a fixed debug camera, while policy/dataset images come from wrist camera. |
+| PR 12-lite | GIF output | Done | `eval/gif_recorder.py` saves fixed-debug-camera GIFs, sampled debug PNGs, and optional text overlays. `record_debug_gif()` drives `env + policy` while keeping policy observations on wrist images and GIF frames on the debug camera. |
 | Demo PR | One-command script | Pending | One command creates dataset, metrics JSON, and GIF. |
 
 PR0 verification command:
@@ -1290,7 +1290,7 @@ git commit -m "feat(eval): add rollout metrics for data-loop demo"
 
 ## 11. PR 12-lite - GIF Visual Output
 
-**Status:** Pending
+**Status:** Done
 
 **Goal / Why**
 
@@ -1340,6 +1340,13 @@ eval/gif_recorder.py
 tests/test_visual_outputs.py
 ```
 
+Current implementation:
+
+- `save_gif(frames, out_path, fps=...)` writes RGB frames to a GIF and creates missing parent directories.
+- `save_sampled_debug_frames(...)` writes evenly sampled debug PNGs such as `heuristic_ep000_step002_debug.png`.
+- `record_debug_gif(env, policy, ...)` runs one visual rollout, calls `policy.act(obs)` with the normal wrist-camera observation, and records frames only from `env.get_debug_frame(debug_camera_name)`.
+- Optional text overlays are post-processing only; they do not re-enable Isaac debug visualizers and do not touch `obs["image"]`.
+
 **Test Command**
 
 ```bash
@@ -1356,6 +1363,13 @@ conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py -v
 - GIF recorder can consume frames from `env.get_debug_frame(...)`.
 - Sampled debug PNG frames are saved from the same fixed debug camera stream.
 - Policy observations remain wrist-camera images while GIF frames come from the debug camera.
+
+Verified:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py -q
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py tests/test_observation_wrapper.py tests/test_demo_dataset.py tests/test_eval_metrics.py -q
+```
 
 **Suggested Commit**
 
