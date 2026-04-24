@@ -24,6 +24,23 @@ DEBUG_CAMERA_HORIZONTAL_APERTURE: float = 34.0
 DEBUG_CAMERA_CLIPPING_RANGE: tuple[float, float] = (0.1, 3.0)
 DEBUG_CAMERA_IMAGE_HEIGHT: int = 720
 DEBUG_CAMERA_IMAGE_WIDTH: int = 1280
+MIN_CLEAN_ENV_SPACING: float = 5.0
+TABLE_CLEANUP_NONE: str = "none"
+TABLE_CLEANUP_MATTE: str = "matte"
+TABLE_CLEANUP_OVERLAY: str = "overlay"
+TABLE_CLEANUP_MATTE_OVERLAY: str = "matte-overlay"
+TABLE_CLEANUP_CHOICES: tuple[str, ...] = (
+    TABLE_CLEANUP_NONE,
+    TABLE_CLEANUP_MATTE,
+    TABLE_CLEANUP_OVERLAY,
+    TABLE_CLEANUP_MATTE_OVERLAY,
+)
+DEMO_TABLE_DIFFUSE_COLOR: tuple[float, float, float] = (0.025, 0.025, 0.025)
+DEMO_TABLE_ROUGHNESS: float = 1.0
+DEMO_TABLE_METALLIC: float = 0.0
+DEMO_TABLETOP_OVERLAY_NAME: str = "demo_tabletop_matte_overlay"
+DEMO_TABLETOP_OVERLAY_POS: tuple[float, float, float] = (0.5, 0.0, 0.003)
+DEMO_TABLETOP_OVERLAY_SIZE: tuple[float, float, float] = (0.86, 0.86, 0.003)
 
 
 def target_position_from_command(env: Any, command_name: str = "object_pose") -> Any:
@@ -66,6 +83,9 @@ def make_camera_enabled_franka_lift_cfg(
     image_width: int = WRIST_CAMERA_IMAGE_WIDTH,
     debug_image_height: int = DEBUG_CAMERA_IMAGE_HEIGHT,
     debug_image_width: int = DEBUG_CAMERA_IMAGE_WIDTH,
+    clean_demo_scene: bool = False,
+    table_cleanup: str = TABLE_CLEANUP_NONE,
+    min_clean_env_spacing: float | None = MIN_CLEAN_ENV_SPACING,
     parse_env_cfg_fn: ParseEnvCfg | None = None,
 ) -> Any:
     """Build a Franka lift env cfg with wrist RGB and named 40D proprio terms."""
@@ -80,8 +100,14 @@ def make_camera_enabled_franka_lift_cfg(
         raise ValueError("policy_image_obs_key must be non-empty")
     if (debug_camera_name is None) != (debug_image_obs_key is None):
         raise ValueError("debug_camera_name and debug_image_obs_key must both be set or both be None")
+    if not isinstance(clean_demo_scene, bool):
+        raise ValueError("clean_demo_scene must be a bool")
+    resolved_table_cleanup = resolve_table_cleanup(table_cleanup, clean_demo_scene=clean_demo_scene)
+    if min_clean_env_spacing is not None and min_clean_env_spacing <= 0:
+        raise ValueError("min_clean_env_spacing must be positive or None")
 
     import isaaclab.sim as sim_utils
+    from isaaclab.assets import AssetBaseCfg
     from isaaclab.managers import ObservationGroupCfg as ObsGroup
     from isaaclab.managers import ObservationTermCfg as ObsTerm
     from isaaclab.managers import SceneEntityCfg
@@ -93,7 +119,13 @@ def make_camera_enabled_franka_lift_cfg(
     env_cfg = parse_env_cfg_fn(env_id, device=device, num_envs=num_envs)
 
     env_cfg.scene.num_envs = num_envs
-    env_cfg.commands.object_pose.debug_vis = False
+    _disable_debug_visualizers(env_cfg)
+    if resolved_table_cleanup != TABLE_CLEANUP_NONE:
+        _prepare_clean_camera_demo_scene(env_cfg, min_clean_env_spacing=min_clean_env_spacing)
+    if resolved_table_cleanup in {TABLE_CLEANUP_MATTE, TABLE_CLEANUP_MATTE_OVERLAY}:
+        _make_table_surface_matte(env_cfg, sim_utils)
+    if resolved_table_cleanup in {TABLE_CLEANUP_OVERLAY, TABLE_CLEANUP_MATTE_OVERLAY}:
+        _add_demo_tabletop_overlay(env_cfg, AssetBaseCfg, sim_utils)
     _add_wrist_camera(env_cfg, CameraCfg, sim_utils, policy_camera_name, image_height, image_width)
     if debug_camera_name is not None and debug_image_obs_key is not None:
         _add_debug_camera(env_cfg, CameraCfg, sim_utils, debug_camera_name, debug_image_height, debug_image_width)
@@ -163,7 +195,121 @@ def make_camera_enabled_franka_lift_cfg(
     env_cfg.project_policy_image_obs_key = policy_image_obs_key
     env_cfg.project_debug_camera_name = debug_camera_name
     env_cfg.project_debug_image_obs_key = debug_image_obs_key
+    env_cfg.project_clean_demo_scene = resolved_table_cleanup != TABLE_CLEANUP_NONE
+    env_cfg.project_table_cleanup = resolved_table_cleanup
+    env_cfg.project_min_clean_env_spacing = min_clean_env_spacing
     return env_cfg
+
+
+def resolve_table_cleanup(table_cleanup: str, *, clean_demo_scene: bool = False) -> str:
+    """Resolve the explicit table cleanup mode plus the legacy clean-scene shorthand."""
+
+    if table_cleanup not in TABLE_CLEANUP_CHOICES:
+        raise ValueError(f"table_cleanup must be one of {TABLE_CLEANUP_CHOICES!r}")
+    if clean_demo_scene and table_cleanup == TABLE_CLEANUP_NONE:
+        return TABLE_CLEANUP_MATTE_OVERLAY
+    return table_cleanup
+
+
+def _prepare_clean_camera_demo_scene(env_cfg: Any, *, min_clean_env_spacing: float | None) -> None:
+    """Apply opt-in visual cleanup that changes the stock Isaac rendered scene."""
+
+    _ensure_min_env_spacing(env_cfg, min_clean_env_spacing)
+
+
+def _disable_debug_visualizers(env_cfg: Any) -> None:
+    """Disable debug-only markers so camera observations do not learn from helper visuals."""
+
+    _disable_command_debug_visualization(env_cfg)
+    _disable_scene_debug_visualization(env_cfg)
+
+
+def _disable_command_debug_visualization(env_cfg: Any) -> None:
+    commands = getattr(env_cfg, "commands", None)
+    object_pose = getattr(commands, "object_pose", None)
+    if object_pose is not None and hasattr(object_pose, "debug_vis"):
+        object_pose.debug_vis = False
+
+
+def _disable_scene_debug_visualization(env_cfg: Any) -> None:
+    scene = getattr(env_cfg, "scene", None)
+    if scene is None:
+        return
+    for entity in _public_config_values(scene):
+        if hasattr(entity, "debug_vis"):
+            entity.debug_vis = False
+
+
+def _public_config_values(obj: Any) -> list[Any]:
+    values: list[Any] = []
+    seen: set[int] = set()
+    for value in vars(obj).values():
+        values.append(value)
+        seen.add(id(value))
+    for name in dir(obj):
+        if name.startswith("_"):
+            continue
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+        if id(value) in seen or callable(value):
+            continue
+        values.append(value)
+        seen.add(id(value))
+    return values
+
+
+def _ensure_min_env_spacing(env_cfg: Any, min_env_spacing: float | None) -> None:
+    if min_env_spacing is None:
+        return
+    scene = getattr(env_cfg, "scene", None)
+    if scene is None:
+        return
+    current_spacing = getattr(scene, "env_spacing", None)
+    try:
+        current_spacing_value = None if current_spacing is None else float(current_spacing)
+    except (TypeError, ValueError):
+        current_spacing_value = None
+    if current_spacing_value is None or current_spacing_value < min_env_spacing:
+        scene.env_spacing = float(min_env_spacing)
+
+
+def _make_table_surface_matte(env_cfg: Any, sim_utils: Any) -> None:
+    scene = getattr(env_cfg, "scene", None)
+    table = getattr(scene, "table", None)
+    table_spawn = getattr(table, "spawn", None)
+    preview_surface_cfg = getattr(sim_utils, "PreviewSurfaceCfg", None)
+    if table_spawn is None or preview_surface_cfg is None:
+        return
+    table_spawn.visual_material = preview_surface_cfg(
+        diffuse_color=DEMO_TABLE_DIFFUSE_COLOR,
+        roughness=DEMO_TABLE_ROUGHNESS,
+        metallic=DEMO_TABLE_METALLIC,
+    )
+
+
+def _add_demo_tabletop_overlay(env_cfg: Any, asset_base_cfg_type: type, sim_utils: Any) -> None:
+    preview_surface_cfg = getattr(sim_utils, "PreviewSurfaceCfg", None)
+    cuboid_cfg = getattr(sim_utils, "CuboidCfg", None)
+    if preview_surface_cfg is None or cuboid_cfg is None:
+        return
+    setattr(
+        env_cfg.scene,
+        DEMO_TABLETOP_OVERLAY_NAME,
+        asset_base_cfg_type(
+            prim_path=f"{{ENV_REGEX_NS}}/{DEMO_TABLETOP_OVERLAY_NAME}",
+            init_state=asset_base_cfg_type.InitialStateCfg(pos=DEMO_TABLETOP_OVERLAY_POS),
+            spawn=cuboid_cfg(
+                size=DEMO_TABLETOP_OVERLAY_SIZE,
+                visual_material=preview_surface_cfg(
+                    diffuse_color=DEMO_TABLE_DIFFUSE_COLOR,
+                    roughness=DEMO_TABLE_ROUGHNESS,
+                    metallic=DEMO_TABLE_METALLIC,
+                ),
+            ),
+        ),
+    )
 
 
 def _add_wrist_camera(

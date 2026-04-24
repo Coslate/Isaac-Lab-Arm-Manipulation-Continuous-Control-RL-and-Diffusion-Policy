@@ -13,7 +13,14 @@ from PIL import Image, ImageDraw
 
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 from env import IsaacArmEnv, IsaacArmEnvConfig, POLICY_IMAGE_SHAPE
-from env.franka_lift_camera_cfg import WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH, WRIST_CAMERA_POS
+from env.franka_lift_camera_cfg import (
+    MIN_CLEAN_ENV_SPACING,
+    TABLE_CLEANUP_CHOICES,
+    TABLE_CLEANUP_NONE,
+    WRIST_CAMERA_IMAGE_HEIGHT,
+    WRIST_CAMERA_IMAGE_WIDTH,
+    WRIST_CAMERA_POS,
+)
 
 
 def _array_summary(value: Any) -> dict[str, Any]:
@@ -223,6 +230,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             policy_image_obs_key=args.policy_image_obs_key,
             debug_camera_name=args.debug_camera_name,
             debug_image_obs_key=args.debug_image_obs_key,
+            clean_demo_scene=args.clean_demo_scene,
+            table_cleanup=args.table_cleanup,
+            min_clean_env_spacing=args.min_clean_env_spacing,
         )
         env = IsaacArmEnv(config)
         obs = env.reset(seed=args.seed)
@@ -266,6 +276,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "policy_image_obs_key": args.policy_image_obs_key,
             "debug_camera_name": args.debug_camera_name,
             "debug_image_obs_key": args.debug_image_obs_key,
+            "clean_demo_scene": config.visual_cleanup_enabled,
+            "table_cleanup": config.resolved_table_cleanup,
+            "min_clean_env_spacing": config.min_clean_env_spacing,
             "image": _array_summary(step_obs["image"]),
             "proprio": _array_summary(step_obs["proprio"]),
             "debug_image": debug_summary,
@@ -298,6 +311,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 "policy_image_obs_key": args.policy_image_obs_key,
                 "debug_camera_name": args.debug_camera_name,
                 "debug_image_obs_key": args.debug_image_obs_key,
+                "clean_demo_scene": args.clean_demo_scene,
+                "table_cleanup": args.table_cleanup,
+                "min_clean_env_spacing": args.min_clean_env_spacing,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
                 "status": "error",
@@ -323,6 +339,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-image-obs-key", default="wrist_rgb")
     parser.add_argument("--debug-camera-name", default="table_cam")
     parser.add_argument("--debug-image-obs-key", default="table_rgb")
+    parser.add_argument(
+        "--table-cleanup",
+        choices=TABLE_CLEANUP_CHOICES,
+        default=TABLE_CLEANUP_NONE,
+        help=(
+            "Opt-in table visual cleanup mode: 'none', 'matte', 'overlay', or 'matte-overlay'."
+        ),
+    )
+    parser.add_argument(
+        "--min-clean-env-spacing",
+        type=_optional_positive_float,
+        default=MIN_CLEAN_ENV_SPACING,
+        help="Minimum env spacing applied when table cleanup is active. Use 'none' to preserve stock spacing.",
+    )
+    parser.add_argument(
+        "--clean-demo-scene",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Shorthand for --table-cleanup matte-overlay with the default min clean env spacing. "
+            "By default the smoke test preserves the stock Isaac rendered scene, with debug visualizers disabled."
+        ),
+    )
     parser.add_argument("--output-dir", default="out/camera_smoke")
     args = parser.parse_args()
     if args.debug_camera_name.lower() in {"none", "null", ""}:
@@ -330,6 +369,15 @@ def parse_args() -> argparse.Namespace:
     if args.debug_image_obs_key.lower() in {"none", "null", ""}:
         args.debug_image_obs_key = None
     return args
+
+
+def _optional_positive_float(value: str) -> float | None:
+    if value.lower() in {"none", "null"}:
+        return None
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive or 'none'")
+    return parsed
 
 
 def main() -> None:

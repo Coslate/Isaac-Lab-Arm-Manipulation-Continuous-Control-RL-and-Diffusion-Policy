@@ -9,7 +9,13 @@ import pytest
 
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 from env import IsaacArmEnv, IsaacArmEnvConfig, POLICY_IMAGE_SHAPE, PROPRIO_FEATURE_GROUPS, make_env
-from env.franka_lift_camera_cfg import WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH
+from env.franka_lift_camera_cfg import (
+    MIN_CLEAN_ENV_SPACING,
+    TABLE_CLEANUP_MATTE_OVERLAY,
+    TABLE_CLEANUP_NONE,
+    WRIST_CAMERA_IMAGE_HEIGHT,
+    WRIST_CAMERA_IMAGE_WIDTH,
+)
 
 
 class FakeIsaacGymEnv:
@@ -97,6 +103,34 @@ def test_config_defaults_match_formal_isaac_env() -> None:
     assert config.policy_image_obs_key == "wrist_rgb"
     assert config.debug_camera_name == "table_cam"
     assert config.debug_image_obs_key == "table_rgb"
+    assert config.clean_demo_scene is False
+    assert config.table_cleanup == TABLE_CLEANUP_NONE
+    assert config.resolved_table_cleanup == TABLE_CLEANUP_NONE
+    assert config.visual_cleanup_enabled is False
+    assert config.min_clean_env_spacing == MIN_CLEAN_ENV_SPACING
+
+
+def test_config_validates_clean_demo_scene_bool() -> None:
+    config = IsaacArmEnvConfig(enable_cameras=True, clean_demo_scene="yes")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="clean_demo_scene"):
+        config.validate()
+
+
+def test_config_resolves_clean_demo_scene_shorthand_to_matte_overlay() -> None:
+    config = IsaacArmEnvConfig(enable_cameras=True, clean_demo_scene=True)
+    config.validate()
+
+    assert config.resolved_table_cleanup == TABLE_CLEANUP_MATTE_OVERLAY
+    assert config.visual_cleanup_enabled is True
+
+
+def test_config_validates_table_cleanup_and_min_spacing() -> None:
+    with pytest.raises(ValueError, match="table_cleanup"):
+        IsaacArmEnvConfig(enable_cameras=True, table_cleanup="shiny").validate()
+
+    with pytest.raises(ValueError, match="min_clean_env_spacing"):
+        IsaacArmEnvConfig(enable_cameras=True, min_clean_env_spacing=0).validate()
 
 
 def test_wrapper_requires_camera_enabled_flag() -> None:
@@ -301,6 +335,40 @@ def test_policy_frame_returns_native_camera_resolution_before_resize() -> None:
     assert frame.shape == (WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH, 3)
     assert frame.dtype == np.uint8
     assert frame[:, :, 0].max() == 191
+
+
+def test_policy_and_debug_frames_can_preserve_parallel_env_batches() -> None:
+    policy_image = np.zeros((2, WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH, 3), dtype=np.uint8)
+    policy_image[0, :, :, 0] = 64
+    policy_image[1, :, :, 0] = 191
+    debug_image = np.zeros((2, 24, 32, 3), dtype=np.uint8)
+    debug_image[0, :, :, 1] = 32
+    debug_image[1, :, :, 1] = 127
+
+    class BatchedCameraEnv(FakeIsaacGymEnv):
+        def reset(self, seed: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+            obs = _native_obs(self.num_envs, image=policy_image)
+            obs["debug"] = {"table_rgb": debug_image}
+            return obs, {"seed": seed}
+
+    env = IsaacArmEnv(
+        IsaacArmEnvConfig(enable_cameras=True, num_envs=2),
+        gym_make=lambda *_args, **kwargs: BatchedCameraEnv(num_envs=kwargs["num_envs"]),
+    )
+
+    obs = env.reset()
+    policy_frames = env.get_policy_frames()
+    debug_frames = env.get_debug_frames()
+
+    assert obs["image"].shape == (2, *POLICY_IMAGE_SHAPE)
+    assert policy_frames.shape == (2, WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH, 3)
+    assert debug_frames.shape == (2, 24, 32, 3)
+    assert policy_frames[0, :, :, 0].max() == 64
+    assert policy_frames[1, :, :, 0].max() == 191
+    assert debug_frames[0, :, :, 1].max() == 32
+    assert debug_frames[1, :, :, 1].max() == 127
+    assert env.get_policy_frame().shape == (WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH, 3)
+    assert env.get_debug_frame().shape == (24, 32, 3)
 
 
 def test_custom_policy_image_key_is_supported_without_generic_fallback() -> None:

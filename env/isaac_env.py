@@ -9,7 +9,12 @@ import numpy as np
 from PIL import Image
 
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID, TaskConfig, clip_action
-from env.franka_lift_camera_cfg import make_camera_enabled_franka_lift_cfg
+from env.franka_lift_camera_cfg import (
+    MIN_CLEAN_ENV_SPACING,
+    TABLE_CLEANUP_NONE,
+    make_camera_enabled_franka_lift_cfg,
+    resolve_table_cleanup,
+)
 
 
 GymMake = Callable[..., Any]
@@ -44,6 +49,9 @@ class IsaacArmEnvConfig:
     policy_image_obs_key: str = "wrist_rgb"
     debug_camera_name: str | None = "table_cam"
     debug_image_obs_key: str | None = "table_rgb"
+    clean_demo_scene: bool = False
+    table_cleanup: str = TABLE_CLEANUP_NONE
+    min_clean_env_spacing: float | None = MIN_CLEAN_ENV_SPACING
     gym_kwargs: dict[str, Any] = field(default_factory=dict)
     proprio_feature_groups: tuple[str, ...] = PROPRIO_FEATURE_GROUPS
 
@@ -66,6 +74,19 @@ class IsaacArmEnvConfig:
             raise ValueError("policy_image_obs_key must be non-empty")
         if (self.debug_camera_name is None) != (self.debug_image_obs_key is None):
             raise ValueError("debug_camera_name and debug_image_obs_key must both be set or both be None")
+        if not isinstance(self.clean_demo_scene, bool):
+            raise ValueError("clean_demo_scene must be a bool")
+        resolve_table_cleanup(self.table_cleanup, clean_demo_scene=self.clean_demo_scene)
+        if self.min_clean_env_spacing is not None and self.min_clean_env_spacing <= 0:
+            raise ValueError("min_clean_env_spacing must be positive or None")
+
+    @property
+    def resolved_table_cleanup(self) -> str:
+        return resolve_table_cleanup(self.table_cleanup, clean_demo_scene=self.clean_demo_scene)
+
+    @property
+    def visual_cleanup_enabled(self) -> bool:
+        return self.resolved_table_cleanup != TABLE_CLEANUP_NONE
 
 
 class IsaacArmEnv:
@@ -99,6 +120,9 @@ class IsaacArmEnv:
             kwargs.setdefault("policy_image_obs_key", self.config.policy_image_obs_key)
             kwargs.setdefault("debug_camera_name", self.config.debug_camera_name)
             kwargs.setdefault("debug_image_obs_key", self.config.debug_image_obs_key)
+            kwargs.setdefault("clean_demo_scene", self.config.clean_demo_scene)
+            kwargs.setdefault("table_cleanup", self.config.table_cleanup)
+            kwargs.setdefault("min_clean_env_spacing", self.config.min_clean_env_spacing)
         self._env = make(self.config.env_id, **kwargs)
         self._last_info: dict[str, Any] = {}
         self._last_native_obs: Any | None = None
@@ -152,17 +176,22 @@ class IsaacArmEnv:
     def get_debug_frame(self, camera_name: str | None = None) -> np.ndarray:
         """Return a human-facing debug frame, separate from policy obs image."""
 
+        return self.get_debug_frames(camera_name)[0]
+
+    def get_debug_frames(self, camera_name: str | None = None) -> np.ndarray:
+        """Return batched human-facing debug frames, separate from policy obs images."""
+
         selected_camera = camera_name or self.config.debug_camera_name
         if selected_camera is None or self.config.debug_image_obs_key is None:
             raise RuntimeError("No debug camera is configured.")
 
         get_debug_frame = getattr(self._env, "get_debug_frame", None)
         if callable(get_debug_frame):
-            return self._prepare_render_frame(get_debug_frame(selected_camera))
+            return self._prepare_render_frames(get_debug_frame(selected_camera))
 
         render_debug = getattr(self._env, "render_debug", None)
         if callable(render_debug):
-            return self._prepare_render_frame(render_debug(selected_camera))
+            return self._prepare_render_frames(render_debug(selected_camera))
 
         debug_image = None
         if self._last_native_obs is not None:
@@ -174,10 +203,15 @@ class IsaacArmEnv:
                 f"Could not find debug image term {self.config.debug_image_obs_key!r} "
                 f"for camera {selected_camera!r}."
             )
-        return self._prepare_render_frame(debug_image)
+        return self._prepare_render_frames(debug_image)
 
     def get_policy_frame(self) -> np.ndarray:
         """Return the native policy RGB frame before wrapper resizing."""
+
+        return self.get_policy_frames()[0]
+
+    def get_policy_frames(self) -> np.ndarray:
+        """Return native batched policy RGB frames before wrapper resizing."""
 
         image = None
         if self._last_native_obs is not None:
@@ -186,7 +220,7 @@ class IsaacArmEnv:
             image = self._find_first(self._last_info, (self.config.policy_image_obs_key,))
         if image is None:
             raise KeyError(f"Could not find policy image term {self.config.policy_image_obs_key!r}.")
-        return self._prepare_render_frame(image)
+        return self._prepare_render_frames(image)
 
     def close(self) -> None:
         close = getattr(self._env, "close", None)
@@ -324,13 +358,27 @@ class IsaacArmEnv:
         return proprio_array
 
     def _prepare_render_frame(self, frame: Any) -> np.ndarray:
+        return self._prepare_render_frames(frame)[0]
+
+    def _prepare_render_frames(self, frame: Any) -> np.ndarray:
         frame_array = self._to_numpy(frame)
-        if frame_array.ndim == 4:
-            frame_array = frame_array[0]
-        if frame_array.ndim == 3 and frame_array.shape[0] == 3:
-            frame_array = np.transpose(frame_array, (1, 2, 0))
-        if frame_array.ndim != 3 or frame_array.shape[-1] != 3:
+        if frame_array.ndim == 3:
+            if frame_array.shape[0] == 3 and frame_array.shape[-1] != 3:
+                frame_array = np.transpose(frame_array, (1, 2, 0))
+            frame_array = frame_array[None, ...]
+        elif frame_array.ndim == 4:
+            if frame_array.shape[-1] == 3:
+                pass
+            elif frame_array.shape[1] == 3:
+                frame_array = np.transpose(frame_array, (0, 2, 3, 1))
+            else:
+                raise ValueError(f"render frame must be RGB, got shape {frame_array.shape}")
+        else:
             raise ValueError(f"render frame must be RGB, got shape {frame_array.shape}")
+        if frame_array.shape[-1] != 3:
+            raise ValueError(f"render frame must be RGB, got shape {frame_array.shape}")
+        if frame_array.shape[0] != self.config.num_envs:
+            raise ValueError(f"render frame batch must have {self.config.num_envs} frames, got {frame_array.shape[0]}")
         if frame_array.dtype != np.uint8:
             if np.issubdtype(frame_array.dtype, np.floating) and frame_array.max(initial=0.0) <= 1.0:
                 frame_array = frame_array * 255.0
@@ -421,6 +469,9 @@ class IsaacArmEnv:
             policy_image_obs_key = kwargs.pop("policy_image_obs_key", "wrist_rgb")
             debug_camera_name = kwargs.pop("debug_camera_name", "table_cam")
             debug_image_obs_key = kwargs.pop("debug_image_obs_key", "table_rgb")
+            clean_demo_scene = kwargs.pop("clean_demo_scene", False)
+            table_cleanup = kwargs.pop("table_cleanup", TABLE_CLEANUP_NONE)
+            min_clean_env_spacing = kwargs.pop("min_clean_env_spacing", MIN_CLEAN_ENV_SPACING)
             num_envs = kwargs.get("num_envs", 1)
             if enable_cameras:
                 env_cfg = make_camera_enabled_franka_lift_cfg(
@@ -431,6 +482,9 @@ class IsaacArmEnv:
                     policy_image_obs_key=policy_image_obs_key,
                     debug_camera_name=debug_camera_name,
                     debug_image_obs_key=debug_image_obs_key,
+                    clean_demo_scene=clean_demo_scene,
+                    table_cleanup=table_cleanup,
+                    min_clean_env_spacing=min_clean_env_spacing,
                     parse_env_cfg_fn=parse_env_cfg,
                 )
             else:

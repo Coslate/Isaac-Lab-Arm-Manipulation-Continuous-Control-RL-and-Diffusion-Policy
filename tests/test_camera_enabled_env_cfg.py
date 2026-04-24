@@ -19,6 +19,17 @@ from env.franka_lift_camera_cfg import (
     DEBUG_CAMERA_IMAGE_WIDTH,
     DEBUG_CAMERA_POS,
     DEBUG_CAMERA_ROT_ROS,
+    DEMO_TABLETOP_OVERLAY_NAME,
+    DEMO_TABLETOP_OVERLAY_POS,
+    DEMO_TABLETOP_OVERLAY_SIZE,
+    DEMO_TABLE_DIFFUSE_COLOR,
+    DEMO_TABLE_METALLIC,
+    DEMO_TABLE_ROUGHNESS,
+    MIN_CLEAN_ENV_SPACING,
+    TABLE_CLEANUP_MATTE,
+    TABLE_CLEANUP_MATTE_OVERLAY,
+    TABLE_CLEANUP_NONE,
+    TABLE_CLEANUP_OVERLAY,
     WRIST_CAMERA_CLIPPING_RANGE,
     WRIST_CAMERA_FOCAL_LENGTH,
     WRIST_CAMERA_HORIZONTAL_APERTURE,
@@ -53,6 +64,25 @@ class FakePinholeCameraCfg:
         self.kwargs = kwargs
 
 
+class FakePreviewSurfaceCfg:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+
+class FakeCuboidCfg:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+
+class FakeAssetBaseCfg:
+    class InitialStateCfg:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.__dict__.update(kwargs)
+
+
 class FakeCameraCfg:
     class OffsetCfg:
         def __init__(self, **kwargs: Any) -> None:
@@ -74,6 +104,7 @@ def _install_fake_isaac_modules(monkeypatch: pytest.MonkeyPatch) -> SimpleNamesp
     )
     fake_modules = {
         "isaaclab": types.ModuleType("isaaclab"),
+        "isaaclab.assets": types.ModuleType("isaaclab.assets"),
         "isaaclab.sim": types.ModuleType("isaaclab.sim"),
         "isaaclab.managers": types.ModuleType("isaaclab.managers"),
         "isaaclab.sensors": types.ModuleType("isaaclab.sensors"),
@@ -86,7 +117,10 @@ def _install_fake_isaac_modules(monkeypatch: pytest.MonkeyPatch) -> SimpleNamesp
         "isaaclab_tasks.utils": types.ModuleType("isaaclab_tasks.utils"),
         "isaaclab_tasks.utils.parse_cfg": types.ModuleType("isaaclab_tasks.utils.parse_cfg"),
     }
+    fake_modules["isaaclab.assets"].AssetBaseCfg = FakeAssetBaseCfg
     fake_modules["isaaclab.sim"].PinholeCameraCfg = FakePinholeCameraCfg
+    fake_modules["isaaclab.sim"].PreviewSurfaceCfg = FakePreviewSurfaceCfg
+    fake_modules["isaaclab.sim"].CuboidCfg = FakeCuboidCfg
     fake_modules["isaaclab.managers"].ObservationGroupCfg = FakeObservationGroupCfg
     fake_modules["isaaclab.managers"].ObservationTermCfg = FakeObservationTermCfg
     fake_modules["isaaclab.managers"].SceneEntityCfg = FakeSceneEntityCfg
@@ -109,7 +143,13 @@ def _fake_env_cfg() -> SimpleNamespace:
         actions=object(),
     )
     return SimpleNamespace(
-        scene=SimpleNamespace(num_envs=0),
+        scene=SimpleNamespace(
+            num_envs=0,
+            env_spacing=2.5,
+            ee_frame=SimpleNamespace(debug_vis=True),
+            some_other_sensor=SimpleNamespace(debug_vis=True),
+            table=SimpleNamespace(spawn=SimpleNamespace(visual_material=None)),
+        ),
         observations=SimpleNamespace(policy=policy),
         commands=SimpleNamespace(object_pose=SimpleNamespace(debug_vis=True)),
     )
@@ -135,6 +175,11 @@ def test_camera_enabled_cfg_adds_wrist_policy_camera_debug_camera_and_named_term
     assert result is env_cfg
     assert parse_calls == [(ISAAC_FRANKA_IK_REL_ENV_ID, {"device": "cuda:1", "num_envs": 3})]
     assert env_cfg.scene.num_envs == 3
+    assert env_cfg.scene.env_spacing == 2.5
+    assert env_cfg.scene.ee_frame.debug_vis is False
+    assert env_cfg.scene.some_other_sensor.debug_vis is False
+    assert env_cfg.scene.table.spawn.visual_material is None
+    assert not hasattr(env_cfg.scene, DEMO_TABLETOP_OVERLAY_NAME)
     assert env_cfg.scene.wrist_cam.prim_path == "{ENV_REGEX_NS}/Robot/panda_hand/wrist_cam"
     assert env_cfg.scene.wrist_cam.height == WRIST_CAMERA_IMAGE_HEIGHT
     assert env_cfg.scene.wrist_cam.width == WRIST_CAMERA_IMAGE_WIDTH
@@ -186,6 +231,78 @@ def test_camera_enabled_cfg_adds_wrist_policy_camera_debug_camera_and_named_term
     assert env_cfg.project_policy_image_obs_key == "wrist_rgb"
     assert env_cfg.project_debug_camera_name == "table_cam"
     assert env_cfg.project_debug_image_obs_key == "table_rgb"
+    assert env_cfg.project_clean_demo_scene is False
+    assert env_cfg.project_table_cleanup == TABLE_CLEANUP_NONE
+    assert env_cfg.project_min_clean_env_spacing == MIN_CLEAN_ENV_SPACING
+
+
+def test_camera_enabled_cfg_can_opt_into_clean_demo_scene(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_isaac_modules(monkeypatch)
+    env_cfg = _fake_env_cfg()
+
+    result = make_camera_enabled_franka_lift_cfg(
+        clean_demo_scene=True,
+        parse_env_cfg_fn=lambda *_args, **_kwargs: env_cfg,
+    )
+
+    assert result is env_cfg
+    assert env_cfg.scene.env_spacing == MIN_CLEAN_ENV_SPACING
+    assert env_cfg.scene.ee_frame.debug_vis is False
+    assert env_cfg.scene.some_other_sensor.debug_vis is False
+    assert env_cfg.commands.object_pose.debug_vis is False
+    assert env_cfg.scene.table.spawn.visual_material.kwargs == {
+        "diffuse_color": DEMO_TABLE_DIFFUSE_COLOR,
+        "roughness": DEMO_TABLE_ROUGHNESS,
+        "metallic": DEMO_TABLE_METALLIC,
+    }
+    table_overlay = getattr(env_cfg.scene, DEMO_TABLETOP_OVERLAY_NAME)
+    assert table_overlay.prim_path == f"{{ENV_REGEX_NS}}/{DEMO_TABLETOP_OVERLAY_NAME}"
+    assert table_overlay.init_state.kwargs["pos"] == DEMO_TABLETOP_OVERLAY_POS
+    assert table_overlay.spawn.kwargs["size"] == DEMO_TABLETOP_OVERLAY_SIZE
+    assert table_overlay.spawn.kwargs["visual_material"].kwargs == {
+        "diffuse_color": DEMO_TABLE_DIFFUSE_COLOR,
+        "roughness": DEMO_TABLE_ROUGHNESS,
+        "metallic": DEMO_TABLE_METALLIC,
+    }
+    assert env_cfg.project_clean_demo_scene is True
+    assert env_cfg.project_table_cleanup == TABLE_CLEANUP_MATTE_OVERLAY
+    assert env_cfg.project_min_clean_env_spacing == MIN_CLEAN_ENV_SPACING
+
+
+@pytest.mark.parametrize(
+    ("table_cleanup", "expect_matte", "expect_overlay"),
+    [
+        (TABLE_CLEANUP_MATTE, True, False),
+        (TABLE_CLEANUP_OVERLAY, False, True),
+        (TABLE_CLEANUP_MATTE_OVERLAY, True, True),
+    ],
+)
+def test_camera_enabled_cfg_supports_table_cleanup_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    table_cleanup: str,
+    expect_matte: bool,
+    expect_overlay: bool,
+) -> None:
+    _install_fake_isaac_modules(monkeypatch)
+    env_cfg = _fake_env_cfg()
+
+    result = make_camera_enabled_franka_lift_cfg(
+        table_cleanup=table_cleanup,
+        parse_env_cfg_fn=lambda *_args, **_kwargs: env_cfg,
+    )
+
+    assert result.scene.env_spacing == MIN_CLEAN_ENV_SPACING
+    assert result.project_clean_demo_scene is True
+    assert result.project_table_cleanup == table_cleanup
+    if expect_matte:
+        assert result.scene.table.spawn.visual_material.kwargs == {
+            "diffuse_color": DEMO_TABLE_DIFFUSE_COLOR,
+            "roughness": DEMO_TABLE_ROUGHNESS,
+            "metallic": DEMO_TABLE_METALLIC,
+        }
+    else:
+        assert result.scene.table.spawn.visual_material is None
+    assert hasattr(result.scene, DEMO_TABLETOP_OVERLAY_NAME) is expect_overlay
 
 
 def test_camera_enabled_cfg_keeps_policy_and_debug_camera_names_distinct(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,6 +358,38 @@ def test_camera_enabled_cfg_validates_project_contract() -> None:
         make_camera_enabled_franka_lift_cfg(policy_image_obs_key="")
     with pytest.raises(ValueError, match="both be set"):
         make_camera_enabled_franka_lift_cfg(debug_camera_name="table_cam", debug_image_obs_key=None)
+    with pytest.raises(ValueError, match="clean_demo_scene"):
+        make_camera_enabled_franka_lift_cfg(clean_demo_scene="yes")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="table_cleanup"):
+        make_camera_enabled_franka_lift_cfg(table_cleanup="shiny")
+    with pytest.raises(ValueError, match="min_clean_env_spacing"):
+        make_camera_enabled_franka_lift_cfg(min_clean_env_spacing=0)
+
+
+def test_camera_enabled_cfg_respects_larger_existing_env_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_isaac_modules(monkeypatch)
+    env_cfg = _fake_env_cfg()
+    env_cfg.scene.env_spacing = 8.0
+
+    result = make_camera_enabled_franka_lift_cfg(
+        table_cleanup=TABLE_CLEANUP_OVERLAY,
+        parse_env_cfg_fn=lambda *_args, **_kwargs: env_cfg,
+    )
+
+    assert result.scene.env_spacing == 8.0
+
+
+def test_camera_enabled_cfg_can_leave_env_spacing_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_isaac_modules(monkeypatch)
+    env_cfg = _fake_env_cfg()
+
+    result = make_camera_enabled_franka_lift_cfg(
+        table_cleanup=TABLE_CLEANUP_OVERLAY,
+        min_clean_env_spacing=None,
+        parse_env_cfg_fn=lambda *_args, **_kwargs: env_cfg,
+    )
+
+    assert result.scene.env_spacing == 2.5
 
 
 def test_target_position_from_command_slices_7d_stock_pose_to_3d_position() -> None:

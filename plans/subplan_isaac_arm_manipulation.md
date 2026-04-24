@@ -25,6 +25,32 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 
 ## 2. Current Status
 
+### Runtime env for live Isaac commands
+
+Every live Isaac run (`scripts.collect_rollouts`, `scripts.benchmark_rollout_collection`, `scripts.isaac_camera_observation_smoke`, `scripts.isaac_runtime_smoke`) needs a working X11 display **plus** an X authority cookie. Isaac Sim's RTX / Vulkan WSI layer opens an X display surface to enumerate the GPU even with `--headless`. Missing cookie → cascade of `Authorization required`, `eglInitialize failed`, `xcb_connection_has_error()`.
+
+**vast.ai bare-metal box (primary runtime):**
+
+Recommend to put following two lines in ~/.bashrc
+
+```bash
+export DISPLAY=:0
+export XAUTHORITY="/var/run/sddm/$(ls /var/run/sddm/ | head -1)"   # one-time per shell session
+```
+
+Put both lines in your shell rc or run them before the first Isaac command. `ls /var/run/sddm/` shows the curly-braced cookie file that SDDM creates at boot. `scripts.benchmark_rollout_collection` auto-discovers that cookie if `XAUTHORITY` is unset in the shell, so the benchmark works without the `export`; the other scripts inherit straight from the shell env and need the `export` explicitly. `--xauthority PATH` on the benchmark overrides everything.
+
+**WSL2 + Docker (secondary):**
+
+```bash
+pkill Xvfb 2>/dev/null; Xvfb :1 -screen 0 1280x720x24 &
+export DISPLAY=:1
+```
+
+Isaac scripts already set `DISPLAY=:1` automatically when it is not present, so the `export` is usually redundant here. `XAUTHORITY` is not needed on Xvfb.
+
+### Status table
+
 | Demo PR | Name | Status | Notes |
 |---|---|---|---|
 | PR 0 | Project scaffold | Done | Package layout, config, reproducibility utilities, output directory helpers, and scaffold tests are already implemented. |
@@ -36,9 +62,9 @@ The full project roadmap still includes PPO, pure GRPO, SAC, TD3, Diffusion Poli
 | PR 2.5 | Camera-enabled Franka lift cfg | Done | Keeps the same IK-relative lift task, customizes `env_cfg` before `gym.make()` to add `wrist_cam`, optional `table_cam`, named 40D proprio terms, and has a live camera smoke result. |
 | Image aug | `utils/image_aug.py` | Done | Three-tier contract: wrapper = deterministic resize; training = `PadAndRandomCrop` (primary) or `CenterBiasedResizedCrop` (alternative); eval/GIF/smoke = `IdentityAug`. Utility layer and tests are done; wiring the aug into future trainers/loaders is owned by later training PRs. |
 | PR 8-pre | Demo policies | Done | Adds the lightweight demo policy interface plus RandomPolicy and HeuristicPolicy so rollout collection has policies to call. HDF5-backed ReplayPolicy is deferred until PR 8-lite defines the episode dataset schema. |
-| PR 8-lite | Rollout dataset | Pending | Store rollouts by episode so future action chunks never cross episode boundaries. |
+| PR 8-lite | Rollout dataset | Done | Stores rollouts by episode in HDF5, supports parallel env rollout collection by splitting each env into its own episode group, keeps resized wrist policy images separate from optional native-resolution wrist images and optional debug images, provides action-window sampling that never crosses done/truncated boundaries, and includes dataset inspection plus rollout-throughput benchmark helpers. Refactor 2026-04-24: renamed `--num-envs` → `--num-parallel-envs` (alias kept), metadata now records `reset_round` / `reset_seed` / `terminated_by`, per-lane collection no longer force-truncates sibling lanes when one lane ends early, and CLI collection shows a tqdm episode progress bar by default (`--no-progress` disables it). |
 | PR 11-lite | Evaluation metrics | Pending | Compute return, success, episode length, and action jerk. |
-| PR 12-lite | GIF output | Pending | Save visual rollout GIFs from a fixed debug camera, while policy/dataset images come from wrist camera. |
+| PR 12-lite | GIF output | Pending | Save visual rollout GIFs and sampled debug PNGs from a fixed debug camera, while policy/dataset images come from wrist camera. |
 | Demo PR | One-command script | Pending | One command creates dataset, metrics JSON, and GIF. |
 
 PR0 verification command:
@@ -82,20 +108,30 @@ PR2.5 verification commands:
 ```bash
 conda run -n isaac_arm python -m pytest tests/test_camera_enabled_env_cfg.py -v
 timeout 360s conda run -n isaac_arm python -m scripts.isaac_camera_observation_smoke --steps 1 --output-dir out/camera_smoke
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY=:0 \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.isaac_camera_observation_smoke \
+  --num-envs 2 \
+  --steps 1 \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --output-dir out/camera_smoke_clean \
+  --device cuda:0
 ```
 
 Known PR2.5 result:
 
 ```text
-tests/test_camera_enabled_env_cfg.py: 6 passed
+tests/test_camera_enabled_env_cfg.py: 12 passed
 live camera smoke: status ok, image (1, 3, 224, 224) uint8, proprio (1, 40) float32
+clean live camera smoke: status ok, num_envs 2, --table-cleanup matte-overlay, --min-clean-env-spacing 5.0, saved out/camera_smoke_clean/debug_rgb.png without cloned-neighbor arms
+clean rollout probe: --table-cleanup matte-overlay, max_steps 3, episode_005/009 step002 saved from data/random_rollouts_10eps_numenvs2_raw_debug_overlay_probe.h5 without the red table visual artifact
 ```
 
 Current full local test result:
 
 ```text
 conda run -n isaac_arm python -m pytest -q -rs
-76 passed, 1 skipped
+108 passed, 1 skipped
 skipped: tests/test_isaac_runtime_smoke.py requires RUN_ISAAC_RUNTIME_SMOKE=1 to launch Isaac Sim / Isaac Lab
 ```
 
@@ -434,6 +470,8 @@ Implemented 2026-04-19:
 - Made `IsaacArmEnv` strict about policy image source: `obs["image"]` comes from `policy_image_obs_key` only, not from debug or generic camera keys.
 - Added `get_debug_frame(...)` for human-facing debug images, separate from policy input.
 - Added a torch action bridge for the live Isaac backend while keeping numpy actions for injected unit-test envs.
+- Disabled debug-only visualizers before adding cameras: the stock Lift `object_pose` command starts with `debug_vis=True`, so the helper turns off command and first-level scene debug visualizers by default. This keeps helper markers out of `images`, `raw_policy_images`, and `debug_images`.
+- Added opt-in table visual cleanup through `table_cleanup` / `--table-cleanup` with enum values `none`, `matte`, `overlay`, and `matte-overlay`. The default remains `none`, so camera streams preserve the stock Isaac scene render apart from disabled debug visualizers. `--clean-demo-scene` is kept as shorthand for the recommended clean mode (`matte-overlay` plus the default `--min-clean-env-spacing 5.0`). A live stage check confirmed the remaining red patch was not `/Visuals/Command/*`; it came from the SeattleLabTable visual surface. `matte` changes the table material, `overlay` adds a visual-only matte tabletop cover without changing physics, and `matte-overlay` applies both.
 - Added `tests/test_camera_enabled_env_cfg.py`, PR2.5 wrapper regressions, and `scripts/isaac_camera_observation_smoke.py`.
 - Live camera smoke passed in `isaac_arm` with GPU access:
 
@@ -483,6 +521,8 @@ not used by: policy.act(), SAC replay buffer, Diffusion Policy dataset image
 
 The fixed debug camera is allowed because it is an experiment recorder, not the robot policy's eye. The robot-learning observation remains eye-in-hand wrist RGB plus proprio/task-state features.
 
+Demo/debug frames should keep debug-only markers out of camera streams by default: no command target frame markers and no scene sensor debug visualizers in `images`, `raw_policy_images`, or `debug_images`. The red table-surface visual mark from the stock SeattleLabTable asset and wider cloned-lane spacing are opt-in cleanup behavior, enabled with `table_cleanup != "none"` / `--table-cleanup`, so the default camera output remains the closest stock Isaac render. The recommended clean-demo mode is `--table-cleanup matte-overlay --min-clean-env-spacing 5.0`; `--clean-demo-scene` remains a shorthand for that default-clean path.
+
 **Scope Clarification**
 
 PR2.5 includes all work needed to move from the current unit-tested wrapper contract to a live camera-capable Isaac observation contract. In other words, the next seven steps belong to PR2.5:
@@ -521,6 +561,8 @@ obs["proprio"] = named 40D contract, shape (num_envs, 40), float32
 - Internally call `parse_env_cfg(ISAAC_FRANKA_IK_REL_ENV_ID, device=device, num_envs=num_envs)`.
 - Add `wrist_cam` using Isaac Lab `CameraCfg` or `TiledCameraCfg` with `data_types=["rgb"]` or `["rgb", "distance_to_image_plane"]`.
 - Add optional fixed `table_cam` / `front_cam` for debug frames.
+- Disable command and scene debug visualizers by default before camera observations are generated.
+- Keep stock Isaac table visuals and cloned-lane spacing by default; expose `table_cleanup` / `--table-cleanup` and `min_clean_env_spacing` / `--min-clean-env-spacing` as the opt-in path for matte table material, tabletop overlay, and larger lane spacing.
 - Replace or extend the observation config so policy observations are non-concatenated named terms.
 - Add `wrist_rgb = ObsTerm(func=mdp.image, params={"sensor_cfg": SceneEntityCfg("wrist_cam"), "data_type": "rgb", "normalize": False})`.
 - Add named low-dimensional terms listed in PR2 instead of relying on stock flat 35D.
@@ -779,16 +821,53 @@ git commit -m "feat(policy): add random and heuristic demo policies"
 
 ## 9. PR 8-lite - Rollout Dataset
 
-**Status:** Pending
+**Status:** Done
+
+Implemented in:
+
+```text
+dataset/episode_dataset.py
+scripts/collect_rollouts.py
+scripts/inspect_rollout_dataset.py
+scripts/benchmark_rollout_collection.py
+tests/test_demo_dataset.py
+tests/test_rollout_benchmark.py
+```
+
+Known result:
+
+```text
+conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v
+15 passed
+conda run -n isaac_arm python -m pytest tests/test_rollout_benchmark.py -v
+7 passed
+```
+(13 original + 1 reset_round/reset_seed round-trip + 1 per-lane staggered termination; plus 4 benchmark command/CSV plumbing tests + 3 `_subprocess_env` XAUTHORITY auto-discovery / override / preservation tests added 2026-04-24)
 
 **Depends On**
 
 - PR 8-pre demo policy interface.
 - The collector assumes policies expose `act(obs) -> action`.
+- `tqdm>=4.66` is a direct project dependency for CLI progress bars. The collector has a no-op fallback if `tqdm` is unavailable, but the restored project env should include it.
 
 **Goal / Why**
 
 Save rollout data in an episode-safe format. This is the most DeepReach-relevant part of the demo because it shows data infrastructure, not only model code.
+
+PR8-lite supports both the interview-demo default (`--num-parallel-envs 1`) and the full-plan direction (`--num-parallel-envs > 1`). The old `--num-envs` flag is still accepted as an alias, but the clearer CLI name is `--num-parallel-envs` because this value controls Isaac Lab vectorized-physics lanes, not the total number of trajectories to collect.
+
+For vectorized Isaac runs, the collector does **not** store a single mixed `(T, N, ...)` episode. It splits each environment lane into separate HDF5 episode groups:
+
+```text
+parallel env batch
+  env 0 -> episode_000
+  env 1 -> episode_001
+  env 2 -> episode_002
+```
+
+Each episode metadata includes `source_env_index`, `reset_round`, `reset_seed`, and `terminated_by` so later inspection can trace exactly which `(reset round, vectorized lane)` produced the episode and why it ended. The policy interface remains `policy.act(single_env_obs) -> (7,)`; the collector applies it per env and stacks actions back into `(num_parallel_envs, 7)` before one vectorized `env.step(...)`.
+
+The CLI enables a `tqdm` episode progress bar by default. It advances whenever an episode group is appended, regardless of whether the episode ended through env `done`, env `truncated`, or the collector's `--max-steps` cap. Pass `--no-progress` for cleaner logs in scripts or CI. Direct Python calls to `collect_rollout_episodes(...)` default to `show_progress=False` so unit tests stay quiet.
 
 **Pipeline**
 
@@ -814,6 +893,7 @@ The important design is episode-safe storage. For larger scale, the backend can 
 ```text
 episode_000/
   images        (T, 3, 224, 224) uint8    # source = wrist_cam (policy_camera_name); training image stream
+  raw_policy_images (optional) (T, H, W, 3) uint8  # native wrist_cam frames, e.g. 400x400; debug/inspection only
   proprios      (T, proprio_dim) float32
   actions       (T, 7) float32
   rewards       (T,) float32
@@ -829,22 +909,253 @@ episode_000/
     debug_image_obs_key
     action_dim
     proprio_dim
-    seed
+    seed               # legacy field, mirrors reset_seed
+    source_env_index   # vectorized-env lane (0..num_parallel_envs-1) that produced this episode
+    reset_round        # which env.reset() round produced this episode (0-indexed)
+    reset_seed         # seed actually passed to env.reset(seed=...) for this round
+    terminated_by      # "done", "truncated", or collector-side "max_steps"
+    clean_demo_scene   # whether opt-in visual table/spacing cleanup was enabled during collection
+    table_cleanup      # "none", "matte", "overlay", or "matte-overlay"
+    min_clean_env_spacing
 ```
+
+Generate rollout:
+
+```bash
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.collect_rollouts \
+  --backend isaac \
+  --policy random \
+  --num-parallel-envs 2 \
+  --num-episodes 10 \
+  --max-steps 100 \
+  --include-raw-policy-images \
+  --include-debug-images \
+  --save-dataset data/random_rollouts_10eps_numenvs2_raw_debug.h5 \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
+
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.collect_rollouts \
+  --backend isaac \
+  --policy random \
+  --num-parallel-envs 2 \
+  --num-episodes 10 \
+  --max-steps 100 \
+  --include-raw-policy-images \
+  --include-debug-images \
+  --save-dataset data/random_rollouts_10eps_numenvs2_tc_matte.h5 \
+  --seed 0 \
+  --device cuda:0 \
+  --table-cleanup matte \
+  --progress
+
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.collect_rollouts \
+  --backend isaac \
+  --policy random \
+  --num-parallel-envs 2 \
+  --num-episodes 10 \
+  --max-steps 100 \
+  --include-raw-policy-images \
+  --include-debug-images \
+  --save-dataset data/random_rollouts_10eps_numenvs2_tc_matte_overlay.h5 \
+  --seed 0 \
+  --device cuda:0 \
+  --table-cleanup matte-overlay \
+  --progress
+```
+
+Use `--no-progress` instead of `--progress` when writing logs to files or running non-interactive CI.
+
+The default collector disables Isaac debug visualizers but otherwise preserves the stock rendered scene for all three image streams (`images`, `raw_policy_images`, and `debug_images`). To opt into cleaner demo visuals that hide the stock table red mark and increase cloned-lane spacing, use the recommended enum mode:
+
+```bash
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0
+```
+
+For targeted probes, `--table-cleanup matte` applies only the table material change and `--table-cleanup overlay` applies only the visual-only tabletop cover. `--clean-demo-scene` remains supported as a shorthand for `matte-overlay` with the default `5.0` minimum spacing.
 
 Camera-source tagging is a hard rule:
 
 - `images` **must** come from the wrist policy camera sensor (`policy_camera_name`, default `wrist_cam`) through the policy image observation key (`policy_image_obs_key`, default `wrist_rgb`). This is the stream a training loader reads.
+- `raw_policy_images` are optional native-resolution wrist camera frames captured from `env.get_policy_frame()`. They exist for camera/debug inspection and must not replace the training image stream.
 - `debug_images` **must** come from the fixed debug camera (`debug_camera_name`, default `table_cam`). These are optional and never touch the training loader.
 - Do not write fixed-camera frames under the `images` key "because the wrist frame is hard to see." Debugging ease is what `debug_images` exists for.
 - The `policy_camera_name` / `policy_image_obs_key` and `debug_camera_name` / `debug_image_obs_key` metadata entries let a reader verify which camera produced each stream without re-running the collector.
+- `source_env_index` records the vectorized Isaac env lane that produced the episode. This matters when `--num-parallel-envs > 1`.
+- `reset_round` and `reset_seed` identify the `env.reset(seed=...)` call that started the episode.
+- `terminated_by` records whether the lane ended through the env's `done`, the env's `truncated`, or the collector's `--max-steps` cap.
+- The progress bar reports episode groups written, not environment steps. With `--num-parallel-envs 2`, a single vectorized reset round may advance the bar by two episodes when both lanes flush.
+- `table_cleanup` is `none` by default. When it is `matte`, `overlay`, or `matte-overlay`, collection uses the opt-in visual cleanup path and applies `min_clean_env_spacing` (default `5.0`) unless that spacing is set to `none`.
+
+Inspection helper:
+
+
+inspecting for dataset summary：
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/random_rollouts_10eps_numenvs2_raw_debug.h5
+```
+
+inspecting for 10th episode 3rd step
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/random_rollouts_10eps_numenvs2_raw_debug.h5 \
+  --episode episode_009 \
+  --step 2 \
+  --save-policy-frame out/debug_frames/random_10eps_numenvs2_ep009_step002_policy.png \
+  --save-raw-policy-frame out/debug_frames/random_10eps_numenvs2_ep009_step002_raw_policy.png \
+  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep009_step002_debug.png  
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/random_rollouts_10eps_numenvs2_raw_debug.h5 \
+  --episode episode_003 \
+  --step 49 \
+  --save-policy-frame out/debug_frames/random_10eps_numenvs2_ep003_step049_policy.png \
+  --save-raw-policy-frame out/debug_frames/random_10eps_numenvs2_ep003_step049_raw_policy.png \
+  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep003_step049_debug.png  
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/random_rollouts_10eps_numenvs2_raw_debug.h5 \
+  --episode episode_005 \
+  --step 49 \
+  --save-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_policy.png \
+  --save-raw-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_raw_policy.png \
+  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_debug.png  
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/random_rollouts_10eps_numenvs2_tc_matte.h5 \
+  --episode episode_005 \
+  --step 49 \
+  --save-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_policy_tc_matte.png \
+  --save-raw-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_raw_policy_tc_matte.png \
+  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_debug_tc_matte.png  
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/random_rollouts_10eps_numenvs2_tc_matte_overlay.h5 \
+  --episode episode_005 \
+  --step 49 \
+  --save-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_policy_tc_matte_overlay.png \
+  --save-raw-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_raw_policy_tc_matte_overlay.png \
+  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_debug_tc_matte_overla.png  
+```
+
+This helper prints the HDF5 schema/metadata and can export single PNG frames from `images`, `raw_policy_images`, and `debug_images`. It is a dataset inspection tool, not the full GIF pipeline. PR12-lite owns GIF creation and broader visual rollout artifacts.
+
+Rollout throughput benchmark helper (for X11 / DISPLAY setup see §2 "Runtime env for live Isaac commands"; `--display :1` below is the WSL2 form and should be dropped on vast.ai, which uses `DISPLAY=:0` + SDDM cookie auto-discovery):
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.benchmark_rollout_collection \
+  --parallel-envs 1,2 \
+  --repeats 3 \
+  --num-episodes 10 \
+  --max-steps 100 \
+  --policy random \
+  --include-raw-policy-images \
+  --include-debug-images \
+  --output-csv logs/rollout_collection_benchmark.csv \
+  --dataset-dir data/benchmark_rollouts \
+  --device cuda:0 \
+  --display :1
+```
+
+The benchmark script launches `scripts.collect_rollouts` in a fresh subprocess for each `(num_parallel_envs, repeat)` condition, so its `wall_time_s` is an end-to-end measurement that includes Isaac App startup, camera rendering, Python policy calls, and HDF5 writes. It writes one CSV row per run with `num_parallel_envs`, `wall_time_s`, `episodes_per_s`, `steps_per_s`, `actual_steps`, dataset size, status, and the exact command. Child collector progress is disabled by default for cleaner timing; pass `--collect-progress` only for interactive supervision.
+
+Recommended benchmark protocol:
+
+1. End-to-end demo benchmark with camera data enabled. This matches the interview data-loop workload because it includes wrist policy images, raw wrist frames, debug camera frames, and HDF5 writes.
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.benchmark_rollout_collection \
+  --parallel-envs 1,2,4 \
+  --repeats 3 \
+  --num-episodes 20 \
+  --max-steps 100 \
+  --policy random \
+  --include-raw-policy-images \
+  --include-debug-images \
+  --output-csv logs/rollout_collection_benchmark_camera.csv \
+  --dataset-dir data/benchmark_rollouts_camera \
+  --device cuda:0 \
+  --display :1
+```
+
+2. Physics/control-loop benchmark with large image storage disabled. This isolates vectorized rollout throughput more cleanly because it reduces raw/debug image I/O.
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.benchmark_rollout_collection \
+  --parallel-envs 1,2,4 \
+  --repeats 3 \
+  --num-episodes 20 \
+  --max-steps 100 \
+  --policy random \
+  --no-include-raw-policy-images \
+  --no-include-debug-images \
+  --output-csv logs/rollout_collection_benchmark_no_aux_images.csv \
+  --dataset-dir data/benchmark_rollouts_no_aux_images \
+  --device cuda:0
+```
+
+Useful CSV fields:
+
+```text
+num_parallel_envs       vectorized Isaac env lane count for this run
+repeat                  repeat index for averaging
+wall_time_s             end-to-end subprocess wall time
+episodes_written        number of HDF5 episode groups actually written
+actual_steps            sum of per-episode action rows in the generated HDF5
+episodes_per_s          episodes_written / wall_time_s
+steps_per_s             actual_steps / wall_time_s
+dataset_size_bytes      HDF5 output size; useful for spotting I/O-heavy runs
+status / returncode     command success/failure
+command                 exact child collect_rollouts command
+```
+
+To report the speed difference, compare the mean `episodes_per_s` or `steps_per_s` for `num_parallel_envs=2` against `num_parallel_envs=1` across repeats. The expected speedup is sublinear because the benchmark still includes fixed Isaac startup cost, camera rendering, HDF5 writes, and a Python loop that calls `policy.act(...)` once per lane.
+
+Example interview wording:
+
+> I benchmarked serial rollout collection against Isaac Lab vectorized collection by holding policy, episode count, max steps, camera streams, seed schedule, and device fixed while varying `num_parallel_envs`. The vectorized run improved rollout throughput, but the speedup was sublinear because camera rendering, HDF5 writes, and per-lane Python policy calls remain shared bottlenecks.
+
+Known live raw/debug rollout check for the current collector contract:
+
+```text
+command: scripts.collect_rollouts with --num-parallel-envs 2, --include-raw-policy-images, and --include-debug-images
+status: ok
+clean_demo_scene: false
+table_cleanup: none
+min_clean_env_spacing: 5.0
+dataset: data/random_rollouts_numenvs2_raw_debug.h5
+num_episodes: 2
+episode_000 source_env_index: 0
+episode_001 source_env_index: 1
+episode_000 reset_round/reset_seed: 0/0
+episode_001 reset_round/reset_seed: 0/0
+episode_000 terminated_by: max_steps
+episode_001 terminated_by: max_steps
+per-episode images: (2, 3, 224, 224) uint8
+per-episode raw_policy_images: (2, 400, 400, 3) uint8
+per-episode debug_images: (2, 720, 1280, 3) uint8
+sample frames:
+  out/debug_frames/random_numenvs2_ep000_step000_policy.png
+  out/debug_frames/random_numenvs2_ep000_step000_raw_policy.png
+  out/debug_frames/random_numenvs2_ep000_step000_debug.png
+```
+
+Note: historical HDF5 artifacts generated before the 2026-04-24 metadata refactor may omit `reset_round`, `reset_seed`, and `terminated_by`. Regenerate the dataset with the current collector before using those fields in an interview demo or analysis.
 
 **Suggested Files**
 
 ```text
 dataset/episode_dataset.py
 scripts/collect_rollouts.py
+scripts/inspect_rollout_dataset.py
+scripts/benchmark_rollout_collection.py
 tests/test_demo_dataset.py
+tests/test_rollout_benchmark.py
 ```
 
 **Test Command**
@@ -859,11 +1170,16 @@ conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v
 - Each episode has required keys.
 - `actions` shape is `(T, 7)`.
 - `images` shape is `(T, 3, 224, 224)`.
+- If native wrist images are stored, they are under `raw_policy_images` and are omitted by the loader by default.
 - `proprios` shape is `(T, proprio_dim)`.
-- Metadata includes policy name, backend, seed, action dim, proprio dim, and policy camera name.
+- Metadata includes policy name, backend, seed/reset seed, reset round, termination reason, action dim, proprio dim, and policy camera name.
+- Parallel env collection writes one episode group per env lane and records `source_env_index`.
 - If debug images are stored, they are under `debug_images` and not used by the training loader by default.
 - Action chunk sampling never crosses episode boundaries.
 - Done/truncated flags terminate sampling windows correctly.
+- Dataset inspection can summarize schema/metadata and export sample policy/raw/debug PNG frames.
+- CLI collection shows progress by default and accepts `--no-progress`; direct collector calls keep progress disabled unless `show_progress=True`.
+- Benchmark helper builds current collector commands, measures end-to-end wall time in subprocesses, summarizes generated HDF5 files, and writes CSV rows without launching Isaac in unit tests.
 
 **Suggested Commit**
 
@@ -954,10 +1270,20 @@ Create the most interview-friendly artifact. Robotics failures are often easier 
 **Pipeline**
 
 ```text
-rollout debug frames -> save GIF -> optionally overlay policy/return/success/jerk
+rollout debug frames -> save GIF + sampled debug PNGs -> optionally overlay policy/return/success/jerk
 ```
 
 GIFs should use the fixed debug camera by default. The policy wrist camera is useful for learning and diagnostics, but it is narrow, moving, and may be hard for humans to interpret in a demo. The debug camera is the human-facing recorder.
+
+In addition to GIFs, PR12-lite should save a small number of still debug images for quick inspection, for example:
+
+```text
+out/debug_frames/heuristic_ep000_step000_debug.png
+out/debug_frames/heuristic_ep000_step025_debug.png
+out/debug_frames/heuristic_ep000_step050_debug.png
+```
+
+These stills come from the same fixed debug camera stream as the GIF. They are separate from the wrist-camera `images` dataset used for policy learning.
 
 Recommended wrapper usage:
 
@@ -994,6 +1320,7 @@ conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py -v
 - Missing output directory is created automatically.
 - Recorder handles `uint8` RGB frames.
 - GIF recorder can consume frames from `env.get_debug_frame(...)`.
+- Sampled debug PNG frames are saved from the same fixed debug camera stream.
 - Policy observations remain wrist-camera images while GIF frames come from the debug camera.
 
 **Suggested Commit**
@@ -1083,11 +1410,10 @@ git commit -m "feat(demo): add one-command robotics data loop"
 
 Finish the remaining demo slice in this order:
 
-1. PR 8-lite: Episode-safe rollout dataset and collector.
-2. PR 11-lite: Evaluation metrics JSON.
-3. PR 12-lite: GIF output from the fixed debug camera.
-4. ReplayPolicy over saved rollout datasets.
-5. Demo PR: One-command data loop.
+1. PR 11-lite: Evaluation metrics JSON.
+2. PR 12-lite: GIF output from the fixed debug camera.
+3. ReplayPolicy over saved rollout datasets.
+4. Demo PR: One-command data loop.
 
 If time is tight:
 
@@ -1178,7 +1504,7 @@ conda run -n isaac_arm python -m pytest \
   -v
 ```
 
-Of the demo-slice test files listed in the command above, `test_project_scaffold.py`, `test_task_contract.py`, `test_observation_wrapper.py`, `test_camera_enabled_env_cfg.py`, and `test_demo_policies.py` exist today. The repository also has separate Isaac installation/runtime smoke tests and `tests/test_image_aug.py` for the completed image augmentation utility. The remaining demo-slice files are created by the lite PRs above. The command is the full intended invocation after the demo slice is implemented; running it in the current tree will error on missing files until those PRs land.
+Of the demo-slice test files listed in the command above, `test_project_scaffold.py`, `test_task_contract.py`, `test_observation_wrapper.py`, `test_camera_enabled_env_cfg.py`, `test_demo_policies.py`, and `test_demo_dataset.py` exist today. The repository also has separate Isaac installation/runtime smoke tests and `tests/test_image_aug.py` for the completed image augmentation utility. The remaining demo-slice files are created by the lite PRs above. The command is the full intended invocation after the demo slice is implemented; running it in the current tree will error on missing files until those PRs land.
 
 ---
 
