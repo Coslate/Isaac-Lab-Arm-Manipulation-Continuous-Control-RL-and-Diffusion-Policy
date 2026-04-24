@@ -8,6 +8,8 @@ dependencies = [
   "Pillow>=10.0",
   "h5py>=3.8",
   "tqdm>=4.66",
+  "imageio>=2.31",
+  "imageio-ffmpeg>=0.4",
 ]
 
 [project.optional-dependencies]

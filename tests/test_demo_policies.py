@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from configs import ACTION_DIM
-from policies import BasePolicy, HeuristicPolicy, RandomPolicy
+from policies import BasePolicy, HeuristicPolicy, RandomPolicy, ReplayPolicy
 from policies.base import ObservationDict, first_proprio
 from policies.heuristic_policy import HeuristicPolicyConfig
 
@@ -97,6 +97,78 @@ def test_heuristic_policy_lifts_after_gripper_is_closed_near_cube() -> None:
     assert action[6] < 0.0
 
 
+def test_heuristic_policy_lifts_when_cube_blocks_gripper_closure() -> None:
+    policy = HeuristicPolicy()
+
+    action = policy.act(
+        _obs(
+            ee_to_cube=(0.01, 0.0, 0.0),
+            cube_to_target=(0.0, 0.0, 0.35),
+            finger_pos=(0.023, 0.023),
+        )
+    )
+
+    _assert_valid_action(action)
+    assert action[2] > 0.0
+    assert action[6] < 0.0
+
+
+def test_heuristic_policy_holds_translation_inside_success_radius() -> None:
+    policy = HeuristicPolicy()
+
+    action = policy.act(
+        _obs(
+            ee_to_cube=(0.01, 0.0, 0.0),
+            cube_to_target=(0.005, -0.005, 0.005),
+            finger_pos=(0.023, 0.023),
+        )
+    )
+
+    _assert_valid_action(action)
+    np.testing.assert_allclose(action[:3], 0.0)
+    assert action[6] < 0.0
+
+
+def test_heuristic_policy_slows_down_near_target() -> None:
+    policy = HeuristicPolicy()
+
+    far_action = policy.act(
+        _obs(
+            ee_to_cube=(0.01, 0.0, 0.0),
+            cube_to_target=(0.0, 0.0, 0.35),
+            finger_pos=(0.023, 0.023),
+        )
+    )
+    near_action = policy.act(
+        _obs(
+            ee_to_cube=(0.01, 0.0, 0.0),
+            cube_to_target=(0.0, 0.0, 0.04),
+            finger_pos=(0.023, 0.023),
+        )
+    )
+
+    _assert_valid_action(far_action)
+    _assert_valid_action(near_action)
+    assert np.linalg.norm(near_action[:3]) < np.linalg.norm(far_action[:3])
+    assert near_action[2] > 0.0
+
+
+def test_heuristic_policy_corrects_downward_after_target_overshoot() -> None:
+    policy = HeuristicPolicy()
+
+    action = policy.act(
+        _obs(
+            ee_to_cube=(0.01, 0.0, 0.0),
+            cube_to_target=(0.0, 0.0, -0.04),
+            finger_pos=(0.023, 0.023),
+        )
+    )
+
+    _assert_valid_action(action)
+    assert action[2] < 0.0
+    assert action[6] < 0.0
+
+
 def test_heuristic_policy_clips_large_translation_gains() -> None:
     policy = HeuristicPolicy(config=HeuristicPolicyConfig(approach_gain=5.0))
 
@@ -104,6 +176,36 @@ def test_heuristic_policy_clips_large_translation_gains() -> None:
 
     _assert_valid_action(action)
     assert np.isclose(action[:2].max(), 1.0)
+
+
+def test_replay_policy_returns_saved_actions_in_order_and_holds_last() -> None:
+    actions = np.vstack(
+        [
+            np.linspace(-0.6, 0.6, ACTION_DIM),
+            np.linspace(-2.0, 2.0, ACTION_DIM),
+        ]
+    ).astype(np.float32)
+    policy = ReplayPolicy(actions)
+
+    np.testing.assert_allclose(policy.act(_obs()), actions[0])
+    np.testing.assert_allclose(policy.act(_obs()), np.clip(actions[1], -1.0, 1.0))
+    np.testing.assert_allclose(policy.act(_obs()), np.clip(actions[1], -1.0, 1.0))
+
+    policy.reset()
+    np.testing.assert_allclose(policy.act(_obs()), actions[0])
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        np.zeros((0, ACTION_DIM), dtype=np.float32),
+        np.zeros((ACTION_DIM,), dtype=np.float32),
+        np.zeros((2, ACTION_DIM + 1), dtype=np.float32),
+    ],
+)
+def test_replay_policy_rejects_invalid_action_arrays(actions: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="replay actions|at least one step"):
+        ReplayPolicy(actions)
 
 
 def test_first_proprio_accepts_single_unbatched_proprio() -> None:

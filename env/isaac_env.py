@@ -222,6 +222,90 @@ class IsaacArmEnv:
             raise KeyError(f"Could not find policy image term {self.config.policy_image_obs_key!r}.")
         return self._prepare_render_frames(image)
 
+    def project_base_point_to_debug_pixel(
+        self,
+        point_base: np.ndarray | list[float] | tuple[float, float, float],
+        camera_name: str | None = None,
+        env_index: int = 0,
+    ) -> dict[str, Any] | None:
+        """Project a robot-base-frame point into the fixed debug camera image.
+
+        Returns `None` when the live Isaac scene does not expose the camera,
+        robot pose, or intrinsics needed for a trustworthy projection.
+        """
+
+        selected_camera = camera_name or self.config.debug_camera_name
+        if selected_camera is None:
+            return None
+        if env_index < 0 or env_index >= self.config.num_envs:
+            raise ValueError(f"env_index must be in [0, {self.config.num_envs}), got {env_index}")
+
+        backend = getattr(self._env, "unwrapped", self._env)
+        scene = getattr(backend, "scene", None)
+        if scene is None:
+            return None
+
+        camera = self._scene_entity(scene, selected_camera)
+        robot = self._scene_entity(scene, "robot")
+        if camera is None or robot is None:
+            return None
+
+        camera_data = getattr(camera, "data", None)
+        robot_data = getattr(robot, "data", None)
+        if camera_data is None or robot_data is None:
+            return None
+
+        camera_pos_w = self._indexed_data(camera_data, "pos_w", env_index)
+        camera_quat_w_ros = self._indexed_data(camera_data, "quat_w_ros", env_index)
+        intrinsic_matrix = self._indexed_data(camera_data, "intrinsic_matrices", env_index)
+        robot_pos_w = self._indexed_data(robot_data, "root_pos_w", env_index)
+        robot_quat_w = self._indexed_data(robot_data, "root_quat_w", env_index)
+        image_shape = getattr(camera_data, "image_shape", None)
+        if (
+            camera_pos_w is None
+            or camera_quat_w_ros is None
+            or intrinsic_matrix is None
+            or robot_pos_w is None
+            or robot_quat_w is None
+            or image_shape is None
+        ):
+            return None
+
+        point_base_array = np.asarray(point_base, dtype=np.float64).reshape(3)
+        robot_from_base = self._rotation_matrix_from_quat_wxyz(robot_quat_w)
+        point_w = robot_pos_w.astype(np.float64) + robot_from_base @ point_base_array
+
+        camera_from_world = self._rotation_matrix_from_quat_wxyz(camera_quat_w_ros).T
+        point_camera = camera_from_world @ (point_w - camera_pos_w.astype(np.float64))
+        depth_m = float(point_camera[2])
+
+        height, width = (int(value) for value in image_shape)
+        projection: dict[str, Any] = {
+            "camera_name": selected_camera,
+            "image_shape": [height, width],
+            "point_base_m": point_base_array.astype(float).tolist(),
+            "point_world_m": point_w.astype(float).tolist(),
+            "point_camera_m": point_camera.astype(float).tolist(),
+            "depth_m": depth_m,
+            "source": "debug_camera_projection",
+        }
+        if depth_m <= 0.0:
+            projection.update({"pixel": None, "visible": False, "reason": "behind_camera"})
+            return projection
+
+        intrinsic = intrinsic_matrix.astype(np.float64)
+        u = float(intrinsic[0, 0] * point_camera[0] / depth_m + intrinsic[0, 2])
+        v = float(intrinsic[1, 1] * point_camera[1] / depth_m + intrinsic[1, 2])
+        visible = 0.0 <= u < width and 0.0 <= v < height
+        projection.update(
+            {
+                "pixel": [int(round(u)), int(round(v))],
+                "pixel_float": [u, v],
+                "visible": bool(visible),
+            }
+        )
+        return projection
+
     def close(self) -> None:
         close = getattr(self._env, "close", None)
         if callable(close):
@@ -419,6 +503,44 @@ class IsaacArmEnv:
                 if found is not None:
                     return found
         return None
+
+    def _scene_entity(self, scene: Any, name: str) -> Any:
+        try:
+            return scene[name]
+        except Exception:
+            pass
+        for collection_name in ("sensors", "articulations", "rigid_objects", "extras"):
+            collection = getattr(scene, collection_name, None)
+            if isinstance(collection, dict) and name in collection:
+                return collection[name]
+        return getattr(scene, name, None)
+
+    def _indexed_data(self, data: Any, name: str, env_index: int) -> np.ndarray | None:
+        value = getattr(data, name, None)
+        if value is None:
+            return None
+        array = self._to_numpy(value)
+        if array.ndim == 0:
+            return None
+        if array.shape[0] <= env_index:
+            return None
+        return np.asarray(array[env_index], dtype=np.float64)
+
+    @staticmethod
+    def _rotation_matrix_from_quat_wxyz(quat: np.ndarray) -> np.ndarray:
+        quat_array = np.asarray(quat, dtype=np.float64).reshape(4)
+        norm = float(np.linalg.norm(quat_array))
+        if norm <= 0.0:
+            raise ValueError("quaternion norm must be positive")
+        w, x, y, z = quat_array / norm
+        return np.array(
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            ],
+            dtype=np.float64,
+        )
 
     @staticmethod
     def _split_reset(reset_result: Any) -> tuple[Any, dict[str, Any]]:

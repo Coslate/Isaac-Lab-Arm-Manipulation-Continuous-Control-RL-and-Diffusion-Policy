@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from eval import record_debug_gif, sample_frame_indices, save_gif, save_sampled_debug_frames
+from eval import record_debug_gif, sample_frame_indices, save_gif, save_mp4, save_sampled_debug_frames
 
 
 def _rgb_frame(value: int, *, height: int = 16, width: int = 24) -> np.ndarray:
@@ -39,6 +39,16 @@ def test_save_gif_handles_uint8_rgb_overlay(tmp_path) -> None:
     assert output_path.exists()
     with Image.open(output_path) as gif:
         assert gif.n_frames == 2
+
+
+def test_save_mp4_creates_file_and_parent_directory(tmp_path) -> None:
+    pytest.importorskip("imageio")
+    frames = [_rgb_frame(30, height=48, width=96), _rgb_frame(60, height=48, width=96)]
+
+    output_path = save_mp4(frames, tmp_path / "nested" / "rollout.mp4", fps=5.0, overlay=lambda index: [f"step {index}"])
+
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
 
 
 def test_save_sampled_debug_frames_writes_evenly_spaced_pngs(tmp_path) -> None:
@@ -125,9 +135,12 @@ def test_record_debug_gif_uses_debug_camera_without_touching_policy_image(tmp_pa
         seed=42,
         sample_debug_dir=tmp_path / "debug_frames",
         sample_prefix="heuristic_ep000",
+        mp4_output_path=tmp_path / "videos" / "heuristic.mp4",
     )
 
     assert result.gif_path.exists()
+    assert result.mp4_path is not None
+    assert result.mp4_path.exists()
     assert result.num_frames == 3
     assert len(result.sampled_frame_paths) == 3
     assert env.reset_seed == 42

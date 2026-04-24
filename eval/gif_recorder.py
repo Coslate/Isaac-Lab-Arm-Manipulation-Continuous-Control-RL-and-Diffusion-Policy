@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 OverlaySpec = Sequence[str] | Callable[[int], Sequence[str] | None]
+OVERLAY_TEXT_SCALE = 2
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class GifRecordResult:
     gif_path: Path
     sampled_frame_paths: tuple[Path, ...]
     num_frames: int
+    mp4_path: Path | None = None
 
 
 def save_gif(
@@ -40,10 +42,7 @@ def save_gif(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     duration_ms = max(1, int(round(1000.0 / fps)))
-    pil_frames = [
-        Image.fromarray(_draw_overlay(frame, _overlay_lines(overlay, frame_index)))
-        for frame_index, frame in enumerate(frame_arrays)
-    ]
+    pil_frames = [Image.fromarray(frame) for frame in _overlay_frame_sequence(frame_arrays, overlay)]
     pil_frames[0].save(
         output,
         save_all=True,
@@ -52,6 +51,37 @@ def save_gif(
         loop=loop,
         optimize=False,
         disposal=2,
+    )
+    return output
+
+
+def save_mp4(
+    frames: Sequence[Any],
+    output_path: str | Path,
+    *,
+    fps: float = 10.0,
+    overlay: OverlaySpec | None = None,
+) -> Path:
+    """Save RGB frames as an MP4 and return the output path."""
+
+    frame_arrays = _prepare_frame_sequence(frames)
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    encoded_frames = np.stack(_overlay_frame_sequence(frame_arrays, overlay), axis=0)
+    try:
+        import imageio.v2 as imageio
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("MP4 output requires imageio and imageio-ffmpeg to be installed.") from exc
+    imageio.mimwrite(
+        output,
+        encoded_frames,
+        fps=fps,
+        codec="libx264",
+        quality=8,
+        macro_block_size=1,
     )
     return output
 
@@ -112,6 +142,7 @@ def record_debug_gif(
     sample_debug_dir: str | Path | None = None,
     sample_prefix: str = "rollout",
     overlay: OverlaySpec | None = None,
+    mp4_output_path: str | Path | None = None,
 ) -> GifRecordResult:
     """Run one visual rollout and save a GIF from the fixed debug camera."""
 
@@ -132,10 +163,16 @@ def record_debug_gif(
             break
 
     gif_path = save_gif(frames, output_path, fps=fps, overlay=overlay)
+    mp4_path = save_mp4(frames, mp4_output_path, fps=fps, overlay=overlay) if mp4_output_path is not None else None
     sampled_paths: tuple[Path, ...] = ()
     if sample_debug_dir is not None:
         sampled_paths = save_sampled_debug_frames(frames, sample_debug_dir, prefix=sample_prefix)
-    return GifRecordResult(gif_path=gif_path, sampled_frame_paths=sampled_paths, num_frames=len(frames))
+    return GifRecordResult(
+        gif_path=gif_path,
+        mp4_path=mp4_path,
+        sampled_frame_paths=sampled_paths,
+        num_frames=len(frames),
+    )
 
 
 def _prepare_frame_sequence(frames: Sequence[Any]) -> list[np.ndarray]:
@@ -158,6 +195,13 @@ def _prepare_rgb_frame(frame: Any) -> np.ndarray:
     return np.array(frame_array, dtype=np.uint8, copy=True)
 
 
+def _overlay_frame_sequence(frames: Sequence[np.ndarray], overlay: OverlaySpec | None) -> list[np.ndarray]:
+    return [
+        _draw_overlay(frame, _overlay_lines(overlay, frame_index))
+        for frame_index, frame in enumerate(frames)
+    ]
+
+
 def _validate_sample_indices(sample_indices: Sequence[int], num_frames: int) -> tuple[int, ...]:
     if not sample_indices:
         raise ValueError("sample_indices must not be empty")
@@ -172,19 +216,33 @@ def _draw_overlay(frame: np.ndarray, lines: Sequence[str]) -> np.ndarray:
     if not lines:
         return frame
     image = Image.fromarray(frame).convert("RGB")
-    draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
     padding = 4
+    draw = ImageDraw.Draw(image)
     line_boxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
     line_height = max((box[3] - box[1] for box in line_boxes), default=8) + 2
     box_width = max((box[2] - box[0] for box in line_boxes), default=0) + 2 * padding
     box_height = line_height * len(lines) + 2 * padding
-    draw.rectangle((0, 0, box_width, box_height), fill=(0, 0, 0))
+
+    overlay_image = Image.new("RGB", (box_width, box_height), (0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay_image)
     y = padding
     for line in lines:
-        draw.text((padding, y), line, fill=(255, 255, 255), font=font)
+        overlay_draw.text((padding, y), line, fill=(255, 255, 255), font=font)
         y += line_height
+    overlay_image = overlay_image.resize(
+        (box_width * OVERLAY_TEXT_SCALE, box_height * OVERLAY_TEXT_SCALE),
+        _nearest_resample(),
+    )
+    crop_width = min(overlay_image.width, image.width)
+    crop_height = min(overlay_image.height, image.height)
+    image.paste(overlay_image.crop((0, 0, crop_width, crop_height)), (0, 0))
     return np.asarray(image, dtype=np.uint8)
+
+
+def _nearest_resample() -> int:
+    resampling = getattr(Image, "Resampling", None)
+    return resampling.NEAREST if resampling is not None else Image.NEAREST
 
 
 def _overlay_lines(overlay: OverlaySpec | None, frame_index: int) -> tuple[str, ...]:

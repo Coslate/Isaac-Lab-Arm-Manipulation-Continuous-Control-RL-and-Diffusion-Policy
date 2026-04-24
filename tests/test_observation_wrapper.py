@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -369,6 +370,57 @@ def test_policy_and_debug_frames_can_preserve_parallel_env_batches() -> None:
     assert debug_frames[1, :, :, 1].max() == 127
     assert env.get_policy_frame().shape == (WRIST_CAMERA_IMAGE_HEIGHT, WRIST_CAMERA_IMAGE_WIDTH, 3)
     assert env.get_debug_frame().shape == (24, 32, 3)
+
+
+def test_project_base_point_to_debug_pixel_uses_live_camera_intrinsics() -> None:
+    class ProjectionScene:
+        def __init__(self) -> None:
+            self.sensors = {
+                "table_cam": SimpleNamespace(
+                    data=SimpleNamespace(
+                        pos_w=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+                        quat_w_ros=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                        intrinsic_matrices=np.array(
+                            [[[100.0, 0.0, 100.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]],
+                            dtype=np.float32,
+                        ),
+                        image_shape=(100, 200),
+                    )
+                )
+            }
+            self.robot = SimpleNamespace(
+                data=SimpleNamespace(
+                    root_pos_w=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+                    root_quat_w=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                )
+            )
+
+        def __getitem__(self, name: str) -> Any:
+            if name == "robot":
+                return self.robot
+            return self.sensors[name]
+
+    class ProjectionEnv(FakeIsaacGymEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self.scene = ProjectionScene()
+
+        @property
+        def unwrapped(self) -> "ProjectionEnv":
+            return self
+
+    env = IsaacArmEnv(
+        IsaacArmEnvConfig(enable_cameras=True),
+        gym_make=lambda *_args, **_kwargs: ProjectionEnv(),
+    )
+
+    projection = env.project_base_point_to_debug_pixel([0.0, 0.0, 1.0])
+
+    assert projection is not None
+    assert projection["camera_name"] == "table_cam"
+    assert projection["pixel"] == [100, 50]
+    assert projection["visible"] is True
+    assert projection["image_shape"] == [100, 200]
 
 
 def test_custom_policy_image_key_is_supported_without_generic_fallback() -> None:

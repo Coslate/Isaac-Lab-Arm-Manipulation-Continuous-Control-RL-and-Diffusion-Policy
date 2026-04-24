@@ -61,11 +61,11 @@ Isaac scripts already set `DISPLAY=:1` automatically when it is not present, so 
 | Runtime env | Stock task camera observation | Blocked | Confirmed 2026-04-19: stock `Isaac-Lift-Cube-Franka-IK-Rel-v0` still exposes only `policy` obs with shape `(num_envs, 35)` in camera mode. `--enable-cameras` enables rendering but does not add RGB observation terms. |
 | PR 2.5 | Camera-enabled Franka lift cfg | Done | Keeps the same IK-relative lift task, customizes `env_cfg` before `gym.make()` to add `wrist_cam`, optional `table_cam`, named 40D proprio terms, and has a live camera smoke result. |
 | Image aug | `utils/image_aug.py` | Done | Three-tier contract: wrapper = deterministic resize; training = `PadAndRandomCrop` (primary) or `CenterBiasedResizedCrop` (alternative); eval/GIF/smoke = `IdentityAug`. Utility layer and tests are done; wiring the aug into future trainers/loaders is owned by later training PRs. |
-| PR 8-pre | Demo policies | Done | Adds the lightweight demo policy interface plus RandomPolicy and HeuristicPolicy so rollout collection has policies to call. HDF5-backed ReplayPolicy is deferred until PR 8-lite defines the episode dataset schema. |
-| PR 8-lite | Rollout dataset | Done | Stores rollouts by episode in HDF5, supports parallel env rollout collection by splitting each env into its own episode group, keeps resized wrist policy images separate from optional native-resolution wrist images and optional debug images, provides action-window sampling that never crosses done/truncated boundaries, and includes dataset inspection plus rollout-throughput benchmark helpers. Refactor 2026-04-24: renamed `--num-envs` → `--num-parallel-envs` (alias kept), metadata now records `reset_round` / `reset_seed` / `terminated_by`, per-lane collection no longer force-truncates sibling lanes when one lane ends early, and CLI collection shows a tqdm episode progress bar by default (`--no-progress` disables it). |
-| PR 11-lite | Evaluation metrics | Done | `eval/eval_loop.py` computes return, project-level success, episode length, and action jerk from episode-safe rollout HDF5 files. Success uses stored `info["success"]` / `info["is_success"]` flags when present, otherwise falls back to the 40D proprio `cube_to_target` threshold because the stock Lift task does not expose an active success signal today. |
-| PR 12-lite | GIF output | Done | `eval/gif_recorder.py` saves fixed-debug-camera GIFs, sampled debug PNGs, and optional text overlays. `record_debug_gif()` drives `env + policy` while keeping policy observations on wrist images and GIF frames on the debug camera. |
-| Demo PR | One-command script | Pending | One command creates dataset, metrics JSON, and GIF. |
+| PR 8-pre | Demo policies | Done | Adds the lightweight demo policy interface plus RandomPolicy and HeuristicPolicy so rollout collection has policies to call. HDF5-backed ReplayPolicy is implemented in the Demo PR now that the PR8-lite episode dataset schema exists. |
+| PR 8-lite | Rollout dataset | Done | Stores rollouts by episode in HDF5, supports parallel env rollout collection by splitting each env into its own episode group, keeps resized wrist policy images separate from optional native-resolution wrist images and optional debug images, provides action-window sampling that never crosses done/truncated boundaries, and includes dataset inspection plus rollout-throughput benchmark helpers. Refactor 2026-04-24: renamed `--num-envs` → `--num-parallel-envs` (alias kept), metadata now records `reset_round` / `reset_seed` / `terminated_by` / `settle_steps`, per-lane collection no longer force-truncates sibling lanes when one lane ends early, CLI collection shows a tqdm episode progress bar by default (`--no-progress` disables it), and `--settle-steps` can skip reset-settling physics before recording dataset transitions. |
+| PR 11-lite | Evaluation metrics | Done | `eval/eval_loop.py` computes return, project-level success, episode length, action jerk, and target XYZ metadata from episode-safe rollout HDF5 files. Success uses stored `info["success"]` / `info["is_success"]` flags when present, otherwise falls back to the 40D proprio `cube_to_target` threshold because the stock Lift task does not expose an active success signal today. |
+| PR 12-lite | Visual rollout output | Done | `eval/gif_recorder.py` saves fixed-debug-camera GIFs, optional MP4s, sampled debug PNGs, and optional text overlays. `record_debug_gif()` drives `env + policy` while keeping policy observations on wrist images and visual frames on the debug camera. |
+| Demo PR | One-command script | Done | `scripts.demo_data_loop` creates dataset, metrics JSON, GIF, and sampled debug PNGs in one command. Supports random, heuristic, HDF5 replay policies, and optional `--settle-steps` zero-action reset warmup; live Isaac is the interview path and `--backend fake` is kept for fast unit tests/sample artifacts. |
 
 PR0 verification command:
 
@@ -130,8 +130,8 @@ clean rollout probe: --table-cleanup matte-overlay, max_steps 3, episode_005/009
 Current full local test result:
 
 ```text
-conda run -n isaac_arm python -m pytest -q -rs
-108 passed, 1 skipped
+conda run -n isaac_arm python -m pytest -q
+144 passed, 1 skipped
 skipped: tests/test_isaac_runtime_smoke.py requires RUN_ISAAC_RUNTIME_SMOKE=1 to launch Isaac Sim / Isaac Lab
 ```
 
@@ -186,9 +186,12 @@ conda run -n isaac_arm python -m scripts.demo_data_loop \
   --backend isaac \
   --policy heuristic \
   --num_episodes 3 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
   --save_dataset ./data/heuristic_rollouts.h5 \
   --save_metrics ./logs/heuristic_eval.json \
-  --save_gif ./out/gifs/heuristic_demo.gif
+  --save_gif ./out/gifs/heuristic_demo.gif \
+  --save_mp4 ./out/gifs/heuristic_demo.mp4
 ```
 
 Required outputs:
@@ -725,7 +728,7 @@ The action contract remains the project-wide normalized 7D action:
 [dx, dy, dz, droll, dpitch, dyaw, gripper]
 ```
 
-PR 8-pre owns the base policy interface, RandomPolicy, and HeuristicPolicy. HDF5-backed ReplayPolicy is deferred until after PR 8-lite, because replay needs the finalized episode dataset schema.
+PR 8-pre owns the base policy interface, RandomPolicy, and HeuristicPolicy. HDF5-backed ReplayPolicy is implemented in the Demo PR because replay needs the finalized PR8-lite episode dataset schema.
 
 ### RandomPolicy
 
@@ -750,15 +753,24 @@ Simple rules:
 3. Lift upward.
 ```
 
+Current implementation detail: the Isaac cube blocks the gripper fingers before the raw finger joints reach a fully closed empty-gripper value. The heuristic therefore treats the gripper as "closed around the cube" at about `0.025m` mean finger position, not `0.015m`; otherwise the policy can keep pushing/closing and never enter the lift branch during the 100-step demo.
+
+The lift phase is a target-servo, not a blind upward push. After grasp:
+
+- Far from target, command motion along `cube_to_target`.
+- Within `target_slow_radius_m = 0.08`, scale the command down as the cube approaches the target to reduce overshoot.
+- Within `target_hold_radius_m = 0.02`, hold translation at zero and keep the gripper closed. This matches the current success threshold.
+- If the cube overshoots above or past the target, allow corrective motion back toward the target instead of forcing a minimum upward command.
+
 Purpose:
 
 - Sanity policy.
 - Should be easier to interpret than random in the formal Isaac env.
 - Produces a more meaningful GIF for interview discussion.
 
-### Deferred ReplayPolicy
+### ReplayPolicy
 
-ReplayPolicy reads actions from a saved dataset and replays them. It is useful, but it should be implemented after PR 8-lite defines and tests the HDF5 episode dataset.
+ReplayPolicy reads actions from a saved dataset and replays them. It is implemented in `policies/replay_policy.py` as part of the Demo PR.
 
 Purpose:
 
@@ -777,7 +789,7 @@ output: data/replay_from_heuristic_rollouts.h5  # optional, but recommended
 
 The replay dataset output is optional because the policy already consumes a dataset. It is recommended for the demo because it proves replay uses the same collector/evaluator path as random and heuristic.
 
-ReplayPolicy suggested file, after PR 8-lite:
+ReplayPolicy file:
 
 ```text
 policies/replay_policy.py
@@ -790,6 +802,7 @@ policies/__init__.py
 policies/base.py
 policies/random_policy.py
 policies/heuristic_policy.py
+policies/replay_policy.py
 tests/test_demo_policies.py
 ```
 
@@ -809,7 +822,8 @@ conda run -n isaac_arm python -m pytest tests/test_demo_policies.py -v
 - RandomPolicy is deterministic when constructed with a fixed seed.
 - Heuristic policy commands open when far from the cube.
 - Heuristic policy eventually commands close when near the cube.
-- Heuristic policy commands lift/upward motion after close/grasp conditions.
+- Heuristic policy commands lift/target-servo motion after close/grasp conditions.
+- Heuristic policy slows near the target, holds inside the 2cm success radius, and can correct downward after target overshoot.
 
 **Suggested Commit**
 
@@ -838,7 +852,7 @@ Known result:
 
 ```text
 conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v
-15 passed
+18 passed
 conda run -n isaac_arm python -m pytest tests/test_rollout_benchmark.py -v
 7 passed
 ```
@@ -914,6 +928,7 @@ episode_000/
     reset_round        # which env.reset() round produced this episode (0-indexed)
     reset_seed         # seed actually passed to env.reset(seed=...) for this round
     terminated_by      # "done", "truncated", or collector-side "max_steps"
+    settle_steps       # zero-action warmup steps run after explicit reset before recording
     clean_demo_scene   # whether opt-in visual table/spacing cleanup was enabled during collection
     table_cleanup      # "none", "matte", "overlay", or "matte-overlay"
     min_clean_env_spacing
@@ -929,6 +944,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
   --num-parallel-envs 2 \
   --num-episodes 10 \
   --max-steps 100 \
+  --settle-steps 20 \
   --include-raw-policy-images \
   --include-debug-images \
   --save-dataset data/random_rollouts_10eps_numenvs2_raw_debug.h5 \
@@ -943,6 +959,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
   --num-parallel-envs 2 \
   --num-episodes 10 \
   --max-steps 100 \
+  --settle-steps 20 \
   --include-raw-policy-images \
   --include-debug-images \
   --save-dataset data/random_rollouts_10eps_numenvs2_tc_matte.h5 \
@@ -958,6 +975,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
   --num-parallel-envs 2 \
   --num-episodes 10 \
   --max-steps 100 \
+  --settle-steps 20 \
   --include-raw-policy-images \
   --include-debug-images \
   --save-dataset data/random_rollouts_10eps_numenvs2_tc_matte_overlay.h5 \
@@ -968,6 +986,8 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y \
 ```
 
 Use `--no-progress` instead of `--progress` when writing logs to files or running non-interactive CI.
+
+Use `--settle-steps 20` for live Isaac datasets intended for training or demo review. The collector runs those zero-action steps after each explicit `env.reset(seed=...)`, then starts writing `images`, `proprios`, `actions`, rewards, and optional raw/debug images. The warmup transitions are not stored, and each episode metadata records `settle_steps`. The default remains `0` when you intentionally want the raw reset behavior.
 
 The default collector disables Isaac debug visualizers but otherwise preserves the stock rendered scene for all three image streams (`images`, `raw_policy_images`, and `debug_images`). To opt into cleaner demo visuals that hide the stock table red mark and increase cloned-lane spacing, use the recommended enum mode:
 
@@ -988,6 +1008,7 @@ Camera-source tagging is a hard rule:
 - `source_env_index` records the vectorized Isaac env lane that produced the episode. This matters when `--num-parallel-envs > 1`.
 - `reset_round` and `reset_seed` identify the `env.reset(seed=...)` call that started the episode.
 - `terminated_by` records whether the lane ended through the env's `done`, the env's `truncated`, or the collector's `--max-steps` cap.
+- `settle_steps` records how many zero-action warmup steps ran after the explicit reset before dataset recording started. Training loaders read only the stored post-settle transitions.
 - The progress bar reports episode groups written, not environment steps. With `--num-parallel-envs 2`, a single vectorized reset round may advance the bar by two episodes when both lanes flush.
 - `table_cleanup` is `none` by default. When it is `matte`, `overlay`, or `matte-overlay`, collection uses the opt-in visual cleanup path and applies `min_clean_env_spacing` (default `5.0`) unless that spacing is set to `none`.
 
@@ -1040,7 +1061,7 @@ inspecting for 10th episode 3rd step
   --step 49 \
   --save-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_policy_tc_matte_overlay.png \
   --save-raw-policy-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_raw_policy_tc_matte_overlay.png \
-  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_debug_tc_matte_overla.png  
+  --save-debug-frame out/debug_frames/random_10eps_numenvs2_ep005_step049_debug_tc_matte_overlay.png
 ```
 
 This helper prints the HDF5 schema/metadata and can export single PNG frames from `images`, `raw_policy_images`, and `debug_images`. It is a dataset inspection tool, not the full GIF pipeline. PR12-lite owns GIF creation and broader visual rollout artifacts.
@@ -1204,6 +1225,8 @@ mean_return
 success_rate
 mean_episode_length
 mean_action_jerk
+episode_successes
+closest_target_approach_by_episode
 ```
 
 Action jerk for the lightweight demo:
@@ -1224,7 +1247,14 @@ cube_to_target = proprio[:, 30:33]
 success = any(norm(cube_to_target[t]) <= 0.02 for t in episode)
 ```
 
-The JSON records `success_source` as `"info_success"` when explicit flags are used, `"proprio_cube_to_target_norm"` when the fallback is used, or `"mixed_info_success_and_proprio_cube_to_target_norm"` for mixed old/new datasets. It also records `success_threshold_m = 0.02` and `consecutive_success_steps = 1`. A stricter future run can require multiple consecutive success hits without changing the dataset schema. The fallback remains important because `Isaac-Lift-Cube-Franka-IK-Rel-v0` has a helper termination for reaching the goal, but the stock task config does not wire it as an active `success` termination/info field today.
+This fallback distance is a 3D Euclidean point-to-point distance in the robot/base frame: `norm(proprio[:, 30:33])`, where the vector is `target_pos_base - cube_pos_base`.
+
+The JSON records `success_source` as `"info_success"` when explicit flags are used, `"proprio_cube_to_target_norm"` when the fallback is used, or `"mixed_info_success_and_proprio_cube_to_target_norm"` for mixed old/new datasets. It also records `success_threshold_m = 0.02`, `consecutive_success_steps = 1`, `success_distance_metric = "euclidean_3d_cube_to_target_base_m"`, and `success_distance_source = "norm(proprio[:, 30:33]) where proprio[:, 30:33] = target_pos_base - cube_pos_base"`. A stricter future run can require multiple consecutive success hits without changing the dataset schema. The fallback remains important because `Isaac-Lift-Cube-Franka-IK-Rel-v0` has a helper termination for reaching the goal, but the stock task config does not wire it as an active `success` termination/info field today.
+
+Per-episode diagnostics are now part of the metrics contract:
+
+- `episode_successes`: map from `episode_000`, `episode_001`, ... to whether each episode succeeded under the active success source/threshold.
+- `closest_target_approach_by_episode`: map from each episode key to the closest recorded approach to the target, including `closest_step`, `closest_distance_m`, `closest_cube_position_base_m`, `target_position_base_m_at_closest_step`, `cube_to_target_base_m_at_closest_step`, `success`, and `success_source`.
 
 **Suggested Files**
 
@@ -1260,7 +1290,23 @@ conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v
   "mean_action_jerk": 0.0,
   "success_threshold_m": 0.02,
   "consecutive_success_steps": 1,
-  "success_source": "proprio_cube_to_target_norm"
+  "success_source": "proprio_cube_to_target_norm",
+  "success_distance_metric": "euclidean_3d_cube_to_target_base_m",
+  "success_distance_source": "norm(proprio[:, 30:33]) where proprio[:, 30:33] = target_pos_base - cube_pos_base",
+  "episode_successes": {
+    "episode_000": false
+  },
+  "closest_target_approach_by_episode": {
+    "episode_000": {
+      "closest_step": 0,
+      "closest_distance_m": 0.0,
+      "closest_cube_position_base_m": [0.0, 0.0, 0.0],
+      "target_position_base_m_at_closest_step": [0.0, 0.0, 0.0],
+      "cube_to_target_base_m_at_closest_step": [0.0, 0.0, 0.0],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm"
+    }
+  }
 }
 ```
 
@@ -1323,7 +1369,8 @@ for _ in range(max_steps):
     action = policy.act(obs)
     obs, reward, terminated, truncated, info = env.step(action)
     frames.append(env.get_debug_frame("table_cam"))
-save_gif(frames, out_path)
+save_gif(frames, gif_path)
+save_mp4(frames, mp4_path)
 ```
 
 The debug camera must not be passed to `policy.act()` and must not replace `obs["image"]`.
@@ -1343,8 +1390,9 @@ tests/test_visual_outputs.py
 Current implementation:
 
 - `save_gif(frames, out_path, fps=...)` writes RGB frames to a GIF and creates missing parent directories.
+- `save_mp4(frames, out_path, fps=...)` writes RGB frames to an MP4 through `imageio` / `imageio-ffmpeg`, avoiding GIF's 256-color palette limit.
 - `save_sampled_debug_frames(...)` writes evenly sampled debug PNGs such as `heuristic_ep000_step002_debug.png`.
-- `record_debug_gif(env, policy, ...)` runs one visual rollout, calls `policy.act(obs)` with the normal wrist-camera observation, and records frames only from `env.get_debug_frame(debug_camera_name)`.
+- `record_debug_gif(env, policy, ...)` runs one visual rollout, calls `policy.act(obs)` with the normal wrist-camera observation, and records frames only from `env.get_debug_frame(debug_camera_name)`. When `mp4_output_path` is provided, the same frames/overlay are also saved as MP4.
 - Optional text overlays are post-processing only; they do not re-enable Isaac debug visualizers and do not touch `obs["image"]`.
 
 **Test Command**
@@ -1381,11 +1429,76 @@ git commit -m "feat(viz): add rollout GIF recording"
 
 ## 12. Demo PR - One-Command Data Loop
 
-**Status:** Pending
+**Status:** Done
 
 **Goal / Why**
 
 One command should generate dataset, metrics, and GIF. This is the command to run before the interview and potentially screen-share.
+
+Implemented files:
+
+```text
+scripts/demo_data_loop.py
+policies/replay_policy.py
+tests/test_demo_data_loop.py
+```
+
+The one-command loop:
+
+- creates a rollout HDF5 dataset through the same collector used by PR8-lite;
+- evaluates it with PR11-lite metrics and writes metrics JSON;
+- records a fixed-debug-camera GIF through PR12-lite with 2x scaled text overlay for readability;
+- saves sampled debug PNG stills next to the GIF when `--save-debug-frames-dir` is provided;
+- supports `--policy random`, `--policy heuristic`, and `--policy replay --replay_dataset ...`;
+- supports `--backend isaac` for the real demo and `--backend fake` only for fast tests/sample artifacts.
+- supports `--settle-steps N`, which runs zero-action physics warmup after explicit `env.reset(...)` calls and before any dataset/GIF frame is recorded. `scripts.collect_rollouts` owns this for HDF5 dataset collection, and `scripts.demo_data_loop` applies the same behavior to GIF recording. The default is `0` to preserve raw behavior; the recommended live demo/training-data value is `20` so the cube settles on the table before the visible rollout starts.
+
+Current GIF text overlay:
+
+```text
+step    current GIF frame index in the visual rollout
+policy  policy used for the demo run: random, heuristic, or replay
+return  mean_return from the dataset/eval rollout, i.e. mean episode reward sum
+success success_rate from the dataset/eval rollout
+jerk    mean_action_jerk from the dataset/eval rollout
+```
+
+Only `step` changes per GIF frame today. The other text fields summarize the metrics JSON generated before the GIF is recorded.
+
+Current target metadata in the demo metrics JSON:
+
+- `target_position_base_m`: convenience summary target XYZ in the robot/base frame, currently `episode_000` step 0 from `proprio[:, 24:27]`.
+- `target_position_base_m_source`: exact provenance for the summary target, for example `episode_000_step_000_proprio_24_27`.
+- `target_positions_base_m_by_episode`: first target XYZ per saved HDF5 episode.
+- `target_position_constant_by_episode`: true when every episode's target stays constant over its recorded steps.
+- `target_debug_pixel`: projected first target pixel in the fixed debug-camera frame when the live wrapper can read camera intrinsics/extrinsics.
+- `target_debug_pixel_by_episode`: projected target pixel per episode when available.
+- `target_debug_pixel_visible`: whether the first projected target lands inside the debug image.
+- `target_debug_pixel_source`: `debug_camera_projection` when projection succeeded, or a `not_available...` / `projection_failed...` reason when it did not.
+
+Current target reticle overlay:
+
+Goal:
+
+```text
+3D target position in robot/base frame
+-> transform to debug camera frame
+-> project using camera intrinsics
+-> draw reticle and pixel-coordinate text on the debug image pixel
+```
+
+Implementation plan:
+
+1. Keep target information sourced from the formal proprio contract: `target_pos_base = obs["proprio"][0, 24:27]`. Do not add Isaac debug visualizers and do not draw target markers into `images` or `raw_policy_images`.
+2. Add/use the live Isaac wrapper method `project_base_point_to_debug_pixel(point_base, camera_name="table_cam")`.
+3. Inside that method, get the robot/base frame pose in world coordinates and the debug camera pose/intrinsics from the Isaac camera sensor.
+4. Convert the target point from base frame to world frame: `target_w = T_world_base @ target_base`.
+5. Convert world frame to debug-camera frame: `target_cam = T_camera_world @ target_w`.
+6. If the target is behind the camera or outside the image plane, return `None` and skip the reticle for that frame.
+7. Project with camera intrinsics: `u = fx * x / z + cx`, `v = fy * y / z + cy`.
+8. `demo_data_loop.py` exposes opt-in `--target-overlay {none,text,reticle,text-reticle}`. The default is `none`; final interview GIFs should use `--target-overlay text-reticle`.
+9. Reticle/text drawing is post-processing on fixed debug-camera GIF/debug PNG frames only. The policy observation remains wrist RGB plus proprio, and HDF5 dataset image streams are not modified.
+10. Fake projection tests verify that a deterministic target point draws a reticle plus coordinate label such as `(100, 32)`, and that out-of-view targets do not draw anything.
 
 **Command**
 
@@ -1394,6 +1507,8 @@ conda run -n isaac_arm python -m scripts.demo_data_loop \
   --backend isaac \
   --policy heuristic \
   --num_episodes 3 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
   --save_dataset ./data/heuristic_rollouts.h5 \
   --save_metrics ./logs/heuristic_eval.json \
   --save_gif ./out/gifs/heuristic_demo.gif
@@ -1415,15 +1530,19 @@ conda run -n isaac_arm python -m scripts.demo_data_loop \
   --policy replay \
   --replay_dataset ./data/heuristic_rollouts.h5 \
   --num_episodes 3 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
   --save_dataset ./data/replay_from_heuristic_rollouts.h5 \
   --save_metrics ./logs/replay_from_heuristic_eval.json \
-  --save_gif ./out/gifs/replay_from_heuristic_demo.gif
+  --save_gif ./out/gifs/replay_from_heuristic_demo.gif \
+  --save_mp4 ./out/gifs/replay_from_heuristic_demo.mp4
 ```
 
 **Suggested File**
 
 ```text
 scripts/demo_data_loop.py
+policies/replay_policy.py
 tests/test_demo_data_loop.py
 ```
 
@@ -1435,7 +1554,8 @@ conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -v
 
 **What To Test**
 
-- CLI accepts `--backend`, `--policy`, `--num_episodes`, `--save_dataset`, `--save_metrics`, and `--save_gif`.
+- CLI accepts `--backend`, `--policy`, `--num_episodes`, `--settle-steps`, `--save_dataset`, `--save_metrics`, `--save_gif`, and optional `--save_mp4`.
+- CLI accepts `--target-overlay {none,text,reticle,text-reticle}` and uses it only for GIF/debug PNG post-processing.
 - CLI accepts `--replay_dataset` when `--policy replay`.
 - Running with `--policy random` creates all requested outputs.
 - Running with `--policy heuristic` creates all requested outputs.
@@ -1445,6 +1565,82 @@ conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -v
 - Dataset has at least one episode.
 - GIF exists and has multiple frames.
 - Output directories are created if missing.
+- `--settle-steps` advances physics after reset without recording those warmup transitions in the dataset or GIF.
+
+Verified in `isaac_arm`:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -q
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py tests/test_demo_dataset.py tests/test_demo_policies.py tests/test_eval_metrics.py tests/test_visual_outputs.py -q
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+Known result on 2026-04-24:
+
+```text
+tests/test_demo_data_loop.py: 8 passed
+demo/eval/GIF related set: 60 passed
+full pytest: 144 passed, 1 skipped
+```
+
+Generated sample artifacts for inspection:
+
+```text
+data/demo_pr_sample_isaac.h5
+logs/demo_pr_sample_isaac_metrics.json
+out/gifs/demo_pr_sample_isaac.gif
+out/debug_frames/demo_pr_sample_isaac/heuristic_ep000_step000_debug.png
+out/debug_frames/demo_pr_sample_isaac/heuristic_ep000_step002_debug.png
+out/debug_frames/demo_pr_sample_isaac/heuristic_ep000_step005_debug.png
+data/demo_pr_sample_isaac_settled.h5
+logs/demo_pr_sample_isaac_settled_metrics.json
+out/gifs/demo_pr_sample_isaac_settled.gif
+```
+
+To generate the settled live Isaac sample used to inspect the final demo visuals:
+
+```bash
+export DISPLAY=:0
+export XAUTHORITY="/var/run/sddm/$(ls /var/run/sddm/ | head -1)"
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
+  --backend isaac \
+  --policy heuristic \
+  --num_episodes 1 \
+  --max-steps 20 \
+  --gif-max-steps 20 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/demo_pr_sample_isaac_settled.h5 \
+  --save_metrics logs/demo_pr_sample_isaac_settled_metrics.json \
+  --save_gif out/gifs/demo_pr_sample_isaac_settled.gif \
+  --save_mp4 out/gifs/demo_pr_sample_isaac_settled.mp4 \
+  --save-debug-frames-dir out/debug_frames/demo_pr_sample_isaac_settled \
+  --seed 0 \
+  --device cuda:0 \
+  --no-progress
+```
+
+Expected inspection outputs:
+
+```text
+data/demo_pr_sample_isaac_settled.h5
+logs/demo_pr_sample_isaac_settled_metrics.json
+out/gifs/demo_pr_sample_isaac_settled.gif
+out/gifs/demo_pr_sample_isaac_settled.mp4
+out/debug_frames/demo_pr_sample_isaac_settled/
+```
+
+Known settled sample check on 2026-04-24:
+
+```text
+status: ok
+gif_num_frames: 20
+mean_episode_length: 20
+cube z during recorded dataset: min 0.0209998768, max 0.0210000407
+```
 
 **Suggested Commit**
 
@@ -1456,14 +1652,14 @@ git commit -m "feat(demo): add one-command robotics data loop"
 
 ## 13. Recommended Implementation Order
 
-Finish the remaining demo slice in this order:
+The demo slice was implemented in this order:
 
 1. PR 11-lite: Evaluation metrics JSON.
 2. PR 12-lite: GIF output from the fixed debug camera.
 3. ReplayPolicy over saved rollout datasets.
 4. Demo PR: One-command data loop.
 
-If time is tight:
+If time is tight during a live interview run:
 
 - GIF and metrics are mandatory for the interview.
 - Dataset can be simplified, but keep episode-safe design.
@@ -1474,58 +1670,221 @@ If time is tight:
 
 ---
 
-## 14. Acceptance Criteria For Interview Demo
+## 14. Final Runbook
 
-**Dependency note:** PR2.5 (Camera-Enabled Franka Lift Config) is now merged into the working tree and live-smoked. The remaining demo acceptance work can assume the wrapper returns wrist RGB plus 40D proprio, but the later rollout/dataset/metrics/GIF PRs still need their own live Isaac verification.
-
-The demo is ready when these commands work:
+Use this section as the operational checklist for final artifacts. For live Isaac commands on the vast.ai bare-metal runtime, start each shell with:
 
 ```bash
-conda run -n isaac_arm python -m scripts.demo_data_loop \
-  --backend isaac \
-  --policy random \
-  --num_episodes 3 \
-  --save_dataset ./data/random_rollouts.h5 \
-  --save_metrics ./logs/random_eval.json \
-  --save_gif ./out/gifs/random_demo.gif
+export DISPLAY=:0
+export XAUTHORITY="/var/run/sddm/$(ls /var/run/sddm/ | head -1)"
 ```
 
+### Final Dataset Collection
+
+Collect a settled, camera-rich dataset for later training or inspection:
+
 ```bash
-conda run -n isaac_arm python -m scripts.demo_data_loop \
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.collect_rollouts \
+  --backend isaac \
+  --policy random \
+  --num-parallel-envs 2 \
+  --num-episodes 10 \
+  --max-steps 100 \
+  --settle-steps 20 \
+  --include-raw-policy-images \
+  --include-debug-images \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save-dataset data/final_random_rollouts_10eps_numenvs2_settled.h5 \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
+```
+
+Change `--num-episodes` and `--max-steps` upward for a larger training corpus. Keep `--settle-steps 20` for training-intended Isaac datasets so reset-settling motion is not stored. Keep `--include-raw-policy-images` and `--include-debug-images` for inspection/debug datasets; omit them for leaner training-only HDF5 files if storage becomes the bottleneck.
+
+Inspect the dataset summary and metadata:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/final_random_rollouts_10eps_numenvs2_settled.h5
+```
+
+Inspect and export one representative frame triplet:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/final_random_rollouts_10eps_numenvs2_settled.h5 \
+  --episode episode_000 \
+  --step 0 \
+  --save-policy-frame out/debug_frames/final_dataset_ep000_step000_policy.png \
+  --save-raw-policy-frame out/debug_frames/final_dataset_ep000_step000_raw_policy.png \
+  --save-debug-frame out/debug_frames/final_dataset_ep000_step000_debug.png
+```
+
+Inspect a later episode/step if the dataset has enough steps:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m scripts.inspect_rollout_dataset \
+  --dataset data/final_random_rollouts_10eps_numenvs2_settled.h5 \
+  --episode episode_009 \
+  --step 49 \
+  --save-policy-frame out/debug_frames/final_dataset_ep009_step049_policy.png \
+  --save-raw-policy-frame out/debug_frames/final_dataset_ep009_step049_raw_policy.png \
+  --save-debug-frame out/debug_frames/final_dataset_ep009_step049_debug.png
+```
+
+Dataset inspection output should be read as:
+
+- `num_episodes`: number of HDF5 episode groups, not vectorized env count.
+- `source_env_index`: vectorized Isaac lane that produced that episode.
+- `reset_round` / `reset_seed`: explicit `env.reset(seed=...)` round that started the episode.
+- `terminated_by`: whether the episode group ended via env `done`, env `truncated`, or collector `max_steps`.
+- `settle_steps`: zero-action reset warmup count skipped before recording. For final training/demo datasets this should be `20`.
+- `images`: wrist policy camera stream, resized to `(T, 3, 224, 224)`, and this is the future training image input.
+- `raw_policy_images`: optional native-resolution wrist camera frames for inspection only.
+- `debug_images`: optional fixed table-camera frames for human inspection only.
+
+Frame files from inspection should be read as:
+
+- `*_policy.png`: exact policy-image stream after resize; this is what a training loader sees.
+- `*_raw_policy.png`: native wrist camera view; useful to debug camera placement and crop/resize.
+- `*_debug.png`: fixed debug camera view; useful for human understanding and screenshots, not policy input.
+
+### Final Demo Run
+
+Run the main final demo artifact:
+
+```bash
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
   --backend isaac \
   --policy heuristic \
   --num_episodes 3 \
-  --save_dataset ./data/heuristic_rollouts.h5 \
-  --save_metrics ./logs/heuristic_eval.json \
-  --save_gif ./out/gifs/heuristic_demo.gif
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_heuristic_demo_rollouts.h5 \
+  --save_metrics logs/final_heuristic_demo_metrics.json \
+  --save_gif out/gifs/final_heuristic_demo.gif \
+  --save_mp4 out/gifs/final_heuristic_demo.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_heuristic_demo \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
+```
+
+Optional comparison demo commands:
+
+```bash
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
+  --backend isaac \
+  --policy random \
+  --num_episodes 3 \
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_random_demo_rollouts.h5 \
+  --save_metrics logs/final_random_demo_metrics.json \
+  --save_gif out/gifs/final_random_demo.gif \
+  --save_mp4 out/gifs/final_random_demo.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_random_demo \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
 ```
 
 ```bash
-conda run -n isaac_arm python -m scripts.demo_data_loop \
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
   --backend isaac \
   --policy replay \
-  --replay_dataset ./data/heuristic_rollouts.h5 \
+  --replay_dataset data/final_heuristic_demo_rollouts.h5 \
   --num_episodes 3 \
-  --save_dataset ./data/replay_from_heuristic_rollouts.h5 \
-  --save_metrics ./logs/replay_from_heuristic_eval.json \
-  --save_gif ./out/gifs/replay_from_heuristic_demo.gif
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --settle-steps 20 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_replay_from_heuristic_demo_rollouts.h5 \
+  --save_metrics logs/final_replay_from_heuristic_demo_metrics.json \
+  --save_gif out/gifs/final_replay_from_heuristic_demo.gif \
+  --save_mp4 out/gifs/final_replay_from_heuristic_demo.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_replay_from_heuristic_demo \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
 ```
 
-And these files exist:
+### Final Demo Outputs
+
+The main heuristic demo run should create:
 
 ```text
-out/gifs/random_demo.gif
-out/gifs/heuristic_demo.gif
-out/gifs/replay_from_heuristic_demo.gif
-
-logs/random_eval.json
-logs/heuristic_eval.json
-logs/replay_from_heuristic_eval.json
-
-data/random_rollouts.h5
-data/heuristic_rollouts.h5
-data/replay_from_heuristic_rollouts.h5
+data/final_heuristic_demo_rollouts.h5
+logs/final_heuristic_demo_metrics.json
+out/gifs/final_heuristic_demo.gif
+out/gifs/final_heuristic_demo.mp4
+out/debug_frames/final_heuristic_demo/
 ```
+
+Interpret the outputs as:
+
+- `data/final_heuristic_demo_rollouts.h5`: episode-safe rollout dataset. This proves the policy/env loop can produce training-ready HDF5. `images` are wrist policy images; `debug_images` are human-facing and optional.
+- `logs/final_heuristic_demo_metrics.json`: scalar eval summary plus target-position metadata. Read `mean_return`, `success_rate`, `mean_episode_length`, and `mean_action_jerk` together; also check `success_source` to know whether success came from explicit `info` flags or the proprio fallback.
+- `out/gifs/final_heuristic_demo.gif`: interview-facing visual artifact from the fixed debug camera. With `--target-overlay text-reticle`, it draws a reticle on the projected target and writes the pixel coordinate beside it, for example `(100, 32)`. It is for explanation/debugging and is not the policy observation stream.
+- `out/gifs/final_heuristic_demo.mp4`: color-faithful visual artifact from the same debug-camera frames/overlays. Prefer this for visual inspection when GIF palette quantization makes colors look wrong.
+- `out/debug_frames/final_heuristic_demo/`: sampled fixed-camera PNGs from the GIF rollout. They receive the same target reticle/text post-processing as the GIF when `--target-overlay` is enabled. Use them for quick image inspection without opening the full GIF.
+
+Metrics JSON fields:
+
+- `policy_name`: policy evaluated, for example `heuristic`, `random`, or `replay`.
+- `env_backend`: expected `isaac` for final demo artifacts.
+- `num_episodes`: number of rollout episodes evaluated.
+- `mean_return`: mean undiscounted reward sum per episode.
+- `success_rate`: fraction of episodes judged successful.
+- `success_source`: `info_success` if Isaac/env emitted success flags, `proprio_cube_to_target_norm` if using the fallback distance threshold, or mixed for mixed datasets.
+- `success_threshold_m`: cube-to-target distance threshold used by the fallback, currently `0.02`.
+- `consecutive_success_steps`: number of consecutive successful steps required, currently `1`.
+- `success_distance_metric`: current fallback distance definition, `euclidean_3d_cube_to_target_base_m`.
+- `success_distance_source`: exact proprio source for the fallback, `norm(proprio[:, 30:33])` where `proprio[:, 30:33] = target_pos_base - cube_pos_base`.
+- `episode_successes`: per-episode boolean success map, for example `{"episode_000": true, "episode_001": false}`.
+- `closest_target_approach_by_episode`: per-episode closest approach diagnostics. Each entry records `closest_step`, `closest_distance_m`, `closest_cube_position_base_m`, `target_position_base_m_at_closest_step`, `cube_to_target_base_m_at_closest_step`, `success`, and `success_source`.
+- `mean_episode_length`: average recorded transition count per episode, after settle warmup.
+- `mean_action_jerk`: mean norm of first action differences; lower means smoother commands.
+- `target_position_base_m`: convenience summary target XYZ in robot/base frame, currently `episode_000` step 0 from proprio slice `24:27`.
+- `target_position_base_m_source`: exact source of the summary value, for example `episode_000_step_000_proprio_24_27`.
+- `target_positions_base_m_by_episode`: per-episode first target XYZ in robot/base frame.
+- `target_position_constant_by_episode`: whether every episode's target remained constant across all recorded steps.
+- `target_debug_camera_name`: fixed debug camera used for target projection, usually `table_cam`.
+- `target_debug_pixel`: projected first target pixel `[u, v]` in the debug image, or `null` if projection was unavailable.
+- `target_debug_pixel_by_episode`: per-episode projected target pixel map when available.
+- `target_debug_pixel_visible`: whether `target_debug_pixel` is inside the debug camera frame.
+- `target_debug_pixel_source`: projection provenance or failure reason, for example `debug_camera_projection`.
+
+The expected story for the interview is: the HDF5 proves the data interface, the metrics JSON proves the evaluation loop, the GIF proves human-readable visual rollout inspection, and the debug PNGs make quick camera/source checks easy.
+
+---
+
+## 15. Acceptance Criteria For Interview Demo
+
+This section is intentionally short. The exact commands live in §14 Final Runbook so there is one source of truth for final artifact generation.
+
+The demo is accepted when:
+
+- the §14 final dataset collection command completes and the dataset can be inspected with `scripts.inspect_rollout_dataset`;
+- the §14 main final heuristic demo command completes and writes `data/final_heuristic_demo_rollouts.h5`, `logs/final_heuristic_demo_metrics.json`, `out/gifs/final_heuristic_demo.gif`, `out/gifs/final_heuristic_demo.mp4`, and sampled debug PNGs;
+- optional §14 random and replay comparison commands complete when comparison artifacts are needed;
+- all final live Isaac commands use `--settle-steps 20`, `--table-cleanup matte-overlay`, and `--min-clean-env-spacing 5.0` unless intentionally probing raw Isaac visuals.
 
 Runtime observation acceptance:
 
@@ -1552,11 +1911,11 @@ conda run -n isaac_arm python -m pytest \
   -v
 ```
 
-Of the demo-slice test files listed in the command above, `test_project_scaffold.py`, `test_task_contract.py`, `test_observation_wrapper.py`, `test_camera_enabled_env_cfg.py`, `test_demo_policies.py`, and `test_demo_dataset.py` exist today. The repository also has separate Isaac installation/runtime smoke tests and `tests/test_image_aug.py` for the completed image augmentation utility. The remaining demo-slice files are created by the lite PRs above. The command is the full intended invocation after the demo slice is implemented; running it in the current tree will error on missing files until those PRs land.
+All demo-slice test files listed in the command above exist in the current tree. The full repository test run on 2026-04-24 passed with `144 passed, 1 skipped`; the skip is the opt-in Isaac runtime smoke test, which still requires `RUN_ISAAC_RUNTIME_SMOKE=1`.
 
 ---
 
-## 15. Interview Walkthrough
+## 16. Interview Walkthrough
 
 Suggested explanation order:
 

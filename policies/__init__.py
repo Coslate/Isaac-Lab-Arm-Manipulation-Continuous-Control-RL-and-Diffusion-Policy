@@ -3,6 +3,7 @@
 from .base import BasePolicy, ObservationDict
 from .heuristic_policy import HeuristicPolicy, HeuristicPolicyConfig
 from .random_policy import RandomPolicy
+from .replay_policy import ReplayPolicy
 
 __all__ = [
     "BasePolicy",
@@ -10,4 +11,5 @@ __all__ = [
     "HeuristicPolicyConfig",
     "ObservationDict",
     "RandomPolicy",
+    "ReplayPolicy",
 ]

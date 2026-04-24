@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,8 @@ DEFAULT_CONSECUTIVE_SUCCESS_STEPS = 1
 SUCCESS_SOURCE_INFO = "info_success"
 SUCCESS_SOURCE_PROPRIO = "proprio_cube_to_target_norm"
 SUCCESS_SOURCE_MIXED = "mixed_info_success_and_proprio_cube_to_target_norm"
+SUCCESS_DISTANCE_METRIC = "euclidean_3d_cube_to_target_base_m"
+SUCCESS_DISTANCE_SOURCE = "norm(proprio[:, 30:33]) where proprio[:, 30:33] = target_pos_base - cube_pos_base"
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,18 @@ class EvalMetrics:
     success_threshold_m: float = DEFAULT_SUCCESS_THRESHOLD_M
     consecutive_success_steps: int = DEFAULT_CONSECUTIVE_SUCCESS_STEPS
     success_source: str = SUCCESS_SOURCE_PROPRIO
+    success_distance_metric: str = SUCCESS_DISTANCE_METRIC
+    success_distance_source: str = SUCCESS_DISTANCE_SOURCE
+    episode_successes: dict[str, bool] = field(default_factory=dict)
+    closest_target_approach_by_episode: dict[str, dict[str, Any]] = field(default_factory=dict)
+    target_position_base_m: list[float] | None = None
+    target_position_base_m_source: str | None = None
+    target_positions_base_m_by_episode: dict[str, list[float]] = field(default_factory=dict)
+    target_position_constant_by_episode: bool | None = None
+    target_debug_camera_name: str | None = None
+    target_debug_pixel: list[int] | None = None
+    target_debug_pixel_visible: bool | None = None
+    target_debug_pixel_source: str = "not_available"
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -62,7 +76,9 @@ def evaluate_rollout_dataset(
     returns = np.asarray([episode_return(episode) for episode in episodes], dtype=np.float64)
     episode_successes: list[bool] = []
     success_sources: list[str] = []
-    for episode in episodes:
+    episode_successes_by_key: dict[str, bool] = {}
+    success_sources_by_key: dict[str, str] = {}
+    for episode_key, episode in zip(episode_keys, episodes, strict=True):
         success, source = episode_success_with_source(
             episode,
             threshold_m=success_threshold_m,
@@ -70,9 +86,14 @@ def evaluate_rollout_dataset(
         )
         episode_successes.append(success)
         success_sources.append(source)
+        episode_successes_by_key[episode_key] = success
+        success_sources_by_key[episode_key] = source
     successes = np.asarray(episode_successes, dtype=bool)
     episode_lengths = np.asarray([episode_length(episode) for episode in episodes], dtype=np.float64)
     action_jerks = np.asarray([mean_action_jerk(episode.actions) for episode in episodes], dtype=np.float64)
+    target_positions_by_episode = target_positions_by_episode_from_dataset(episode_keys, episodes)
+    first_target_position = next(iter(target_positions_by_episode.values()), None)
+    first_episode_key = next(iter(target_positions_by_episode), None)
 
     return EvalMetrics(
         policy_name=resolved_policy_name,
@@ -85,6 +106,19 @@ def evaluate_rollout_dataset(
         success_threshold_m=float(success_threshold_m),
         consecutive_success_steps=int(consecutive_success_steps),
         success_source=_combine_success_sources(success_sources),
+        episode_successes=episode_successes_by_key,
+        closest_target_approach_by_episode=closest_target_approach_by_episode(
+            episode_keys,
+            episodes,
+            episode_successes=episode_successes_by_key,
+            success_sources=success_sources_by_key,
+        ),
+        target_position_base_m=first_target_position,
+        target_position_base_m_source=(
+            None if first_episode_key is None else f"{first_episode_key}_step_000_proprio_24_27"
+        ),
+        target_positions_base_m_by_episode=target_positions_by_episode,
+        target_position_constant_by_episode=target_position_constant_by_episode(episodes),
     )
 
 
@@ -228,6 +262,66 @@ def target_positions_from_proprio(proprios: np.ndarray) -> np.ndarray:
 
     proprio_array = _as_episode_proprio(proprios)
     return proprio_array[:, TARGET_POS_BASE_SLICE]
+
+
+def target_positions_by_episode_from_dataset(
+    episode_keys: list[str],
+    episodes: list[EpisodeData],
+) -> dict[str, list[float]]:
+    """Return the first target XYZ position for each episode in robot/base frame."""
+
+    positions: dict[str, list[float]] = {}
+    for episode_key, episode in zip(episode_keys, episodes, strict=True):
+        target_positions = target_positions_from_proprio(episode.proprios)
+        if target_positions.shape[0] == 0:
+            continue
+        positions[episode_key] = target_positions[0].astype(float).tolist()
+    return positions
+
+
+def closest_target_approach_by_episode(
+    episode_keys: list[str],
+    episodes: list[EpisodeData],
+    *,
+    episode_successes: dict[str, bool] | None = None,
+    success_sources: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return per-episode closest cube/target 3D approach diagnostics."""
+
+    approaches: dict[str, dict[str, Any]] = {}
+    for episode_key, episode in zip(episode_keys, episodes, strict=True):
+        distances = cube_to_target_distances(episode.proprios)
+        if distances.shape[0] == 0:
+            continue
+        closest_step = int(np.argmin(distances))
+        cube_positions = cube_positions_from_proprio(episode.proprios)
+        target_positions = target_positions_from_proprio(episode.proprios)
+        cube_to_target = cube_to_target_vectors(episode.proprios)
+        entry: dict[str, Any] = {
+            "closest_step": closest_step,
+            "closest_distance_m": float(distances[closest_step]),
+            "closest_cube_position_base_m": cube_positions[closest_step].astype(float).tolist(),
+            "target_position_base_m_at_closest_step": target_positions[closest_step].astype(float).tolist(),
+            "cube_to_target_base_m_at_closest_step": cube_to_target[closest_step].astype(float).tolist(),
+        }
+        if episode_successes is not None and episode_key in episode_successes:
+            entry["success"] = bool(episode_successes[episode_key])
+        if success_sources is not None and episode_key in success_sources:
+            entry["success_source"] = success_sources[episode_key]
+        approaches[episode_key] = entry
+    return approaches
+
+
+def target_position_constant_by_episode(episodes: list[EpisodeData], *, atol: float = 1e-6) -> bool:
+    """Return true when each episode's target XYZ is constant over recorded steps."""
+
+    for episode in episodes:
+        target_positions = target_positions_from_proprio(episode.proprios)
+        if target_positions.shape[0] == 0:
+            return False
+        if not np.allclose(target_positions, target_positions[0], rtol=0.0, atol=atol):
+            return False
+    return True
 
 
 def mean_action_jerk(actions: np.ndarray) -> float:

@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from configs import ACTION_DIM
 from dataset import EpisodeData, EpisodeMetadata, write_rollout_dataset
 from env.franka_lift_camera_cfg import MIN_CLEAN_ENV_SPACING, TABLE_CLEANUP_CHOICES, TABLE_CLEANUP_NONE
 from policies import BasePolicy, HeuristicPolicy, RandomPolicy
@@ -60,6 +61,7 @@ def collect_rollout_episodes(
     include_debug_images: bool = False,
     debug_camera_name: str | None = None,
     show_progress: bool = False,
+    settle_steps: int = 0,
 ) -> list[EpisodeData]:
     """Collect episode-safe rollouts, splitting vectorized env batches by environment.
 
@@ -91,12 +93,14 @@ def collect_rollout_episodes(
         raise ValueError("num_episodes must be positive")
     if max_steps <= 0:
         raise ValueError("max_steps must be positive")
+    if settle_steps < 0:
+        raise ValueError("settle_steps must be non-negative")
 
     episodes: list[EpisodeData] = []
     reset_round = 0
     reset_seed = seed
     policy.reset()
-    obs = env.reset(seed=reset_seed)
+    obs = _reset_and_settle(env, seed=reset_seed, settle_steps=settle_steps)
     num_envs = _obs_num_envs(obs)
     buffers = [_EpisodeBuffer() for _ in range(num_envs)]
 
@@ -146,6 +150,7 @@ def collect_rollout_episodes(
                                     reset_seed=reset_seed,
                                     source_env_index=env_index,
                                     terminated_by="done" if done else "truncated",
+                                    settle_steps=settle_steps,
                                     include_raw_policy_images=include_raw_policy_images,
                                     include_debug_images=include_debug_images,
                                 )
@@ -172,6 +177,7 @@ def collect_rollout_episodes(
                         reset_seed=reset_seed,
                         source_env_index=env_index,
                         terminated_by="max_steps",
+                        settle_steps=settle_steps,
                         include_raw_policy_images=include_raw_policy_images,
                         include_debug_images=include_debug_images,
                     )
@@ -185,7 +191,7 @@ def collect_rollout_episodes(
             reset_round += 1
             reset_seed = seed + reset_round
             policy.reset()
-            obs = env.reset(seed=reset_seed)
+            obs = _reset_and_settle(env, seed=reset_seed, settle_steps=settle_steps)
             buffers = [_EpisodeBuffer() for _ in range(num_envs)]
 
     return episodes
@@ -204,6 +210,7 @@ def collect_and_save_rollouts(
     include_debug_images: bool = False,
     debug_camera_name: str | None = None,
     show_progress: bool = False,
+    settle_steps: int = 0,
 ) -> Path:
     """Collect episodes and save them to an HDF5 rollout file."""
 
@@ -218,6 +225,7 @@ def collect_and_save_rollouts(
         include_debug_images=include_debug_images,
         debug_camera_name=debug_camera_name,
         show_progress=show_progress,
+        settle_steps=settle_steps,
     )
     return write_rollout_dataset(path, episodes)
 
@@ -264,6 +272,7 @@ def run_isaac_collection(args: argparse.Namespace) -> dict[str, Any]:
             include_debug_images=args.include_debug_images,
             debug_camera_name=args.debug_camera_name,
             show_progress=args.progress,
+            settle_steps=args.settle_steps,
         )
         result = {
             "status": "ok",
@@ -272,6 +281,7 @@ def run_isaac_collection(args: argparse.Namespace) -> dict[str, Any]:
             "num_episodes": args.num_episodes,
             "num_envs": args.num_envs,
             "max_steps": args.max_steps,
+            "settle_steps": args.settle_steps,
             "include_raw_policy_images": args.include_raw_policy_images,
             "include_debug_images": args.include_debug_images,
             "clean_demo_scene": env.config.visual_cleanup_enabled,
@@ -303,6 +313,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--max-steps", type=int, default=100, help="Per-reset-round step cap.")
+    parser.add_argument(
+        "--settle-steps",
+        type=int,
+        default=0,
+        help=(
+            "Zero-action physics warmup steps after each explicit env.reset(seed=...). "
+            "Warmup transitions are not written to HDF5. Use 20 for cleaner live demo datasets."
+        ),
+    )
     parser.add_argument(
         "--num-parallel-envs",
         "--num-envs",
@@ -360,6 +379,8 @@ def parse_args() -> argparse.Namespace:
         args.debug_camera_name = None
     if args.debug_image_obs_key.lower() in {"none", "null", ""}:
         args.debug_image_obs_key = None
+    if args.settle_steps < 0:
+        raise ValueError("--settle-steps must be non-negative")
     return args
 
 
@@ -388,6 +409,7 @@ def _episode_metadata(
     reset_seed: int,
     source_env_index: int = 0,
     terminated_by: str = "unknown",
+    settle_steps: int = 0,
 ) -> EpisodeMetadata:
     env_config = getattr(env, "config", None)
     table_cleanup = getattr(env_config, "resolved_table_cleanup", getattr(env_config, "table_cleanup", "none"))
@@ -408,6 +430,7 @@ def _episode_metadata(
         reset_round=reset_round,
         reset_seed=reset_seed,
         terminated_by=terminated_by,
+        settle_steps=settle_steps,
         clean_demo_scene=clean_demo_scene,
         table_cleanup=table_cleanup,
         min_clean_env_spacing=getattr(env_config, "min_clean_env_spacing", MIN_CLEAN_ENV_SPACING),
@@ -424,6 +447,7 @@ def _buffer_to_episode(
     reset_seed: int,
     source_env_index: int,
     terminated_by: str,
+    settle_steps: int,
     include_raw_policy_images: bool,
     include_debug_images: bool,
 ) -> EpisodeData:
@@ -435,6 +459,7 @@ def _buffer_to_episode(
         reset_seed=reset_seed,
         source_env_index=source_env_index,
         terminated_by=terminated_by,
+        settle_steps=settle_steps,
     )
     successes = None
     if buffer.successes:
@@ -602,6 +627,22 @@ def _to_host_array(value: Any) -> Any:
     if hasattr(value, "numpy"):
         value = value.numpy()
     return value
+
+
+def _reset_and_settle(env: Any, *, seed: int, settle_steps: int) -> dict[str, np.ndarray]:
+    obs = env.reset(seed=seed)
+    for _ in range(settle_steps):
+        num_envs = _obs_num_envs(obs)
+        action = _zero_action(num_envs)
+        backend_action = action[0] if num_envs == 1 else action
+        obs, _reward, _terminated, _truncated, _info = env.step(backend_action)
+    return obs
+
+
+def _zero_action(num_envs: int) -> np.ndarray:
+    if num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    return np.zeros((num_envs, ACTION_DIM), dtype=np.float32)
 
 
 class _NoOpProgress:

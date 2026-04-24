@@ -9,6 +9,8 @@ import pytest
 
 from dataset import EpisodeData, EpisodeMetadata, write_rollout_dataset
 from eval import (
+    SUCCESS_DISTANCE_METRIC,
+    SUCCESS_DISTANCE_SOURCE,
     SUCCESS_SOURCE_INFO,
     SUCCESS_SOURCE_PROPRIO,
     cube_positions_from_proprio,
@@ -76,6 +78,18 @@ def test_evaluate_rollout_dataset_computes_project_success_rate(tmp_path) -> Non
         "success_threshold_m",
         "consecutive_success_steps",
         "success_source",
+        "success_distance_metric",
+        "success_distance_source",
+        "episode_successes",
+        "closest_target_approach_by_episode",
+        "target_position_base_m",
+        "target_position_base_m_source",
+        "target_positions_base_m_by_episode",
+        "target_position_constant_by_episode",
+        "target_debug_camera_name",
+        "target_debug_pixel",
+        "target_debug_pixel_visible",
+        "target_debug_pixel_source",
     }
     assert payload["policy_name"] == "heuristic"
     assert payload["env_backend"] == "fake"
@@ -86,6 +100,31 @@ def test_evaluate_rollout_dataset_computes_project_success_rate(tmp_path) -> Non
     assert payload["mean_episode_length"] == pytest.approx(2.5)
     assert payload["mean_action_jerk"] == pytest.approx(0.5)
     assert payload["success_source"] == SUCCESS_SOURCE_PROPRIO
+    assert payload["success_distance_metric"] == SUCCESS_DISTANCE_METRIC
+    assert payload["success_distance_source"] == SUCCESS_DISTANCE_SOURCE
+    assert payload["episode_successes"] == {"episode_000": True, "episode_001": False}
+    assert payload["closest_target_approach_by_episode"]["episode_000"]["success"] is True
+    assert payload["closest_target_approach_by_episode"]["episode_000"]["success_source"] == SUCCESS_SOURCE_PROPRIO
+    assert payload["closest_target_approach_by_episode"]["episode_000"]["closest_step"] == 1
+    assert payload["closest_target_approach_by_episode"]["episode_000"]["closest_distance_m"] == pytest.approx(0.01)
+    assert payload["closest_target_approach_by_episode"]["episode_000"]["closest_cube_position_base_m"] == pytest.approx(
+        [0.45, 0.0, 0.05]
+    )
+    assert payload["closest_target_approach_by_episode"]["episode_000"][
+        "target_position_base_m_at_closest_step"
+    ] == pytest.approx([0.45, 0.0, 0.25])
+    assert payload["closest_target_approach_by_episode"]["episode_000"][
+        "cube_to_target_base_m_at_closest_step"
+    ] == pytest.approx([0.01, 0.0, 0.0])
+    assert payload["closest_target_approach_by_episode"]["episode_001"]["success"] is False
+    assert payload["closest_target_approach_by_episode"]["episode_001"]["closest_step"] == 1
+    assert payload["closest_target_approach_by_episode"]["episode_001"]["closest_distance_m"] == pytest.approx(0.025)
+    assert payload["target_position_base_m"] == pytest.approx([0.45, 0.0, 0.25])
+    assert payload["target_position_base_m_source"] == "episode_000_step_000_proprio_24_27"
+    assert set(payload["target_positions_base_m_by_episode"]) == {"episode_000", "episode_001"}
+    assert payload["target_position_constant_by_episode"] is True
+    assert payload["target_debug_pixel"] is None
+    assert payload["target_debug_pixel_source"] == "not_available"
 
 
 def test_explicit_info_successes_take_priority_over_proprio_fallback(tmp_path) -> None:

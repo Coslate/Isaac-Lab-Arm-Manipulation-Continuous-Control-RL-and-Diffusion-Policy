@@ -40,6 +40,7 @@ class EpisodeMetadata:
     reset_round: int = 0
     reset_seed: int = 0
     terminated_by: str = "unknown"
+    settle_steps: int = 0
     clean_demo_scene: bool = False
     table_cleanup: str = "none"
     min_clean_env_spacing: float | None = 5.0
@@ -59,6 +60,7 @@ class EpisodeMetadata:
             "reset_round": self.reset_round,
             "reset_seed": self.reset_seed,
             "terminated_by": self.terminated_by,
+            "settle_steps": self.settle_steps,
             "clean_demo_scene": self.clean_demo_scene,
             "table_cleanup": self.table_cleanup,
             "min_clean_env_spacing": self.min_clean_env_spacing,

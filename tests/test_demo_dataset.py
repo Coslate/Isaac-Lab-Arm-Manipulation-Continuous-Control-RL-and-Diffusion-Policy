@@ -391,6 +391,28 @@ def test_collect_rollout_episodes_stores_optional_info_successes() -> None:
     assert episodes[0].successes.tolist() == [False, True, False]
 
 
+def test_collect_rollout_episodes_settles_after_reset_before_recording() -> None:
+    env = FakeRolloutEnv(terminal_step=10)
+    policy = make_policy("random", seed=321)
+
+    episodes = collect_rollout_episodes(
+        env,
+        policy,
+        num_episodes=1,
+        max_steps=3,
+        seed=14,
+        env_backend="fake",
+        settle_steps=2,
+    )
+
+    assert env.reset_seeds == [14]
+    assert len(episodes) == 1
+    assert episodes[0].images.shape == (3, 3, 224, 224)
+    assert episodes[0].images[0, 0, 0, 0] == 2
+    assert episodes[0].rewards.tolist() == [3.0, 4.0, 5.0]
+    assert episodes[0].metadata.settle_steps == 2
+
+
 class FakeStaggeredVecEnv:
     """Vectorized fake env where each lane terminates on its own cadence.
 
