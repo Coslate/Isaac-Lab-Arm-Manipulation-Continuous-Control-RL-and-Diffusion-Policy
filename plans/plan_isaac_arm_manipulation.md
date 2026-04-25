@@ -46,6 +46,61 @@ Robot arm manipulation is a better fit because:
 
 ---
 
+### 2.3 Current Status
+
+Updated 2026-04-25. The repository has completed the interview/demo vertical slice from
+`plans/subplan_isaac_arm_manipulation.md`:
+
+```text
+policy rollout -> episode-safe dataset -> metrics -> GIF/MP4/debug PNGs
+```
+
+The current code base proves the robot-learning data and evaluation loop against the live
+Isaac backend. The full research-training stack is still the next phase: shared backbone,
+PPO, pure GRPO, SAC, TD3, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
+
+Runtime requirement for live Isaac commands:
+- On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
+- On WSL2 + Docker, run Xvfb on `DISPLAY=:1`.
+- Missing X authority can cause `Authorization required`, `eglInitialize failed`, or `xcb_connection_has_error()` even when Isaac is launched headless.
+
+| Area / PR | Status | Evidence in current tree | Notes |
+|---|---|---|---|
+| Runtime env | Ready with display setup | `scripts.collect_rollouts`, `scripts.demo_data_loop`, `scripts.isaac_camera_observation_smoke`, `scripts.benchmark_rollout_collection` | Live Isaac still needs working X11 display/auth. Benchmark helper can auto-discover the SDDM `XAUTHORITY` cookie when unset. |
+| PR 0 - Project scaffold | Done | `configs/`, `env/`, `dataset/`, `eval/`, `policies/`, `scripts/`, `tests/` | Known PR0 result: `tests/test_project_scaffold.py` -> `6 passed`. |
+| PR 1 - Task/action contract | Done | `configs/task_config.py`, `tests/test_task_contract.py` | Keeps `Isaac-Lift-Cube-Franka-IK-Rel-v0` and the normalized 7D action order `dx, dy, dz, droll, dpitch, dyaw, gripper`. Known result: `9 passed`. |
+| PR 2 - Formal observation wrapper | Done | `env/isaac_env.py`, `tests/test_observation_wrapper.py` | Wrapper returns `obs["image"]` as wrist RGB `(num_envs, 3, 224, 224)` `uint8` and `obs["proprio"]` as named 40D `float32`; rejects stock 35D policy tensors. Known result: `18 passed`. |
+| PR 2.5 - Camera-enabled Franka lift cfg | Done | `env/franka_lift_camera_cfg.py`, `scripts/isaac_camera_observation_smoke.py`, `tests/test_camera_enabled_env_cfg.py` | Customized cfg adds `wrist_cam`, optional `table_cam`, named 40D proprio terms, strict policy/debug camera separation, target-pose slicing, torch action bridge, and optional table visual cleanup. Known unit result: `12 passed`; live smoke returned image `(1, 3, 224, 224)` and proprio `(1, 40)`. |
+| Image augmentation utilities | Done | `utils/image_aug.py`, `tests/test_image_aug.py` | Provides deterministic wrapper contract plus training-only `PadAndRandomCrop`, optional `CenterBiasedResizedCrop`, and eval `IdentityAug`. Known result: `24 passed`. |
+| PR 8-pre - Demo policies | Done | `policies/base.py`, `policies/random_policy.py`, `policies/heuristic_policy.py`, `policies/replay_policy.py`, `tests/test_demo_policies.py` | Random, heuristic, and HDF5 replay policies share the same `act(obs) -> 7D action` interface. Known result: `10 passed`. |
+| PR 8-lite - Rollout dataset | Done | `dataset/episode_dataset.py`, `scripts/collect_rollouts.py`, `scripts/inspect_rollout_dataset.py`, `scripts/benchmark_rollout_collection.py` | HDF5 episodes are stored safely per env lane with `images`, `proprios`, `actions`, rewards, done/truncated flags, optional raw wrist/debug images, and metadata such as `source_env_index`, `reset_round`, `reset_seed`, `terminated_by`, and `settle_steps`. |
+| PR 11-lite - Evaluation metrics | Done | `eval/eval_loop.py`, `tests/test_eval_metrics.py` | Computes return, success rate, episode length, action jerk, per-episode success, closest target approach, and target metadata from rollout HDF5 files. Success falls back to `norm(proprio[:, 30:33]) <= 0.02` when Isaac does not emit explicit success flags. |
+| PR 12-lite - Visual rollout output | Done | `eval/gif_recorder.py`, `tests/test_visual_outputs.py` | Records fixed-debug-camera GIFs/MP4s and sampled debug PNGs while keeping wrist RGB as the policy image stream. Supports post-processing overlays instead of re-enabling Isaac debug visualizers. |
+| Demo PR - One-command data loop | Done | `scripts/demo_data_loop.py`, `tests/test_demo_data_loop.py` | One command creates dataset, metrics JSON, GIF/MP4, and sampled debug PNGs for random, heuristic, or replay policy. Known result on 2026-04-25: `tests/test_demo_data_loop.py` -> `13 passed`; full pytest -> `149 passed, 1 skipped` (`RUN_ISAAC_RUNTIME_SMOKE=1` opt-in smoke skipped). |
+| Final live demo artifacts | Generated | `data/final_heuristic_demo_rollouts.h5`, `logs/final_heuristic_demo_metrics.json`, `out/gifs/final_heuristic_demo.gif`, `out/gifs/final_heuristic_demo.mp4`, `out/debug_frames/final_heuristic_demo/` | Current heuristic demo metrics: 3 episodes, mean return `27.3684`, success `2/3`, success rate `0.6667`, mean action jerk `0.2926`. Random comparison artifacts and replay-from-heuristic artifacts are also present. |
+| PR 3 - Shared backbone | Done | `agents/backbone.py`, `tests/test_nn_backbone.py` | Adds the shared image-proprio encoder consumed by future RL and Diffusion Policy agents. Known result: `8 passed`. |
+| PR 3.5 - Agent primitives | Pending | No `tests/test_agent_primitives.py` in current tree | Needed before PR4-7 so actor distributions, replay/rollout batches, checkpoints, and policy adapters are shared instead of duplicated. |
+| PR 4-7 - PPO / pure GRPO / SAC / TD3 | Pending | No continuous-control RL agent tests or train scripts yet | SAC remains the intended expert/oracle, but the RL training stack is not implemented yet. |
+| PR 8-full - SAC demonstrations | Infrastructure done; SAC expert pending | PR8-lite dataset exists; SAC checkpoint collection script is not implemented | Episode-safe data format is ready, but expert demonstrations still depend on PR6 SAC. |
+| PR 8.5 - Diffusion sequence dataset | Pending | No `tests/test_diffusion_sequence_dataset.py` in current tree | Needed to guarantee `images/proprios/actions` sequence batches before Diffusion Policy model work starts. |
+| PR 9a-c / PR10 - Diffusion BC / deployment / DAgger | Pending | No diffusion policy or DAgger tests yet | These should plug into the existing dataset, policy interface, and eval/GIF loop after SAC demos and sequence dataloaders exist. |
+| PR 11-full / PR12-full - Reporting and visual comparison | Partial | Dataset metrics JSON and GIF/MP4 outputs exist | Full trained-checkpoint evaluation, side-by-side GIF grids, and comparison plots remain future work. |
+
+Current measured demo-slice results from the final live artifacts:
+
+| Policy/artifact | Episodes | Mean return | Success rate | Mean action jerk | Notes |
+|---|---:|---:|---:|---:|---|
+| `logs/final_random_demo_metrics.json` | 3 | `-0.0029` | `0.0000` | `2.0789` | Random sanity baseline; all episodes failed under the current 2 cm proprio fallback. |
+| `logs/final_heuristic_demo_metrics.json` | 3 | `27.3684` | `0.6667` | `0.2926` | Heuristic policy succeeded on `episode_001` and `episode_002`; target debug projection succeeded for all three episodes. |
+| `logs/final_replay_from_heuristic_demo_metrics.json` | 3 | `9.4850` | `0.0000` | `0.0636` | HDF5 replay path generated metrics and visual artifacts; replay smoothness is lower jerk, but this run did not hit the current success threshold. |
+
+Important status interpretation:
+- The stock Isaac task with `--enable_cameras` still exposes only the stock flat `policy` tensor unless the project applies its customized env cfg.
+- The current accepted live observation contract is the customized cfg plus wrapper: wrist RGB policy image and named 40D proprio.
+- The debug camera is only for GIFs, MP4s, sampled PNGs, and human inspection; it is not passed into `policy.act()`.
+
+---
+
 ## 3. Environment And Task Contract
 
 ### 3.1 Isaac Lab task
@@ -734,6 +789,26 @@ python -m scripts.record_gif_continuous \
 
 Each PR should do one thing. Each PR must include tests and a copy-paste pytest command.
 
+Planning rules for the remaining roadmap:
+- Treat the completed interview/demo slice as a finished infrastructure layer, not as a substitute for the full research-training PRs.
+- Every future PR must declare the input contract it consumes from previous PRs and the output contract it provides to later PRs.
+- A PR is too large if it introduces a new model family, a new storage format, and a new runtime script at the same time.
+- Tests should include interface/shape checks, mathematical unit checks where relevant, save/load round trips for trainable components, and at least one small integration or overfit/smoke test when a training loop is introduced.
+
+Roadmap layers:
+
+| Layer | Status | Purpose |
+|---|---|---|
+| Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
+| Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
+| Research model layer | In progress | PR3 shared backbone is done; PR3.5, PR4-7, PR8-full, PR9a-c, PR10, PR11-full, and PR12-full add the remaining trained RL/IL benchmark and final comparisons. |
+
+Future PRs should use this handoff pattern:
+
+```text
+Inputs from previous PR -> implementation in this PR -> outputs guaranteed for later PRs -> tests that protect the handoff
+```
+
 ### PR 0 — Project Scaffold
 
 **Goal / Why**
@@ -1013,11 +1088,53 @@ git commit -m "feat(env): add camera-enabled Franka lift cfg"
 
 ---
 
+### Completed Demo-Slice PRs — Already Landed
+
+These PRs were implemented from `plans/subplan_isaac_arm_manipulation.md` to make an interview-ready robotics data loop before the full RL/IL training stack. They remain part of the project foundation because future SAC, PPO, TD3, Diffusion Policy, and DAgger agents should plug into the same interfaces.
+
+| Demo PR | Status | Inputs | Outputs guaranteed for later work | Test coverage |
+|---|---|---|---|---|
+| PR 8-pre - Demo policies | Done | PR1 action contract and PR2/2.5 observation contract | `BasePolicy.act(obs) -> (7,)`, `RandomPolicy`, `HeuristicPolicy`, and HDF5 `ReplayPolicy` | `tests/test_demo_policies.py`; action shape/range, seeding, heuristic phase behavior, replay policy basics. |
+| PR 8-lite - Episode-safe rollout dataset | Done | Policy interface, `IsaacArmEnv`, wrist policy image, 40D proprio, optional debug camera | HDF5 episode groups with `images`, `proprios`, `actions`, rewards, done/truncated flags, optional `successes`, optional native wrist/debug images, and metadata (`source_env_index`, `reset_round`, `reset_seed`, `terminated_by`, `settle_steps`) | `tests/test_demo_dataset.py`, `tests/test_rollout_benchmark.py`; schema, metadata, vectorized lane splitting, action windows, CLI/benchmark plumbing. |
+| PR 11-lite - Dataset evaluation metrics | Done | Episode-safe HDF5 rollout files | JSON metrics for return, success, episode length, action jerk, per-episode success, closest target approach, target metadata | `tests/test_eval_metrics.py`; metric keys/ranges, jerk behavior, success-source fallback, JSON save. |
+| PR 12-lite - Debug-camera visual outputs | Done | Env/policy loop plus fixed debug camera accessor | GIF, MP4, sampled debug PNGs, optional text/reticle overlays; policy still receives wrist RGB only | `tests/test_visual_outputs.py`; GIF/MP4/frame creation, debug-camera source separation, output-dir handling. |
+| Demo PR - One-command data loop | Done | PR8-lite collector, PR11-lite metrics, PR12-lite recorder, demo policies | `scripts.demo_data_loop` creates dataset + metrics + GIF/MP4 + sampled debug PNGs for random, heuristic, or replay policies | `tests/test_demo_data_loop.py`; CLI modes, replay requirements, existing-dataset replay, target overlay, output creation. |
+
+Current full local verification:
+
+```text
+conda run -n isaac_arm python -m pytest -q
+149 passed, 1 skipped
+```
+
+The skipped test is the opt-in Isaac runtime smoke that requires `RUN_ISAAC_RUNTIME_SMOKE=1`.
+
+---
+
 ### PR 3 — Shared Backbone
+
+**Status:** Done
 
 **Goal / Why**
 
 Implement the common image-proprio encoder used by RL agents and Diffusion Policy. This isolates perception from algorithm-specific code.
+
+**Inputs**
+- PR2.5 observation contract:
+  - `image`: `(B, 3, 224, 224)` `uint8` or normalized float.
+  - `proprio`: `(B, 40)` `float32`.
+- `utils/image_aug.py` augmentation utilities, used by trainers/dataloaders, not by the env wrapper.
+
+**Outputs**
+- A reusable encoder module with a stable call signature:
+
+```python
+obs_feat = backbone(images, proprios)  # (B, feat_dim)
+```
+
+- Configurable `proprio_dim` and `feat_dim`.
+- No actor, critic, loss function, replay buffer, rollout buffer, or training script.
+- Implemented in `agents/backbone.py` as `ImageProprioBackbone`.
 
 **Implementation**
 - Add image CNN encoder.
@@ -1032,11 +1149,21 @@ Implement the common image-proprio encoder used by RL agents and Diffusion Polic
 - Verify uint8 and float image inputs are handled correctly.
 - Verify gradients flow through image and proprio branches.
 - Verify configurable `proprio_dim`.
+- Verify batch sizes `B=1` and `B>1`.
+- Verify bad image/proprio shapes raise readable errors.
+- Verify train/eval mode does not change output shape.
+- Verify the backbone can be serialized and loaded with identical output for deterministic weights/input.
 
 **Pytest**
 
 ```bash
 pytest tests/test_nn_backbone.py -v
+```
+
+Known result in `isaac_arm`:
+
+```text
+8 passed
 ```
 
 **Suggested Commit**
@@ -1047,11 +1174,73 @@ git commit -m "feat(model): add image-proprio fusion backbone"
 
 ---
 
+### PR 3.5 — Agent Primitives And Training Interfaces
+
+**Goal / Why**
+
+Add reusable RL building blocks before implementing PPO, GRPO, SAC, and TD3. This keeps the algorithm PRs similar in size and prevents four separate implementations of squashed Gaussian log-probs, actor/checkpoint conventions, and batch containers.
+
+**Inputs**
+- PR1 action contract: normalized 7D continuous actions in `[-1, 1]`.
+- PR3 backbone output: `obs_feat` with fixed `feat_dim`.
+- PR8-lite dataset/replay concepts for off-policy storage, but no SAC expert data yet.
+
+**Outputs**
+- Shared squashed Gaussian distribution with correct tanh log-prob correction.
+- Deterministic actor head helper for TD3-style policies.
+- Value/Q network head helpers that consume `obs_feat` and optional 7D action.
+- Rollout batch dataclasses for on-policy methods.
+- Replay batch/replay buffer dataclasses for off-policy methods.
+- Checkpoint save/load helpers that preserve model config, normalizer/augmentation config if present, optimizer state, and global step.
+- A common evaluation/deployment policy adapter:
+
+```python
+action = policy.act(obs, deterministic=True)  # shape (B, 7) or (7,)
+```
+
+**Implementation**
+- Add `agents/` or `models/` modules for distribution utilities, actor/critic heads, batch containers, replay buffer, and checkpoint helpers.
+- Keep algorithm-specific losses out of this PR.
+- Keep env rollout collection out of this PR except for tiny fake-env interface tests.
+- Define which tensors are stored as `uint8` (`images`) versus `float32` (`proprios`, `actions`, rewards).
+
+**How To Test**
+- Verify squashed Gaussian sampled actions are in `[-1, 1]`.
+- Verify tanh log-prob correction against a small hand-computed or finite-difference sanity case.
+- Verify deterministic actor mode is repeatable and stochastic mode can vary.
+- Verify replay buffer preserves image dtype as `uint8` and action/proprio dtype as `float32`.
+- Verify rollout/replay batch shape validation rejects malformed tensors.
+- Verify checkpoint save/load round trip reproduces action output for deterministic mode.
+
+**Pytest**
+
+```bash
+pytest tests/test_agent_primitives.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(agents): add continuous-control agent primitives"
+```
+
+---
+
 ### PR 4 — PPO Baseline
 
 **Goal / Why**
 
 Implement PPO as the stable on-policy actor-critic baseline.
+
+**Inputs**
+- PR3 backbone.
+- PR3.5 squashed Gaussian actor, value head, rollout batch, checkpoint helpers.
+- PR2.5 env wrapper for live rollout smoke and fake vectorized env for fast tests.
+
+**Outputs**
+- `PPOAgent` with `act(obs, deterministic=...)`, update, save/load, and train script.
+- PPO checkpoints that PR11-full and PR12-full can evaluate/visualize.
+- Training logs with policy loss, value loss, entropy, approximate KL, clip fraction, and explained variance.
 
 **Implementation**
 - Add 7D Gaussian tanh-squashed actor.
@@ -1069,6 +1258,9 @@ Implement PPO as the stable on-policy actor-critic baseline.
 - Verify GAE against a hand-computed example.
 - Verify update returns policy/value/entropy loss keys.
 - Verify save/load round trip.
+- Verify one PPO update changes actor parameters and value parameters on synthetic data.
+- Verify a tiny deterministic fake env can run collect -> update -> eval without Isaac.
+- Verify checkpoint resume preserves global step and optimizer state.
 
 **Pytest**
 
@@ -1090,6 +1282,16 @@ git commit -m "feat(rl): add continuous PPO baseline"
 
 Implement pure GRPO as a no-critic on-policy baseline. This tests whether group-relative trajectory comparison can replace a learned value baseline.
 
+**Inputs**
+- PR3 backbone.
+- PR3.5 squashed Gaussian actor and rollout batch helpers.
+- PR4 rollout collection conventions, but without value/GAE fields.
+
+**Outputs**
+- `GRPOAgent` with no critic/value module and the same deployment `act(obs, deterministic=...)` interface as PPO.
+- Group-return normalization utilities that can be unit-tested independently.
+- GRPO checkpoints and logs that PR11-full and PR12-full can compare with PPO/SAC/TD3.
+
 **Implementation**
 - Add 7D Gaussian tanh-squashed actor.
 - Do not create a critic or value head.
@@ -1104,6 +1306,8 @@ Implement pure GRPO as a no-critic on-policy baseline. This tests whether group-
 - Verify group advantages have approximately zero mean and unit variance per valid group.
 - Verify changing a fake value function has no effect because no value function exists.
 - Verify update works with only policy loss and entropy terms.
+- Verify checkpoint files contain no critic/value state.
+- Verify a tiny fake env rollout can form groups, update, and evaluate without Isaac.
 
 **Pytest**
 
@@ -1125,6 +1329,16 @@ git commit -m "feat(rl): add pure GRPO baseline"
 
 Implement SAC as the main off-policy sample-efficient baseline and expert oracle for demonstrations.
 
+**Inputs**
+- PR3 backbone.
+- PR3.5 squashed Gaussian actor, twin-Q head helpers, replay buffer, checkpoint helpers.
+- PR8-lite HDF5 collector only for optional evaluation/demo artifacts, not for SAC's online replay buffer.
+
+**Outputs**
+- `SACAgent` with stochastic training actions and deterministic oracle mode.
+- SAC checkpoint format consumed by PR8-full demo collection and PR10 DAgger oracle labeling.
+- Online replay buffer and train script with critic loss, actor loss, alpha loss, entropy, and Q-value logs.
+
 **Implementation**
 - Add 7D squashed Gaussian actor.
 - Add twin Q critics.
@@ -1142,6 +1356,9 @@ Implement SAC as the main off-policy sample-efficient baseline and expert oracle
 - Verify alpha changes in the correct direction.
 - Verify target networks lag online networks.
 - Verify replay buffer stores image as uint8 and action as float32.
+- Verify deterministic oracle action is repeatable after save/load.
+- Verify a tiny fake continuous-control env can run warmup -> update -> eval without Isaac.
+- Verify actor and critic optimizer states resume correctly from checkpoint.
 
 **Pytest**
 
@@ -1163,6 +1380,16 @@ git commit -m "feat(rl): add continuous SAC baseline"
 
 Implement TD3 as the deterministic off-policy baseline.
 
+**Inputs**
+- PR3 backbone.
+- PR3.5 deterministic actor head, twin-Q head helpers, replay buffer, checkpoint helpers.
+- PR6 replay-buffer conventions where possible.
+
+**Outputs**
+- `TD3Agent` with deterministic eval action and exploration-noise training action.
+- TD3 checkpoints and logs comparable with SAC in PR11-full/PR12-full.
+- Shared replay-buffer-compatible training script.
+
 **Implementation**
 - Add deterministic 7D actor.
 - Add twin Q critics.
@@ -1179,6 +1406,9 @@ Implement TD3 as the deterministic off-policy baseline.
 - Verify policy delay skips actor update on the correct steps.
 - Verify target smoothing noise is clipped.
 - Verify save/load round trip.
+- Verify a tiny fake env can run warmup -> update -> eval without Isaac.
+- Verify target actor/critic checkpoint state resumes exactly.
+- Verify TD3 and SAC can share replay batch shapes without conversion glue.
 
 **Pytest**
 
@@ -1194,74 +1424,235 @@ git commit -m "feat(rl): add continuous TD3 baseline"
 
 ---
 
-### PR 8 — Demo Dataset
+### PR 8-full — SAC Expert Demonstration Collection
 
 **Goal / Why**
 
-Collect SAC expert demonstrations in an episode-safe format for Diffusion Policy training. Diffusion Policy needs observation histories and future action chunks, so flat `(s, a)` rows are not enough.
+Collect SAC expert demonstrations in the episode-safe HDF5 format that PR8-lite already established. This PR turns SAC from a trained RL baseline into the oracle/data source for imitation learning.
+
+**Inputs**
+- PR6 `SACAgent` checkpoint with deterministic oracle mode.
+- PR8-lite rollout dataset schema and collector conventions.
+- PR2.5 camera-enabled Isaac env and 7D action contract.
+
+**Outputs**
+- SAC demonstration files such as `data/franka_sac_demos.h5`.
+- Dataset metadata recording SAC checkpoint path/hash, env id, action dim, proprio dim, policy/debug camera names, seed schedule, and collection command.
+- Optional PR11-lite metrics and PR12-lite visual artifacts for the SAC oracle dataset.
 
 **Implementation**
 - Add SAC demo collection script.
-- Store demonstrations in HDF5 or zarr-style episode groups.
-- Save images, proprios, actions, rewards, done, truncated, episode_id, and metadata.
-- Implement dataset indexing for `(T_obs, image/proprio)` and `(H, 7)` action chunks.
-- Prevent windows from crossing episode boundaries.
+- Reuse the HDF5 episode schema from PR8-lite instead of inventing a second format.
+- Save images, proprios, actions, rewards, done, truncated, optional success flags, episode id, and metadata.
+- Support `--num-parallel-envs`, `--settle-steps`, optional raw wrist images, and optional debug images consistently with `scripts.collect_rollouts`.
+- Evaluate the collected SAC demos with existing dataset metrics so bad oracle checkpoints are caught before IL training.
 - Do not train Diffusion Policy in this PR.
 
 **How To Test**
 - Verify saved file contains required keys.
-- Verify metadata includes action_dim, action_horizon, obs_history, env_id, and seed.
-- Verify sampled windows never cross `done` or `truncated`.
-- Verify action chunks have shape `(H, 7)`.
-- Verify observation histories have shape `(T_obs, 3, 224, 224)` and `(T_obs, proprio_dim)`.
+- Verify metadata includes action dim, proprio dim, env id, seed/reset seed, SAC checkpoint identity, camera names, and collection command.
+- Verify a fake SAC oracle with deterministic actions writes those exact labels to HDF5.
+- Verify vectorized collection writes separate episode groups per env lane.
+- Verify collected actions are clipped 7D float32 arrays and images remain uint8 wrist-camera frames.
+- Verify collection fails readably if the SAC checkpoint/env action dimension does not match the project contract.
 
 **Pytest**
 
 ```bash
-pytest tests/test_demo_dataset.py -v
+pytest tests/test_sac_demo_collection.py -v
 ```
 
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(data): add episode-safe demonstration dataset"
+git commit -m "feat(data): collect SAC expert demonstrations"
 ```
 
 ---
 
-### PR 9 — Diffusion Policy Behavior Cloning
+### PR 8.5 — Diffusion Sequence Dataset
+
+**Goal / Why**
+
+Make the exact supervised-learning input/output contract for Diffusion Policy explicit before implementing the model. This is the bridge from episode HDF5 files to batches of observation histories and future action chunks.
+
+**Inputs**
+- PR8-lite or PR8-full episode-safe HDF5 files.
+- PR3 backbone image/proprio expectations.
+- Image augmentation utilities from `utils/image_aug.py`.
+
+**Outputs**
+- `DiffusionSequenceDataset` or equivalent dataloader that yields:
+
+```text
+images:   (B, T_obs, 3, 224, 224) uint8 or normalized float after transform
+proprios: (B, T_obs, 40) float32
+actions:  (B, action_horizon, 7) float32
+mask:     optional, marks padded timesteps when short episodes are allowed
+```
+
+- Clear rule for padding versus rejecting short episodes.
+- Augmentation hook applied only in training loaders, not in the env wrapper or eval/GIF path.
+
+**Implementation**
+- Index valid `(episode_key, start, stop)` windows without crossing `done` or `truncated`.
+- Support configurable `T_obs`, `action_horizon`, and `exec_horizon`.
+- Preserve chronological order of image/proprio history and action targets.
+- Provide a small collate function if padding/masking is needed.
+- Keep model architecture and diffusion loss out of this PR.
+
+**How To Test**
+- Verify sequence batches have exact expected shapes and dtypes.
+- Verify windows never cross episode boundaries or terminal/truncated steps.
+- Verify short episodes are either rejected or padded according to the documented rule.
+- Verify `PadAndRandomCrop` can be plugged into the training loader and `IdentityAug` leaves eval batches unchanged.
+- Verify action chunks loaded from HDF5 match the underlying stored rows exactly.
+
+**Pytest**
+
+```bash
+pytest tests/test_diffusion_sequence_dataset.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(data): add diffusion sequence dataset"
+```
+
+---
+
+### PR 9a — Diffusion Core Model
+
+**Goal / Why**
+
+Implement the reusable diffusion-policy model components without a full training loop. This keeps the largest IL component small enough to review.
+
+**Inputs**
+- PR3 backbone output or frozen observation feature tensors.
+- PR8.5 action chunk shape `(B, action_horizon, 7)`.
+
+**Outputs**
+- Noise schedule utilities.
+- Sinusoidal timestep embeddings.
+- Observation-conditioned 1D temporal U-Net or equivalent denoiser.
+- Model forward API:
+
+```python
+pred_noise = model(noisy_actions, timesteps, obs_features)
+```
+
+**Implementation**
+- Add 1D temporal U-Net noise predictor.
+- Add sinusoidal diffusion timestep embedding.
+- Add FiLM or equivalent conditioning from image-proprio observation features.
+- Add DDPM forward-diffusion helpers.
+- Do not add full BC train script, DDIM deployment, DAgger, or live Isaac rollout in this PR.
+
+**How To Test**
+- Verify noise schedule is monotonic and numerically stable.
+- Verify forward diffusion variance matches expected behavior.
+- Verify predicted noise shape is `(B, H, 7)`.
+- Verify gradients flow from predicted noise to model parameters and observation conditioning.
+- Verify deterministic forward pass with fixed weights/input.
+
+**Pytest**
+
+```bash
+pytest tests/test_diffusion_core.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(il): add diffusion policy core model"
+```
+
+---
+
+### PR 9b — Diffusion Policy Behavior Cloning Training
 
 **Goal / Why**
 
 Train a Diffusion Policy from SAC demonstrations. This tests whether an offline imitation learner can reproduce the expert's manipulation behavior.
 
+**Inputs**
+- PR8-full SAC demonstration HDF5 files.
+- PR8.5 sequence dataloader batches.
+- PR9a diffusion core model.
+
+**Outputs**
+- BC training script and checkpoint format.
+- Training logs with denoising loss, learning rate, dataset size, seed, and validation loss if a validation split is configured.
+- Checkpoints loadable by PR9c deployment.
+
 **Implementation**
-- Add 1D temporal U-Net noise predictor.
-- Add sinusoidal diffusion timestep embedding.
-- Add FiLM conditioning from image-proprio observation history.
 - Add DDPM noise prediction loss.
-- Add DDIM inference with action chunking.
-- Output `(exec_horizon, 7)` actions during deployment.
-- Do not implement DAgger in this PR.
+- Add train/validation split over episode-safe windows.
+- Add checkpoint save/load and resume.
+- Add a small synthetic overfit mode for tests.
+- Do not add online DAgger or live Isaac deployment in this PR.
 
 **How To Test**
-- Verify noise schedule is monotonic.
-- Verify forward diffusion variance matches expected behavior.
-- Verify predicted noise shape is `(B, H, 7)`.
 - Verify training loss is positive and decreases on toy data.
-- Verify DDIM deterministic mode returns identical actions for identical inputs.
-- Verify action chunk output shape is `(E, 7)`.
+- Verify checkpoint save/load reproduces model output for deterministic inputs.
+- Verify resume preserves optimizer state, global step, and scheduler state if used.
+- Verify train loader applies training aug and eval loader uses identity/no-random eval transform.
+- Verify a tiny synthetic dataset can be overfit within a bounded number of steps.
 
 **Pytest**
 
 ```bash
-pytest tests/test_diffusion_policy.py -v
+pytest tests/test_diffusion_bc_training.py -v
 ```
 
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(il): add diffusion policy behavior cloning"
+git commit -m "feat(il): train diffusion policy behavior cloning"
+```
+
+---
+
+### PR 9c — Diffusion Policy Deployment And DDIM Inference
+
+**Goal / Why**
+
+Turn a trained BC-Diffusion checkpoint into a rollout policy that can be evaluated by the existing metrics and visual-output infrastructure.
+
+**Inputs**
+- PR9b BC-Diffusion checkpoint.
+- PR2.5 env observation contract.
+- PR11-lite/PR12-lite evaluation and visualization paths.
+
+**Outputs**
+- `DiffusionPolicy.act(obs)` adapter with an internal action queue.
+- DDIM inference producing action chunks.
+- Deployment config for `action_horizon`, `exec_horizon`, diffusion steps, deterministic/stochastic sampling, and observation history length.
+
+**Implementation**
+- Add DDIM inference with action chunking.
+- Maintain an observation-history buffer and an action queue.
+- Output only the next 7D action to the env while replanning every `exec_horizon` steps.
+- Keep DAgger out of this PR.
+
+**How To Test**
+- Verify DDIM deterministic mode returns identical actions for identical inputs.
+- Verify action chunk output shape is `(E, 7)`.
+- Verify the action queue consumes chunk actions before replanning.
+- Verify `DiffusionPolicy.act(obs)` returns normalized 7D actions and preserves policy/debug camera separation.
+- Verify a fake env rollout can call the deployed policy for multiple replanning cycles.
+
+**Pytest**
+
+```bash
+pytest tests/test_diffusion_policy_deployment.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(il): deploy diffusion policy with DDIM"
 ```
 
 ---
@@ -1271,6 +1662,17 @@ git commit -m "feat(il): add diffusion policy behavior cloning"
 **Goal / Why**
 
 Add dataset aggregation so the diffusion student learns how to recover from states it visits itself, not only states from the expert's original demonstrations.
+
+**Inputs**
+- PR6 SAC checkpoint as deterministic oracle.
+- PR9c deployed Diffusion Policy student.
+- PR8.5 sequence dataset and PR8-full SAC demonstration dataset.
+- PR8-lite HDF5 append/schema rules.
+
+**Outputs**
+- Aggregated DAgger dataset with expert labels on student-visited states.
+- DAgger training/fine-tuning checkpoints.
+- Logs for oracle query count, dataset size by iteration, success/return/jerk by iteration, and DAgger dataset fraction.
 
 **Implementation**
 - Load BC-Diffusion checkpoint.
@@ -1287,6 +1689,9 @@ Add dataset aggregation so the diffusion student learns how to recover from stat
 - Verify appended samples preserve episode boundaries.
 - Verify fine-tuning reduces BC loss on a small synthetic dataset.
 - Verify checkpoint save/load after DAgger iteration.
+- Verify a fake student rollout -> fake oracle relabel -> aggregate -> dataloader path produces valid PR8.5 batches.
+- Verify oracle query counts and iteration metadata are written deterministically.
+- Verify DAgger does not overwrite the original SAC demo episodes unless explicitly requested.
 
 **Pytest**
 
@@ -1302,11 +1707,21 @@ git commit -m "feat(il): add DAgger fine-tuning loop"
 
 ---
 
-### PR 11 — Evaluation Metrics
+### PR 11-full — Online Checkpoint Evaluation
 
 **Goal / Why**
 
-Provide one evaluator that works for RL agents and Diffusion Policy agents, so all methods are compared with the same metrics.
+Provide one full online evaluator that works for RL agents and Diffusion Policy agents, so all methods are compared with the same metrics. PR11-lite already evaluates rollout HDF5 files; PR11-full adds checkpoint/agent evaluation against envs.
+
+**Inputs**
+- PR11-lite dataset metrics functions.
+- Agent deployment interfaces from PR4-7 and PR9c/PR10.
+- PR2.5 env wrapper and optional PR8-lite collector when saving eval rollouts.
+
+**Outputs**
+- `evaluate_agent()` for live/fake envs.
+- Agent-level eval JSON/NPZ files with the same metric definitions as dataset-level metrics.
+- Optional eval rollout HDF5 files for post-hoc inspection.
 
 **Implementation**
 - Add `evaluate_agent()`.
@@ -1322,26 +1737,40 @@ Provide one evaluator that works for RL agents and Diffusion Policy agents, so a
 - Verify action jerk is zero for constant-action dummy policy.
 - Verify diffusion action queue consumes chunk actions before replanning.
 - Verify deterministic eval is repeatable with fixed seed.
+- Verify fake vectorized env evaluation handles `num_envs=1` and `num_envs>1`.
+- Verify checkpoint loading routes to the correct agent type.
+- Verify online `evaluate_agent()` and offline `evaluate_rollout_dataset()` agree on a saved deterministic fake rollout.
+- Verify missing/invalid checkpoint and unknown agent type fail readably.
 
 **Pytest**
 
 ```bash
-conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v
+conda run -n isaac_arm python -m pytest tests/test_eval_agent.py -v
 ```
 
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(eval): add continuous-control evaluation metrics"
+git commit -m "feat(eval): add checkpoint evaluation loop"
 ```
 
 ---
 
-### PR 12 — Visual Outputs
+### PR 12-full — Trained-Policy Visual Comparison
 
 **Goal / Why**
 
-Create visual artifacts that make the project easy to inspect. GIFs show whether policies really grasp and lift the cube, not just whether scalar metrics improved.
+Create visual artifacts that make the project easy to inspect. PR12-lite already records debug-camera GIF/MP4 outputs for demo policies; PR12-full adds checkpoint-based visual comparison, side-by-side grids, and summary plots for trained methods.
+
+**Inputs**
+- PR12-lite GIF/MP4/debug-frame recorder.
+- PR11-full checkpoint evaluator and metric files.
+- Agent checkpoints from PR4-7, PR9c, and PR10.
+
+**Outputs**
+- Per-method GIFs/MP4s from a consistent debug-camera view.
+- Side-by-side comparison grids for matching seeds/episodes.
+- Plots for return, success rate, steps-to-threshold, action jerk, and data/oracle-query efficiency.
 
 **Implementation**
 - Add rollout GIF recording script.
@@ -1359,39 +1788,51 @@ Create visual artifacts that make the project easy to inspect. GIFs show whether
 - Verify expected number of frames is recorded.
 - Verify comparison plot file is created.
 - Verify missing checkpoint gives a readable error.
+- Verify debug-camera frames are used for human-facing outputs and wrist-camera frames are never substituted silently.
+- Verify side-by-side comparison aligns frame counts/seeds or reports why alignment is impossible.
+- Verify plotting code handles missing methods/partial runs without fabricating measured results.
 
 **Pytest**
 
 ```bash
-pytest tests/test_visual_outputs.py -v
+pytest tests/test_visual_comparison_outputs.py -v
 ```
 
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(viz): add rollout GIFs and comparison plots"
+git commit -m "feat(viz): add trained-policy comparison outputs"
 ```
 
 ---
 
 ## 13. PR Roadmap Summary
 
-| PR | What it does | Test command | Suggested commit |
-|---|---|---|---|
-| PR 0 | Project scaffold | `pytest tests/test_project_scaffold.py -v` | `chore: scaffold Isaac Lab manipulation project` |
-| PR 1 | IK-relative Franka task + 7D action | `conda run -n isaac_arm python -m pytest tests/test_task_contract.py -v` | `feat(env): add Franka IK-relative lift task config` |
-| PR 2 | Image-proprio observation wrapper | `conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v` | `feat(env): add image-proprio observation wrapper` |
-| PR 2.5 | Camera-enabled Franka lift cfg | `conda run -n isaac_arm python -m pytest tests/test_camera_enabled_env_cfg.py -v` plus live camera smoke | `feat(env): add camera-enabled Franka lift cfg` |
-| PR 3 | Shared backbone | `pytest tests/test_nn_backbone.py -v` | `feat(model): add image-proprio fusion backbone` |
-| PR 4 | PPO baseline | `pytest tests/test_ppo_continuous.py -v` | `feat(rl): add continuous PPO baseline` |
-| PR 5 | Pure GRPO baseline | `pytest tests/test_grpo_continuous.py -v` | `feat(rl): add pure GRPO baseline` |
-| PR 6 | SAC baseline | `pytest tests/test_sac_continuous.py -v` | `feat(rl): add continuous SAC baseline` |
-| PR 7 | TD3 baseline | `pytest tests/test_td3_continuous.py -v` | `feat(rl): add continuous TD3 baseline` |
-| PR 8 | Demo dataset | `pytest tests/test_demo_dataset.py -v` | `feat(data): add episode-safe demonstration dataset` |
-| PR 9 | Diffusion BC | `pytest tests/test_diffusion_policy.py -v` | `feat(il): add diffusion policy behavior cloning` |
-| PR 10 | DAgger | `pytest tests/test_dagger_diffusion.py -v` | `feat(il): add DAgger fine-tuning loop` |
-| PR 11 | Evaluation metrics | `conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v` | `feat(eval): add continuous-control evaluation metrics` |
-| PR 12 | GIFs and plots | `pytest tests/test_visual_outputs.py -v` | `feat(viz): add rollout GIFs and comparison plots` |
+| PR | Status | What it does | Test command | Suggested commit |
+|---|---|---|---|---|
+| PR 0 | Done | Project scaffold | `pytest tests/test_project_scaffold.py -v` | `chore: scaffold Isaac Lab manipulation project` |
+| PR 1 | Done | IK-relative Franka task + 7D action | `conda run -n isaac_arm python -m pytest tests/test_task_contract.py -v` | `feat(env): add Franka IK-relative lift task config` |
+| PR 2 | Done | Image-proprio observation wrapper | `conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v` | `feat(env): add image-proprio observation wrapper` |
+| PR 2.5 | Done | Camera-enabled Franka lift cfg | `conda run -n isaac_arm python -m pytest tests/test_camera_enabled_env_cfg.py -v` plus live camera smoke | `feat(env): add camera-enabled Franka lift cfg` |
+| PR 8-pre | Done | Demo policy interface, random/heuristic/replay policies | `conda run -n isaac_arm python -m pytest tests/test_demo_policies.py -v` | `feat(policy): add random and heuristic demo policies` |
+| PR 8-lite | Done | Episode-safe rollout HDF5 dataset and collector | `conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v` | `feat(data): add episode-safe rollout dataset` |
+| PR 11-lite | Done | Dataset-level rollout metrics | `conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v` | `feat(eval): add rollout metrics for data-loop demo` |
+| PR 12-lite | Done | Debug-camera GIF/MP4 and sampled PNG output | `conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py -v` | `feat(viz): add rollout GIF recording` |
+| Demo PR | Done | One-command dataset + metrics + visual artifact loop | `conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -v` | `feat(demo): add one-command robotics data loop` |
+| PR 3 | Done | Shared backbone | `pytest tests/test_nn_backbone.py -v` | `feat(model): add image-proprio fusion backbone` |
+| PR 3.5 | Pending | Shared agent primitives, buffers, checkpoints, policy adapter | `pytest tests/test_agent_primitives.py -v` | `feat(agents): add continuous-control agent primitives` |
+| PR 4 | Pending | PPO baseline | `pytest tests/test_ppo_continuous.py -v` | `feat(rl): add continuous PPO baseline` |
+| PR 5 | Pending | Pure GRPO baseline | `pytest tests/test_grpo_continuous.py -v` | `feat(rl): add pure GRPO baseline` |
+| PR 6 | Pending | SAC baseline | `pytest tests/test_sac_continuous.py -v` | `feat(rl): add continuous SAC baseline` |
+| PR 7 | Pending | TD3 baseline | `pytest tests/test_td3_continuous.py -v` | `feat(rl): add continuous TD3 baseline` |
+| PR 8-full | Pending | SAC expert demonstration collection using the existing HDF5 schema | `pytest tests/test_sac_demo_collection.py -v` | `feat(data): collect SAC expert demonstrations` |
+| PR 8.5 | Pending | Diffusion sequence dataset and dataloader I/O contract | `pytest tests/test_diffusion_sequence_dataset.py -v` | `feat(data): add diffusion sequence dataset` |
+| PR 9a | Pending | Diffusion core model and scheduler | `pytest tests/test_diffusion_core.py -v` | `feat(il): add diffusion policy core model` |
+| PR 9b | Pending | Diffusion Policy BC training | `pytest tests/test_diffusion_bc_training.py -v` | `feat(il): train diffusion policy behavior cloning` |
+| PR 9c | Pending | Diffusion Policy DDIM deployment and action queue | `pytest tests/test_diffusion_policy_deployment.py -v` | `feat(il): deploy diffusion policy with DDIM` |
+| PR 10 | Pending | DAgger | `pytest tests/test_dagger_diffusion.py -v` | `feat(il): add DAgger fine-tuning loop` |
+| PR 11-full | Pending | Online checkpoint/agent evaluation | `conda run -n isaac_arm python -m pytest tests/test_eval_agent.py -v` | `feat(eval): add checkpoint evaluation loop` |
+| PR 12-full | Pending | Trained-policy GIFs, side-by-side grids, and plots | `pytest tests/test_visual_comparison_outputs.py -v` | `feat(viz): add trained-policy comparison outputs` |
 
 ---
 
@@ -1410,23 +1851,52 @@ PR 2 Observation Wrapper
 PR 2.5 Camera-Enabled Franka Lift Cfg
   |
   v
+Completed demo/data-loop branch:
+  |
+  +--> PR 8-pre Demo policies
+  |      |
+  |      v
+  |   PR 8-lite Episode-safe rollout dataset
+  |      |
+  |      +--> PR 11-lite Dataset metrics
+  |      +--> PR 12-lite Debug-camera visual output
+  |              |
+  |              v
+  |           Demo PR One-command data loop
+  |
+  v
+Future research branch:
+  |
+  v
 PR 3 Shared Backbone
   |
-  +--> PR 4 PPO
-  +--> PR 5 Pure GRPO
-  +--> PR 6 SAC ----+
-  +--> PR 7 TD3     |
-                    v
-                 PR 8 Demo Dataset
-                    |
-                    v
-                 PR 9 Diffusion BC
-                    |
-                    v
-                 PR 10 DAgger
+  v
+PR 3.5 Agent Primitives
+  |
+  +--> PR 4 PPO ------------------------------+
+  +--> PR 5 Pure GRPO ------------------------+--> PR 11-full Online evaluation --> PR 12-full visual comparison
+  +--> PR 6 SAC ----+                         |
+  +--> PR 7 TD3 ----+                         |
+                  |                           |
+                  v                           |
+             PR 8-full SAC expert demos       |
+                  |                           |
+                  v                           |
+             PR 8.5 Diffusion sequence data   |
+                  |                           |
+                  v                           |
+             PR 9a Diffusion core             |
+                  |                           |
+                  v                           |
+             PR 9b Diffusion BC training      |
+                  |                           |
+                  v                           |
+             PR 9c Diffusion deployment ------+
+                  |
+                  v
+             PR 10 DAgger --------------------+
 
-PR 11 Evaluation depends on PR 2 and agent interfaces from PR 4-10.
-PR 12 Visual Outputs depends on PR 11 and trained checkpoints.
+PR11-lite and PR12-lite remain reusable by full PRs for dataset metrics and debug-camera visual artifact generation.
 ```
 
 ---
@@ -1481,9 +1951,16 @@ pytest tests/ -v
 Single PR examples:
 
 ```bash
+pytest tests/test_nn_backbone.py -v
+pytest tests/test_agent_primitives.py -v
 pytest tests/test_sac_continuous.py -v
-pytest tests/test_diffusion_policy.py -v
-pytest tests/test_visual_outputs.py -v
+pytest tests/test_sac_demo_collection.py -v
+pytest tests/test_diffusion_sequence_dataset.py -v
+pytest tests/test_diffusion_core.py -v
+pytest tests/test_diffusion_bc_training.py -v
+pytest tests/test_diffusion_policy_deployment.py -v
+pytest tests/test_eval_agent.py -v
+pytest tests/test_visual_comparison_outputs.py -v
 ```
 
 ---
