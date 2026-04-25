@@ -54,7 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1,
     )
     parser.add_argument("--save-dataset", "--save_dataset", dest="save_dataset", required=True)
-    parser.add_argument("--save-metrics", "--save_metrics", dest="save_metrics", required=True)
+    parser.add_argument("--save-metrics", "--save_metrics", dest="save_metrics")
     parser.add_argument("--save-gif", "--save_gif", dest="save_gif", required=True)
     parser.add_argument("--save-mp4", "--save_mp4", dest="save_mp4")
     parser.add_argument("--save-debug-frames-dir", "--save_debug_frames_dir", dest="save_debug_frames_dir")
@@ -227,10 +227,13 @@ def _run_with_env(args: argparse.Namespace, env: Any) -> dict[str, Any]:
         )
         metrics = evaluate_rollout_dataset(dataset_path, policy_name=dataset_policy.name, env_backend=args.backend)
     metrics_payload = metrics.as_dict()
-    metrics_payload.update(_target_projection_payload(metrics_payload, env, args.debug_camera_name))
-    metrics_path = save_metrics_json(metrics_payload, args.save_metrics)
-
     visual_rollout = _make_visual_rollout_spec(args, dataset_path)
+    selected_episode_replay = args.use_existing_dataset and visual_rollout.episode_key is not None
+    if not selected_episode_replay:
+        metrics_payload.update(_target_projection_payload(metrics_payload, env, args.debug_camera_name))
+        metrics_path = save_metrics_json(metrics_payload, args.save_metrics) if args.save_metrics is not None else None
+    else:
+        metrics_path = None
     gif_env = _gif_env_for_recording(args, env, settle_steps=visual_rollout.settle_steps)
     gif_result = record_debug_gif(
         gif_env,
@@ -246,6 +249,17 @@ def _run_with_env(args: argparse.Namespace, env: Any) -> dict[str, Any]:
         overlay=_metrics_overlay(metrics_payload),
         mp4_output_path=args.save_mp4,
     )
+    if selected_episode_replay:
+        metrics_payload.update(
+            _target_projection_payload(
+                metrics_payload,
+                env,
+                args.debug_camera_name,
+                episode_keys={visual_rollout.episode_key},
+                env_index=visual_rollout.env_index,
+            )
+        )
+        metrics_path = save_metrics_json(metrics_payload, args.save_metrics) if args.save_metrics is not None else None
     return {
         "status": "ok",
         "backend": args.backend,
@@ -263,7 +277,7 @@ def _run_with_env(args: argparse.Namespace, env: Any) -> dict[str, Any]:
         "visual_rollout_sample_prefix": visual_rollout.sample_prefix,
         "episode_keys": list_episode_keys(dataset_path),
         "save_dataset": str(dataset_path),
-        "save_metrics": str(metrics_path),
+        "save_metrics": None if metrics_path is None else str(metrics_path),
         "save_gif": str(gif_result.gif_path),
         "save_mp4": None if gif_result.mp4_path is None else str(gif_result.mp4_path),
         "sampled_debug_frames": [str(path) for path in gif_result.sampled_frame_paths],
@@ -297,13 +311,11 @@ def _target_projection_payload(
     metrics: dict[str, Any],
     env: Any,
     debug_camera_name: str | None,
+    *,
+    episode_keys: set[str] | None = None,
+    env_index: int = 0,
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "target_debug_camera_name": debug_camera_name,
-        "target_debug_pixel_by_episode": {},
-        "target_debug_pixel_visible_by_episode": {},
-        "target_debug_pixel_source": "not_available",
-    }
+    payload = _target_projection_not_available_payload(debug_camera_name)
     episode_targets = metrics.get("target_positions_base_m_by_episode", {})
     if not isinstance(episode_targets, dict) or not episode_targets:
         payload["target_debug_pixel_source"] = "not_available_no_episode_targets"
@@ -314,8 +326,10 @@ def _target_projection_payload(
         return payload
     projection_error: Exception | None = None
     for episode_key, episode_target in episode_targets.items():
+        if episode_keys is not None and episode_key not in episode_keys:
+            continue
         try:
-            episode_projection = project(episode_target, camera_name=debug_camera_name, env_index=0)
+            episode_projection = project(episode_target, camera_name=debug_camera_name, env_index=env_index)
         except Exception as exc:
             projection_error = exc
             continue
@@ -335,6 +349,19 @@ def _target_projection_payload(
         else:
             payload["target_debug_pixel_source"] = "not_available_projection_returned_none"
     return payload
+
+
+def _target_projection_not_available_payload(
+    debug_camera_name: str | None,
+    *,
+    source: str = "not_available",
+) -> dict[str, Any]:
+    return {
+        "target_debug_camera_name": debug_camera_name,
+        "target_debug_pixel_by_episode": {},
+        "target_debug_pixel_visible_by_episode": {},
+        "target_debug_pixel_source": source,
+    }
 
 
 def _normalize_optional_camera_args(args: argparse.Namespace) -> None:
@@ -363,6 +390,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--backend fake supports only --num-parallel-envs 1")
     if args.target_overlay != TARGET_OVERLAY_NONE and args.debug_camera_name is None:
         raise ValueError("--target-overlay requires a configured debug camera")
+    if args.save_metrics is None and not (args.use_existing_dataset and args.visual_rollout_episode):
+        raise ValueError("--save-metrics is required unless replaying a selected episode from an existing dataset")
 
 
 class _SelectedLanePolicy:

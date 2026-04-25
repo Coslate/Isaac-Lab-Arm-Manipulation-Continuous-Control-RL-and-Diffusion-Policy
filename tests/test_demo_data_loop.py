@@ -30,6 +30,7 @@ def _run_fake_demo(
     visual_rollout_episode: str | None = None,
     use_existing_dataset: bool = False,
     save_dataset=None,
+    save_metrics: bool = True,
 ):
     dataset_path = save_dataset or (tmp_path / f"{policy}_rollouts.h5")
     args = [
@@ -45,8 +46,6 @@ def _run_fake_demo(
         str(settle_steps),
         "--save_dataset",
         str(dataset_path),
-        "--save_metrics",
-        str(tmp_path / "logs" / f"{policy}_metrics.json"),
         "--save_gif",
         str(tmp_path / "gifs" / f"{policy}.gif"),
         "--save-debug-frames-dir",
@@ -55,6 +54,8 @@ def _run_fake_demo(
         target_overlay,
         "--no-progress",
     ]
+    if save_metrics:
+        args.extend(["--save_metrics", str(tmp_path / "logs" / f"{policy}_metrics.json")])
     if save_mp4:
         args.extend(["--save_mp4", str(tmp_path / "videos" / f"{policy}.mp4")])
     if use_existing_dataset:
@@ -95,6 +96,40 @@ def test_cli_accepts_required_demo_options(tmp_path) -> None:
     assert str(args.save_metrics).endswith("metrics.json")
     assert str(args.save_gif).endswith("demo.gif")
     assert args.save_mp4 is None
+
+
+def test_save_metrics_is_optional_only_for_existing_dataset_episode_replay(tmp_path) -> None:
+    args = parse_args(
+        [
+            "--backend",
+            "fake",
+            "--policy",
+            "heuristic",
+            "--use-existing-dataset",
+            "--visual-rollout-episode",
+            "episode_000",
+            "--save_dataset",
+            str(tmp_path / "rollouts.h5"),
+            "--save_gif",
+            str(tmp_path / "demo.gif"),
+        ]
+    )
+
+    assert args.save_metrics is None
+
+    with pytest.raises(ValueError, match="--save-metrics is required"):
+        parse_args(
+            [
+                "--backend",
+                "fake",
+                "--policy",
+                "heuristic",
+                "--save_dataset",
+                str(tmp_path / "rollouts.h5"),
+                "--save_gif",
+                str(tmp_path / "demo.gif"),
+            ]
+        )
 
 
 @pytest.mark.parametrize("policy", ["random", "heuristic"])
@@ -190,6 +225,27 @@ def test_demo_data_loop_can_replay_selected_episode_from_existing_dataset(tmp_pa
     assert replay["visual_rollout_source"] == "saved_episode_action_replay"
     assert replay["visual_rollout_episode"] == "episode_000"
     assert replay["visual_rollout_sample_prefix"] == "heuristic_replay_episode_000"
+    metrics = json.loads(open(replay["save_metrics"], encoding="utf-8").read())
+    assert metrics["target_debug_pixel_by_episode"] == {"episode_000": [100, 32]}
+    assert metrics["target_debug_pixel_visible_by_episode"] == {"episode_000": True}
+    assert metrics["target_debug_pixel_source"] == "debug_camera_projection"
+    assert "target_debug_pixel_error" not in metrics
+
+
+def test_existing_dataset_episode_replay_can_skip_metrics_file(tmp_path) -> None:
+    source = _run_fake_demo(tmp_path / "source", policy="heuristic")
+    replay = _run_fake_demo(
+        tmp_path / "existing",
+        policy="heuristic",
+        save_dataset=source["save_dataset"],
+        use_existing_dataset=True,
+        visual_rollout_episode="episode_000",
+        save_metrics=False,
+    )
+
+    assert replay["save_metrics"] is None
+    assert replay["visual_rollout_source"] == "saved_episode_action_replay"
+    assert replay["save_gif"].endswith("heuristic.gif")
 
 
 def test_demo_data_loop_can_save_mp4(tmp_path) -> None:

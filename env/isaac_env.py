@@ -289,6 +289,9 @@ class IsaacArmEnv:
             "depth_m": depth_m,
             "source": "debug_camera_projection",
         }
+        if not np.all(np.isfinite(point_camera)) or not np.isfinite(depth_m):
+            projection.update({"pixel": None, "visible": False, "reason": "nonfinite_camera_projection"})
+            return projection
         if depth_m <= 0.0:
             projection.update({"pixel": None, "visible": False, "reason": "behind_camera"})
             return projection
@@ -296,6 +299,9 @@ class IsaacArmEnv:
         intrinsic = intrinsic_matrix.astype(np.float64)
         u = float(intrinsic[0, 0] * point_camera[0] / depth_m + intrinsic[0, 2])
         v = float(intrinsic[1, 1] * point_camera[1] / depth_m + intrinsic[1, 2])
+        if not np.isfinite(u) or not np.isfinite(v):
+            projection.update({"pixel": None, "visible": False, "reason": "nonfinite_pixel_projection"})
+            return projection
         visible = 0.0 <= u < width and 0.0 <= v < height
         projection.update(
             {

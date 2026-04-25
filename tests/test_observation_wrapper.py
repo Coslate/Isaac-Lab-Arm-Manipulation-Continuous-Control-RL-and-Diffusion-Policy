@@ -422,6 +422,14 @@ def test_project_base_point_to_debug_pixel_uses_live_camera_intrinsics() -> None
     assert projection["visible"] is True
     assert projection["image_shape"] == [100, 200]
 
+    env._env.scene.sensors["table_cam"].data.intrinsic_matrices[0, 0, 0] = np.nan
+    projection = env.project_base_point_to_debug_pixel([0.0, 0.0, 1.0])
+
+    assert projection is not None
+    assert projection["pixel"] is None
+    assert projection["visible"] is False
+    assert projection["reason"] == "nonfinite_pixel_projection"
+
 
 def test_custom_policy_image_key_is_supported_without_generic_fallback() -> None:
     class CustomImageKeyEnv(FakeIsaacGymEnv):

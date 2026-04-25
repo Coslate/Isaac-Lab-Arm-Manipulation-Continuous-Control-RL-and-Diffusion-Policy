@@ -131,7 +131,7 @@ Current full local test result:
 
 ```text
 conda run -n isaac_arm python -m pytest -q
-147 passed, 1 skipped
+149 passed, 1 skipped
 skipped: tests/test_isaac_runtime_smoke.py requires RUN_ISAAC_RUNTIME_SMOKE=1 to launch Isaac Sim / Isaac Lab
 ```
 
@@ -1453,7 +1453,7 @@ The one-command loop:
 - supports `--backend isaac` for the real demo and `--backend fake` only for fast tests/sample artifacts.
 - supports `--settle-steps N`, which runs zero-action physics warmup after explicit `env.reset(...)` calls and before any dataset/GIF frame is recorded. `scripts.collect_rollouts` owns this for HDF5 dataset collection, and `scripts.demo_data_loop` applies the same behavior to GIF recording. The default is `0` to preserve raw behavior; the recommended live demo/training-data value is `20` so the cube settles on the table before the visible rollout starts.
 - supports `--visual-rollout-episode episode_XXX` / `--gif-episode episode_XXX`. When set, GIF/MP4 recording replays that saved HDF5 episode's stored actions instead of running a fresh policy rollout. It reads the episode's `reset_seed`, `source_env_index`, and `settle_steps` metadata, resets Isaac with that seed, records the matching vectorized lane, and writes sampled PNGs with a prefix such as `heuristic_replay_episode_002_step000_debug.png`.
-- supports `--use-existing-dataset` for post-hoc debugging: skip collection, use `--save_dataset` as an existing HDF5 file, recompute metrics, and replay `--visual-rollout-episode` from that file.
+- supports `--use-existing-dataset` for post-hoc debugging: skip collection, use `--save_dataset` as an existing HDF5 file, compute metrics in memory for overlays, and replay `--visual-rollout-episode` from that file. In this selected-episode replay mode, `--save_metrics` is optional; omit it for visual-only debug runs. If `--save_metrics` is explicitly provided, the metrics file is written after replay recording so the selected episode's target can be projected with valid live camera pose/intrinsics.
 
 Naming rule: HDF5 groups keep `episode_000`, `episode_001`, ... because they are saved dataset episodes. Default GIF/MP4 artifacts are a fresh env reset visual rollout recorded after dataset collection, not frames replayed from a saved HDF5 episode. Their sampled PNG prefix is therefore `policy_visual_rollout`, for example `heuristic_visual_rollout_step000_debug.png`, and the demo CLI result reports `visual_rollout_source = "fresh_env_reset"`. When `--visual-rollout-episode` is set, sampled PNGs intentionally include the replayed episode key, for example `heuristic_replay_episode_002_step000_debug.png`, and the CLI result reports `visual_rollout_source = "saved_episode_action_replay"`.
 
@@ -1559,7 +1559,7 @@ conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -v
 - CLI accepts `--backend`, `--policy`, `--num_episodes`, `--settle-steps`, `--save_dataset`, `--save_metrics`, `--save_gif`, and optional `--save_mp4`.
 - CLI accepts `--target-overlay {none,text,reticle,text-reticle}` and uses it only for GIF/debug PNG post-processing.
 - CLI accepts `--visual-rollout-episode` / `--gif-episode` and uses the selected HDF5 episode's saved actions for visual replay.
-- CLI accepts `--use-existing-dataset` for post-hoc episode replay/debug without recollecting the dataset.
+- CLI accepts `--use-existing-dataset` for post-hoc episode replay/debug without recollecting the dataset; `--save_metrics` can be omitted when paired with `--visual-rollout-episode`.
 - CLI accepts `--replay_dataset` when `--policy replay`.
 - Running with `--policy random` creates all requested outputs.
 - Running with `--policy heuristic` creates all requested outputs.
@@ -1579,12 +1579,12 @@ Verified in `isaac_arm`:
 /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
 ```
 
-Known result on 2026-04-24:
+Known result on 2026-04-25:
 
 ```text
-tests/test_demo_data_loop.py: 11 passed
-demo/eval/GIF related set: 63 passed
-full pytest: 147 passed, 1 skipped
+tests/test_demo_data_loop.py: 13 passed
+demo/eval/GIF related set: 65 passed
+full pytest: 149 passed, 1 skipped
 ```
 
 Generated sample artifacts for inspection:
@@ -1790,6 +1790,47 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --backend isaac \
   --policy heuristic \
   --use-existing-dataset \
+  --visual-rollout-episode episode_001 \
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_heuristic_demo_rollouts.h5 \
+  --save_gif out/gifs/final_heuristic_demo_replay_episode_001.gif \
+  --save_mp4 out/gifs/final_heuristic_demo_replay_episode_001.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_heuristic_demo_replay_episode_001 \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
+
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
+  --backend isaac \
+  --policy heuristic \
+  --use-existing-dataset \
+  --visual-rollout-episode episode_001 \
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_heuristic_demo_rollouts.h5 \
+  --save_gif out/gifs/final_heuristic_demo_replay_episode_001.gif \
+  --save_mp4 out/gifs/final_heuristic_demo_replay_episode_001.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_heuristic_demo_replay_episode_001 \
+  --save_metrics logs/final_heuristic_replay_episode_001_demo_metrics.json \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
+```
+
+```bash
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
+  --backend isaac \
+  --policy heuristic \
+  --use-existing-dataset \
   --visual-rollout-episode episode_002 \
   --max-steps 100 \
   --gif-max-steps 100 \
@@ -1797,16 +1838,37 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --table-cleanup matte-overlay \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_heuristic_demo_rollouts.h5 \
-  --save_metrics logs/final_heuristic_demo_replay_episode_002_metrics.json \
   --save_gif out/gifs/final_heuristic_demo_replay_episode_002.gif \
   --save_mp4 out/gifs/final_heuristic_demo_replay_episode_002.mp4 \
   --save-debug-frames-dir out/debug_frames/final_heuristic_demo_replay_episode_002 \
   --seed 0 \
   --device cuda:0 \
   --progress
+
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
+  --backend isaac \
+  --policy heuristic \
+  --use-existing-dataset \
+  --visual-rollout-episode episode_002 \
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_heuristic_demo_rollouts.h5 \
+  --save_gif out/gifs/final_heuristic_demo_replay_episode_002.gif \
+  --save_mp4 out/gifs/final_heuristic_demo_replay_episode_002.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_heuristic_demo_replay_episode_002 \
+  --save_metrics logs/final_heuristic_replay_episode_002_demo_metrics.json \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
 ```
 
 If the chosen HDF5 episode metadata says `source_env_index > 0`, run the replay command with the same `--num-parallel-envs` used during collection so the requested vectorized lane exists. The replay visual policy uses the saved episode actions; `--policy` is kept for CLI compatibility and fresh-rollout cases.
+
+For selected-episode replay, the most useful outputs are the GIF/MP4/debug PNGs. If you still pass `--save_metrics`, the replay metrics JSON keeps the dataset-level scalar metrics and writes target projection only for the selected episode after the replay reset/recording pass, when live camera pose/intrinsics are valid.
 
 Optional comparison demo commands:
 
@@ -1937,7 +1999,7 @@ conda run -n isaac_arm python -m pytest \
   -v
 ```
 
-All demo-slice test files listed in the command above exist in the current tree. The full repository test run on 2026-04-24 passed with `147 passed, 1 skipped`; the skip is the opt-in Isaac runtime smoke test, which still requires `RUN_ISAAC_RUNTIME_SMOKE=1`.
+All demo-slice test files listed in the command above exist in the current tree. The full repository test run on 2026-04-25 passed with `149 passed, 1 skipped`; the skip is the opt-in Isaac runtime smoke test, which still requires `RUN_ISAAC_RUNTIME_SMOKE=1`.
 
 ---
 
