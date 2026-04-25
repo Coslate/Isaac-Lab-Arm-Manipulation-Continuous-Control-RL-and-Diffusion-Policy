@@ -13,8 +13,8 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from configs import ACTION_DIM
-from dataset import list_episode_keys
+from configs import ACTION_DIM, clip_action
+from dataset import EpisodeData, list_episode_keys, load_episode
 from env.franka_lift_camera_cfg import MIN_CLEAN_ENV_SPACING, TABLE_CLEANUP_CHOICES, TABLE_CLEANUP_NONE
 from eval import evaluate_rollout_dataset, record_debug_gif, save_metrics_json
 from policies import BasePolicy, HeuristicPolicy, RandomPolicy, ReplayPolicy
@@ -58,6 +58,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--save-gif", "--save_gif", dest="save_gif", required=True)
     parser.add_argument("--save-mp4", "--save_mp4", dest="save_mp4")
     parser.add_argument("--save-debug-frames-dir", "--save_debug_frames_dir", dest="save_debug_frames_dir")
+    parser.add_argument(
+        "--use-existing-dataset",
+        "--use_existing_dataset",
+        dest="use_existing_dataset",
+        action="store_true",
+        help="Skip collection and use --save-dataset as an existing HDF5 dataset for metrics/visual replay.",
+    )
+    parser.add_argument(
+        "--visual-rollout-episode",
+        "--gif-episode",
+        dest="visual_rollout_episode",
+        help=(
+            "Replay this saved HDF5 episode's actions for GIF/MP4 recording. "
+            "Unset keeps the default fresh env reset visual rollout."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
@@ -112,6 +128,46 @@ def make_demo_policy(name: str, *, seed: int, replay_dataset: str | Path | None 
     raise ValueError(f"unknown policy {name!r}")
 
 
+def _make_visual_rollout_spec(args: argparse.Namespace, dataset_path: str | Path) -> SimpleNamespace:
+    if args.visual_rollout_episode is None:
+        policy = make_demo_policy(args.policy, seed=args.seed, replay_dataset=args.replay_dataset)
+        return SimpleNamespace(
+            source="fresh_env_reset",
+            policy=_SelectedLanePolicy(policy, env_index=0, num_envs=args.num_envs),
+            policy_name=policy.name,
+            episode_key=None,
+            seed=args.seed,
+            env_index=0,
+            settle_steps=args.settle_steps,
+            max_steps=args.gif_max_steps or args.max_steps,
+            sample_prefix=f"{args.policy}_visual_rollout",
+        )
+
+    episode_key = _normalize_episode_key(args.visual_rollout_episode)
+    episode = load_episode(dataset_path, episode_key)
+    metadata = _episode_metadata_dict(episode)
+    env_index = int(metadata.get("source_env_index", 0))
+    if env_index < 0 or env_index >= args.num_envs:
+        raise ValueError(
+            f"{episode_key} was collected from source_env_index={env_index}, "
+            f"but this run has --num-parallel-envs {args.num_envs}."
+        )
+    reset_seed = int(metadata.get("reset_seed", metadata.get("seed", args.seed)))
+    settle_steps = int(metadata.get("settle_steps", args.settle_steps))
+    original_policy = str(metadata.get("policy_name", args.policy))
+    return SimpleNamespace(
+        source="saved_episode_action_replay",
+        policy=_SavedEpisodeReplayPolicy(episode.actions, env_index=env_index, num_envs=args.num_envs),
+        policy_name=f"replay_saved_actions_from_{original_policy}",
+        episode_key=episode_key,
+        seed=reset_seed,
+        env_index=env_index,
+        settle_steps=settle_steps,
+        max_steps=args.gif_max_steps or int(episode.actions.shape[0]),
+        sample_prefix=f"{original_policy}_replay_{episode_key}",
+    )
+
+
 def _run_isaac_demo(args: argparse.Namespace) -> dict[str, Any]:
     from isaaclab.app import AppLauncher
 
@@ -148,48 +204,63 @@ def _run_isaac_demo(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _run_with_env(args: argparse.Namespace, env: Any) -> dict[str, Any]:
-    dataset_policy = make_demo_policy(args.policy, seed=args.seed, replay_dataset=args.replay_dataset)
-    dataset_path = collect_and_save_rollouts(
-        args.save_dataset,
-        env,
-        dataset_policy,
-        num_episodes=args.num_episodes,
-        max_steps=args.max_steps,
-        seed=args.seed,
-        env_backend=args.backend,
-        include_raw_policy_images=args.include_raw_policy_images,
-        include_debug_images=args.include_debug_images,
-        debug_camera_name=args.debug_camera_name,
-        show_progress=args.progress,
-        settle_steps=args.settle_steps,
-    )
-    metrics = evaluate_rollout_dataset(dataset_path, policy_name=dataset_policy.name, env_backend=args.backend)
+    if args.use_existing_dataset:
+        dataset_path = Path(args.save_dataset)
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"--use-existing-dataset requires an existing HDF5 file: {dataset_path}")
+        metrics = evaluate_rollout_dataset(dataset_path)
+    else:
+        dataset_policy = make_demo_policy(args.policy, seed=args.seed, replay_dataset=args.replay_dataset)
+        dataset_path = collect_and_save_rollouts(
+            args.save_dataset,
+            env,
+            dataset_policy,
+            num_episodes=args.num_episodes,
+            max_steps=args.max_steps,
+            seed=args.seed,
+            env_backend=args.backend,
+            include_raw_policy_images=args.include_raw_policy_images,
+            include_debug_images=args.include_debug_images,
+            debug_camera_name=args.debug_camera_name,
+            show_progress=args.progress,
+            settle_steps=args.settle_steps,
+        )
+        metrics = evaluate_rollout_dataset(dataset_path, policy_name=dataset_policy.name, env_backend=args.backend)
     metrics_payload = metrics.as_dict()
     metrics_payload.update(_target_projection_payload(metrics_payload, env, args.debug_camera_name))
     metrics_path = save_metrics_json(metrics_payload, args.save_metrics)
 
-    gif_policy = make_demo_policy(args.policy, seed=args.seed, replay_dataset=args.replay_dataset)
-    gif_env = _gif_env_for_recording(args, env)
+    visual_rollout = _make_visual_rollout_spec(args, dataset_path)
+    gif_env = _gif_env_for_recording(args, env, settle_steps=visual_rollout.settle_steps)
     gif_result = record_debug_gif(
         gif_env,
-        gif_policy,
+        visual_rollout.policy,
         args.save_gif,
-        max_steps=args.gif_max_steps or args.max_steps,
+        max_steps=visual_rollout.max_steps,
         fps=args.gif_fps,
         debug_camera_name=args.debug_camera_name,
-        seed=args.seed,
+        env_index=visual_rollout.env_index,
+        seed=visual_rollout.seed,
         sample_debug_dir=args.save_debug_frames_dir,
-        sample_prefix=f"{args.policy}_ep000",
+        sample_prefix=visual_rollout.sample_prefix,
         overlay=_metrics_overlay(metrics_payload),
         mp4_output_path=args.save_mp4,
     )
     return {
         "status": "ok",
         "backend": args.backend,
-        "policy": dataset_policy.name,
-        "num_episodes": args.num_episodes,
+        "policy": metrics_payload["policy_name"],
+        "num_episodes": metrics_payload["num_episodes"],
+        "use_existing_dataset": args.use_existing_dataset,
         "settle_steps": args.settle_steps,
         "target_overlay": args.target_overlay,
+        "visual_rollout_source": visual_rollout.source,
+        "visual_rollout_policy": visual_rollout.policy_name,
+        "visual_rollout_episode": visual_rollout.episode_key,
+        "visual_rollout_seed": visual_rollout.seed,
+        "visual_rollout_env_index": visual_rollout.env_index,
+        "visual_rollout_max_steps": visual_rollout.max_steps,
+        "visual_rollout_sample_prefix": visual_rollout.sample_prefix,
         "episode_keys": list_episode_keys(dataset_path),
         "save_dataset": str(dataset_path),
         "save_metrics": str(metrics_path),
@@ -214,8 +285,9 @@ def _metrics_overlay(metrics: dict[str, Any]):
     return overlay
 
 
-def _gif_env_for_recording(args: argparse.Namespace, env: Any) -> Any:
-    gif_env = _SettledResetEnv(env, settle_steps=args.settle_steps) if args.settle_steps > 0 else env
+def _gif_env_for_recording(args: argparse.Namespace, env: Any, *, settle_steps: int | None = None) -> Any:
+    resolved_settle_steps = args.settle_steps if settle_steps is None else settle_steps
+    gif_env = _SettledResetEnv(env, settle_steps=resolved_settle_steps) if resolved_settle_steps > 0 else env
     if args.target_overlay == TARGET_OVERLAY_NONE:
         return gif_env
     return _TargetOverlayEnv(gif_env, mode=args.target_overlay, debug_camera_name=args.debug_camera_name)
@@ -291,6 +363,84 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--backend fake supports only --num-parallel-envs 1")
     if args.target_overlay != TARGET_OVERLAY_NONE and args.debug_camera_name is None:
         raise ValueError("--target-overlay requires a configured debug camera")
+
+
+class _SelectedLanePolicy:
+    """Run a single-lane policy inside a vectorized env by zeroing sibling lanes."""
+
+    def __init__(self, policy: BasePolicy, *, env_index: int, num_envs: int) -> None:
+        self.policy = policy
+        self.name = policy.name
+        self.env_index = env_index
+        self.num_envs = num_envs
+
+    def reset(self) -> None:
+        self.policy.reset()
+
+    def act(self, obs: dict[str, np.ndarray]) -> np.ndarray:
+        selected_obs = _select_obs_lane(obs, env_index=self.env_index, num_envs=self.num_envs)
+        action = self.policy.act(selected_obs)
+        return _action_for_lane(action, env_index=self.env_index, num_envs=self.num_envs)
+
+
+class _SavedEpisodeReplayPolicy:
+    """Replay one saved episode's actions in its source vectorized-env lane."""
+
+    name = "replay_saved_episode_actions"
+
+    def __init__(self, actions: np.ndarray, *, env_index: int, num_envs: int) -> None:
+        action_array = np.asarray(actions, dtype=np.float32)
+        if action_array.ndim != 2 or action_array.shape[1] != ACTION_DIM:
+            raise ValueError(f"episode actions must have shape (T, {ACTION_DIM}), got {action_array.shape}")
+        if action_array.shape[0] == 0:
+            raise ValueError("episode actions must contain at least one step")
+        self._actions = action_array
+        self._index = 0
+        self.env_index = env_index
+        self.num_envs = num_envs
+
+    def reset(self) -> None:
+        self._index = 0
+
+    def act(self, obs: dict[str, np.ndarray]) -> np.ndarray:
+        del obs
+        action = self._actions[min(self._index, self._actions.shape[0] - 1)]
+        self._index += 1
+        return _action_for_lane(action, env_index=self.env_index, num_envs=self.num_envs)
+
+
+def _select_obs_lane(obs: dict[str, np.ndarray], *, env_index: int, num_envs: int) -> dict[str, np.ndarray]:
+    if env_index < 0 or env_index >= num_envs:
+        raise ValueError(f"env_index must be in [0, {num_envs}), got {env_index}")
+    selected: dict[str, np.ndarray] = {}
+    for key, value in obs.items():
+        array = np.asarray(value)
+        selected[key] = array[env_index : env_index + 1] if array.ndim > 0 and array.shape[0] == num_envs else array
+    return selected
+
+
+def _action_for_lane(action: np.ndarray, *, env_index: int, num_envs: int) -> np.ndarray:
+    lane_action = clip_action(action)
+    if lane_action.shape != (ACTION_DIM,):
+        raise ValueError(f"single-lane action must have shape ({ACTION_DIM},), got {lane_action.shape}")
+    if num_envs == 1:
+        return lane_action
+    batched = np.zeros((num_envs, ACTION_DIM), dtype=np.float32)
+    batched[env_index] = lane_action
+    return batched
+
+
+def _normalize_episode_key(episode: str) -> str:
+    episode_text = str(episode)
+    if episode_text.isdigit():
+        return f"episode_{int(episode_text):03d}"
+    return episode_text
+
+
+def _episode_metadata_dict(episode: EpisodeData) -> dict[str, Any]:
+    if hasattr(episode.metadata, "as_dict"):
+        return episode.metadata.as_dict()
+    return dict(episode.metadata)
 
 
 def _optional_positive_float(value: str) -> float | None:

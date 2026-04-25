@@ -54,12 +54,17 @@ def test_save_mp4_creates_file_and_parent_directory(tmp_path) -> None:
 def test_save_sampled_debug_frames_writes_evenly_spaced_pngs(tmp_path) -> None:
     frames = [_rgb_frame(value) for value in (10, 20, 30, 40, 50)]
 
-    paths = save_sampled_debug_frames(frames, tmp_path / "debug_frames", prefix="heuristic_ep000", max_samples=3)
+    paths = save_sampled_debug_frames(
+        frames,
+        tmp_path / "debug_frames",
+        prefix="heuristic_visual_rollout",
+        max_samples=3,
+    )
 
     assert [path.name for path in paths] == [
-        "heuristic_ep000_step000_debug.png",
-        "heuristic_ep000_step002_debug.png",
-        "heuristic_ep000_step004_debug.png",
+        "heuristic_visual_rollout_step000_debug.png",
+        "heuristic_visual_rollout_step002_debug.png",
+        "heuristic_visual_rollout_step004_debug.png",
     ]
     assert all(path.exists() for path in paths)
     with Image.open(paths[1]) as frame:
@@ -122,6 +127,50 @@ class DebugCameraEnv:
         return {"image": image, "proprio": proprio}
 
 
+class BatchedDebugCameraEnv:
+    def __init__(self) -> None:
+        self.step_index = 0
+        self.actions: list[np.ndarray] = []
+
+    def reset(self, seed: int | None = None) -> dict[str, np.ndarray]:
+        del seed
+        self.step_index = 0
+        return self._obs()
+
+    def step(self, action: np.ndarray) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, dict]:
+        self.actions.append(np.asarray(action).copy())
+        self.step_index += 1
+        obs = self._obs()
+        reward = np.ones(2, dtype=np.float32)
+        terminated = np.array([False, self.step_index >= 2], dtype=bool)
+        truncated = np.array([False, False], dtype=bool)
+        return obs, reward, terminated, truncated, {}
+
+    def get_debug_frames(self, camera_name: str | None = None) -> np.ndarray:
+        del camera_name
+        frames = np.zeros((2, 18, 26, 3), dtype=np.uint8)
+        frames[0, ..., 1] = 50 + self.step_index
+        frames[1, ..., 2] = 150 + self.step_index
+        return frames
+
+    def _obs(self) -> dict[str, np.ndarray]:
+        return {
+            "image": np.zeros((2, 3, 224, 224), dtype=np.uint8),
+            "proprio": np.zeros((2, 40), dtype=np.float32),
+        }
+
+
+class BatchedPolicy:
+    def reset(self) -> None:
+        pass
+
+    def act(self, obs: dict[str, np.ndarray]) -> np.ndarray:
+        del obs
+        action = np.zeros((2, 7), dtype=np.float32)
+        action[1, 0] = 1.0
+        return action
+
+
 def test_record_debug_gif_uses_debug_camera_without_touching_policy_image(tmp_path) -> None:
     env = DebugCameraEnv()
     policy = RecordingPolicy()
@@ -134,7 +183,7 @@ def test_record_debug_gif_uses_debug_camera_without_touching_policy_image(tmp_pa
         debug_camera_name="table_cam",
         seed=42,
         sample_debug_dir=tmp_path / "debug_frames",
-        sample_prefix="heuristic_ep000",
+        sample_prefix="heuristic_visual_rollout",
         mp4_output_path=tmp_path / "videos" / "heuristic.mp4",
     )
 
@@ -153,3 +202,24 @@ def test_record_debug_gif_uses_debug_camera_without_touching_policy_image(tmp_pa
         assert gif.n_frames == 3
     with Image.open(result.sampled_frame_paths[0]) as frame:
         assert frame.getpixel((0, 0))[:3] == (0, 101, 0)
+
+
+def test_record_debug_gif_can_record_selected_vectorized_env_lane(tmp_path) -> None:
+    env = BatchedDebugCameraEnv()
+    policy = BatchedPolicy()
+
+    result = record_debug_gif(
+        env,
+        policy,
+        tmp_path / "gifs" / "lane1.gif",
+        max_steps=5,
+        debug_camera_name="table_cam",
+        env_index=1,
+        sample_debug_dir=tmp_path / "debug_frames",
+        sample_prefix="lane1_visual_rollout",
+    )
+
+    assert result.num_frames == 2
+    assert all(action.shape == (2, 7) for action in env.actions)
+    with Image.open(result.sampled_frame_paths[0]) as frame:
+        assert frame.getpixel((0, 0))[:3] == (0, 0, 151)

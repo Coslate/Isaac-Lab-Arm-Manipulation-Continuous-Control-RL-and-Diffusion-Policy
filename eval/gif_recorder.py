@@ -138,6 +138,7 @@ def record_debug_gif(
     max_steps: int,
     fps: float = 10.0,
     debug_camera_name: str | None = "table_cam",
+    env_index: int = 0,
     seed: int | None = None,
     sample_debug_dir: str | Path | None = None,
     sample_prefix: str = "rollout",
@@ -148,6 +149,8 @@ def record_debug_gif(
 
     if max_steps <= 0:
         raise ValueError("max_steps must be positive")
+    if env_index < 0:
+        raise ValueError("env_index must be non-negative")
 
     reset_policy = getattr(policy, "reset", None)
     if callable(reset_policy):
@@ -157,9 +160,9 @@ def record_debug_gif(
     for _step in range(max_steps):
         action = policy.act(obs)
         obs, _reward, terminated, truncated, _info = env.step(action)
-        frame = env.get_debug_frame(debug_camera_name) if debug_camera_name is not None else env.get_debug_frame()
+        frame = _debug_frame_at(env, debug_camera_name, env_index=env_index)
         frames.append(_prepare_rgb_frame(frame))
-        if _any_done(terminated) or _any_done(truncated):
+        if _done_at(terminated, env_index=env_index) or _done_at(truncated, env_index=env_index):
             break
 
     gif_path = save_gif(frames, output_path, fps=fps, overlay=overlay)
@@ -173,6 +176,25 @@ def record_debug_gif(
         sampled_frame_paths=sampled_paths,
         num_frames=len(frames),
     )
+
+
+def _debug_frame_at(env: Any, camera_name: str | None, *, env_index: int) -> np.ndarray:
+    get_debug_frames = getattr(env, "get_debug_frames", None)
+    if callable(get_debug_frames):
+        frames = get_debug_frames(camera_name) if camera_name is not None else get_debug_frames()
+        frame_array = np.asarray(frames)
+        if frame_array.ndim == 3:
+            if env_index != 0:
+                raise IndexError("single debug frame is available only for env_index 0")
+            return frame_array
+        if frame_array.ndim < 4:
+            raise ValueError(f"debug frames must have shape (N, H, W, 3), got {frame_array.shape}")
+        if env_index >= frame_array.shape[0]:
+            raise IndexError(f"env_index {env_index} outside debug frame batch size {frame_array.shape[0]}")
+        return frame_array[env_index]
+    if env_index != 0:
+        raise RuntimeError("env_index > 0 requires env.get_debug_frames(...)")
+    return env.get_debug_frame(camera_name) if camera_name is not None else env.get_debug_frame()
 
 
 def _prepare_frame_sequence(frames: Sequence[Any]) -> list[np.ndarray]:
@@ -254,5 +276,11 @@ def _overlay_lines(overlay: OverlaySpec | None, frame_index: int) -> tuple[str, 
     return tuple(str(line) for line in lines)
 
 
-def _any_done(value: Any) -> bool:
-    return bool(np.asarray(value, dtype=bool).any())
+def _done_at(value: Any, *, env_index: int) -> bool:
+    array = np.asarray(value, dtype=bool)
+    if array.shape == ():
+        return bool(array)
+    flat = array.reshape(-1)
+    if env_index >= flat.shape[0]:
+        raise IndexError(f"env_index {env_index} outside done batch size {flat.shape[0]}")
+    return bool(flat[env_index])

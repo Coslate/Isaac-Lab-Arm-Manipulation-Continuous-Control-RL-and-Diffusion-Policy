@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -26,7 +27,11 @@ def _run_fake_demo(
     settle_steps: int = 0,
     target_overlay: str = "none",
     save_mp4: bool = False,
+    visual_rollout_episode: str | None = None,
+    use_existing_dataset: bool = False,
+    save_dataset=None,
 ):
+    dataset_path = save_dataset or (tmp_path / f"{policy}_rollouts.h5")
     args = [
         "--backend",
         "fake",
@@ -39,7 +44,7 @@ def _run_fake_demo(
         "--settle-steps",
         str(settle_steps),
         "--save_dataset",
-        str(tmp_path / f"{policy}_rollouts.h5"),
+        str(dataset_path),
         "--save_metrics",
         str(tmp_path / "logs" / f"{policy}_metrics.json"),
         "--save_gif",
@@ -52,6 +57,10 @@ def _run_fake_demo(
     ]
     if save_mp4:
         args.extend(["--save_mp4", str(tmp_path / "videos" / f"{policy}.mp4")])
+    if use_existing_dataset:
+        args.append("--use-existing-dataset")
+    if visual_rollout_episode is not None:
+        args.extend(["--visual-rollout-episode", visual_rollout_episode])
     if replay_dataset is not None:
         args.extend(["--replay_dataset", str(replay_dataset)])
     return run_demo_data_loop(parse_args(args))
@@ -80,6 +89,8 @@ def test_cli_accepts_required_demo_options(tmp_path) -> None:
     assert args.num_episodes == 1
     assert args.settle_steps == 0
     assert args.target_overlay == "none"
+    assert not args.use_existing_dataset
+    assert args.visual_rollout_episode is None
     assert str(args.save_dataset).endswith("rollouts.h5")
     assert str(args.save_metrics).endswith("metrics.json")
     assert str(args.save_gif).endswith("demo.gif")
@@ -93,6 +104,14 @@ def test_demo_data_loop_creates_dataset_metrics_and_gif(tmp_path, policy: str) -
     assert result["status"] == "ok"
     assert result["backend"] == "fake"
     assert result["policy"] == policy
+    assert not result["use_existing_dataset"]
+    assert result["visual_rollout_source"] == "fresh_env_reset"
+    assert result["visual_rollout_policy"] == policy
+    assert result["visual_rollout_episode"] is None
+    assert result["visual_rollout_seed"] == 0
+    assert result["visual_rollout_env_index"] == 0
+    assert result["visual_rollout_max_steps"] == 5
+    assert result["visual_rollout_sample_prefix"] == f"{policy}_visual_rollout"
     assert result["episode_keys"] == ["episode_000"]
     assert result["gif_num_frames"] > 1
     assert list_episode_keys(result["save_dataset"]) == ["episode_000"]
@@ -139,6 +158,38 @@ def test_demo_data_loop_creates_dataset_metrics_and_gif(tmp_path, policy: str) -
         assert gif.n_frames == result["gif_num_frames"]
         assert gif.n_frames > 1
     assert len(result["sampled_debug_frames"]) > 0
+    assert all(f"{policy}_visual_rollout_step" in Path(path).name for path in result["sampled_debug_frames"])
+    assert not any("_ep000_" in Path(path).name for path in result["sampled_debug_frames"])
+
+
+def test_demo_data_loop_can_record_visual_replay_for_selected_episode(tmp_path) -> None:
+    result = _run_fake_demo(tmp_path, policy="heuristic", visual_rollout_episode="episode_000")
+
+    assert result["visual_rollout_source"] == "saved_episode_action_replay"
+    assert result["visual_rollout_policy"] == "replay_saved_actions_from_heuristic"
+    assert result["visual_rollout_episode"] == "episode_000"
+    assert result["visual_rollout_seed"] == 0
+    assert result["visual_rollout_env_index"] == 0
+    assert result["visual_rollout_max_steps"] == 5
+    assert result["visual_rollout_sample_prefix"] == "heuristic_replay_episode_000"
+    assert all("heuristic_replay_episode_000_step" in Path(path).name for path in result["sampled_debug_frames"])
+
+
+def test_demo_data_loop_can_replay_selected_episode_from_existing_dataset(tmp_path) -> None:
+    source = _run_fake_demo(tmp_path / "source", policy="heuristic")
+    replay = _run_fake_demo(
+        tmp_path / "existing",
+        policy="heuristic",
+        save_dataset=source["save_dataset"],
+        use_existing_dataset=True,
+        visual_rollout_episode="0",
+    )
+
+    assert replay["use_existing_dataset"] is True
+    assert replay["episode_keys"] == ["episode_000"]
+    assert replay["visual_rollout_source"] == "saved_episode_action_replay"
+    assert replay["visual_rollout_episode"] == "episode_000"
+    assert replay["visual_rollout_sample_prefix"] == "heuristic_replay_episode_000"
 
 
 def test_demo_data_loop_can_save_mp4(tmp_path) -> None:

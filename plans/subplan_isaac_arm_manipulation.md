@@ -131,7 +131,7 @@ Current full local test result:
 
 ```text
 conda run -n isaac_arm python -m pytest -q
-144 passed, 1 skipped
+147 passed, 1 skipped
 skipped: tests/test_isaac_runtime_smoke.py requires RUN_ISAAC_RUNTIME_SMOKE=1 to launch Isaac Sim / Isaac Lab
 ```
 
@@ -1353,9 +1353,9 @@ GIFs should use the fixed debug camera by default. The policy wrist camera is us
 In addition to GIFs, PR12-lite should save a small number of still debug images for quick inspection, for example:
 
 ```text
-out/debug_frames/heuristic_ep000_step000_debug.png
-out/debug_frames/heuristic_ep000_step025_debug.png
-out/debug_frames/heuristic_ep000_step050_debug.png
+out/debug_frames/heuristic_visual_rollout_step000_debug.png
+out/debug_frames/heuristic_visual_rollout_step025_debug.png
+out/debug_frames/heuristic_visual_rollout_step050_debug.png
 ```
 
 These stills come from the same fixed debug camera stream as the GIF. They are separate from the wrist-camera `images` dataset used for policy learning.
@@ -1391,7 +1391,7 @@ Current implementation:
 
 - `save_gif(frames, out_path, fps=...)` writes RGB frames to a GIF and creates missing parent directories.
 - `save_mp4(frames, out_path, fps=...)` writes RGB frames to an MP4 through `imageio` / `imageio-ffmpeg`, avoiding GIF's 256-color palette limit.
-- `save_sampled_debug_frames(...)` writes evenly sampled debug PNGs such as `heuristic_ep000_step002_debug.png`.
+- `save_sampled_debug_frames(...)` writes evenly sampled debug PNGs such as `heuristic_visual_rollout_step002_debug.png`.
 - `record_debug_gif(env, policy, ...)` runs one visual rollout, calls `policy.act(obs)` with the normal wrist-camera observation, and records frames only from `env.get_debug_frame(debug_camera_name)`. When `mp4_output_path` is provided, the same frames/overlay are also saved as MP4.
 - Optional text overlays are post-processing only; they do not re-enable Isaac debug visualizers and do not touch `obs["image"]`.
 
@@ -1452,6 +1452,10 @@ The one-command loop:
 - supports `--policy random`, `--policy heuristic`, and `--policy replay --replay_dataset ...`;
 - supports `--backend isaac` for the real demo and `--backend fake` only for fast tests/sample artifacts.
 - supports `--settle-steps N`, which runs zero-action physics warmup after explicit `env.reset(...)` calls and before any dataset/GIF frame is recorded. `scripts.collect_rollouts` owns this for HDF5 dataset collection, and `scripts.demo_data_loop` applies the same behavior to GIF recording. The default is `0` to preserve raw behavior; the recommended live demo/training-data value is `20` so the cube settles on the table before the visible rollout starts.
+- supports `--visual-rollout-episode episode_XXX` / `--gif-episode episode_XXX`. When set, GIF/MP4 recording replays that saved HDF5 episode's stored actions instead of running a fresh policy rollout. It reads the episode's `reset_seed`, `source_env_index`, and `settle_steps` metadata, resets Isaac with that seed, records the matching vectorized lane, and writes sampled PNGs with a prefix such as `heuristic_replay_episode_002_step000_debug.png`.
+- supports `--use-existing-dataset` for post-hoc debugging: skip collection, use `--save_dataset` as an existing HDF5 file, recompute metrics, and replay `--visual-rollout-episode` from that file.
+
+Naming rule: HDF5 groups keep `episode_000`, `episode_001`, ... because they are saved dataset episodes. Default GIF/MP4 artifacts are a fresh env reset visual rollout recorded after dataset collection, not frames replayed from a saved HDF5 episode. Their sampled PNG prefix is therefore `policy_visual_rollout`, for example `heuristic_visual_rollout_step000_debug.png`, and the demo CLI result reports `visual_rollout_source = "fresh_env_reset"`. When `--visual-rollout-episode` is set, sampled PNGs intentionally include the replayed episode key, for example `heuristic_replay_episode_002_step000_debug.png`, and the CLI result reports `visual_rollout_source = "saved_episode_action_replay"`.
 
 Current GIF text overlay:
 
@@ -1554,6 +1558,8 @@ conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -v
 
 - CLI accepts `--backend`, `--policy`, `--num_episodes`, `--settle-steps`, `--save_dataset`, `--save_metrics`, `--save_gif`, and optional `--save_mp4`.
 - CLI accepts `--target-overlay {none,text,reticle,text-reticle}` and uses it only for GIF/debug PNG post-processing.
+- CLI accepts `--visual-rollout-episode` / `--gif-episode` and uses the selected HDF5 episode's saved actions for visual replay.
+- CLI accepts `--use-existing-dataset` for post-hoc episode replay/debug without recollecting the dataset.
 - CLI accepts `--replay_dataset` when `--policy replay`.
 - Running with `--policy random` creates all requested outputs.
 - Running with `--policy heuristic` creates all requested outputs.
@@ -1576,9 +1582,9 @@ Verified in `isaac_arm`:
 Known result on 2026-04-24:
 
 ```text
-tests/test_demo_data_loop.py: 8 passed
-demo/eval/GIF related set: 60 passed
-full pytest: 144 passed, 1 skipped
+tests/test_demo_data_loop.py: 11 passed
+demo/eval/GIF related set: 63 passed
+full pytest: 147 passed, 1 skipped
 ```
 
 Generated sample artifacts for inspection:
@@ -1587,9 +1593,9 @@ Generated sample artifacts for inspection:
 data/demo_pr_sample_isaac.h5
 logs/demo_pr_sample_isaac_metrics.json
 out/gifs/demo_pr_sample_isaac.gif
-out/debug_frames/demo_pr_sample_isaac/heuristic_ep000_step000_debug.png
-out/debug_frames/demo_pr_sample_isaac/heuristic_ep000_step002_debug.png
-out/debug_frames/demo_pr_sample_isaac/heuristic_ep000_step005_debug.png
+out/debug_frames/demo_pr_sample_isaac/heuristic_visual_rollout_step000_debug.png
+out/debug_frames/demo_pr_sample_isaac/heuristic_visual_rollout_step002_debug.png
+out/debug_frames/demo_pr_sample_isaac/heuristic_visual_rollout_step005_debug.png
 data/demo_pr_sample_isaac_settled.h5
 logs/demo_pr_sample_isaac_settled_metrics.json
 out/gifs/demo_pr_sample_isaac_settled.gif
@@ -1776,6 +1782,32 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --progress
 ```
 
+After reading `logs/final_heuristic_demo_metrics.json`, replay a specific saved episode for visual debugging without recollecting the dataset:
+
+```bash
+timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  /root/miniconda3/bin/conda run -n isaac_arm python -m scripts.demo_data_loop \
+  --backend isaac \
+  --policy heuristic \
+  --use-existing-dataset \
+  --visual-rollout-episode episode_002 \
+  --max-steps 100 \
+  --gif-max-steps 100 \
+  --target-overlay text-reticle \
+  --table-cleanup matte-overlay \
+  --min-clean-env-spacing 5.0 \
+  --save_dataset data/final_heuristic_demo_rollouts.h5 \
+  --save_metrics logs/final_heuristic_demo_replay_episode_002_metrics.json \
+  --save_gif out/gifs/final_heuristic_demo_replay_episode_002.gif \
+  --save_mp4 out/gifs/final_heuristic_demo_replay_episode_002.mp4 \
+  --save-debug-frames-dir out/debug_frames/final_heuristic_demo_replay_episode_002 \
+  --seed 0 \
+  --device cuda:0 \
+  --progress
+```
+
+If the chosen HDF5 episode metadata says `source_env_index > 0`, run the replay command with the same `--num-parallel-envs` used during collection so the requested vectorized lane exists. The replay visual policy uses the saved episode actions; `--policy` is kept for CLI compatibility and fresh-rollout cases.
+
 Optional comparison demo commands:
 
 ```bash
@@ -1841,7 +1873,7 @@ Interpret the outputs as:
 - `logs/final_heuristic_demo_metrics.json`: scalar eval summary plus target-position metadata. Read `mean_return`, `success_rate`, `mean_episode_length`, and `mean_action_jerk` together; also check `success_source` to know whether success came from explicit `info` flags or the proprio fallback.
 - `out/gifs/final_heuristic_demo.gif`: interview-facing visual artifact from the fixed debug camera. With `--target-overlay text-reticle`, it draws a reticle on the projected target and writes the pixel coordinate beside it, for example `(100, 32)`. It is for explanation/debugging and is not the policy observation stream.
 - `out/gifs/final_heuristic_demo.mp4`: color-faithful visual artifact from the same debug-camera frames/overlays. Prefer this for visual inspection when GIF palette quantization makes colors look wrong.
-- `out/debug_frames/final_heuristic_demo/`: sampled fixed-camera PNGs from the GIF rollout. They receive the same target reticle/text post-processing as the GIF when `--target-overlay` is enabled. Use them for quick image inspection without opening the full GIF.
+- `out/debug_frames/final_heuristic_demo/`: sampled fixed-camera PNGs from the fresh visual rollout, named like `heuristic_visual_rollout_step000_debug.png`. They receive the same target reticle/text post-processing as the GIF when `--target-overlay` is enabled. Use them for quick image inspection without opening the full GIF.
 
 Metrics JSON fields:
 
@@ -1905,7 +1937,7 @@ conda run -n isaac_arm python -m pytest \
   -v
 ```
 
-All demo-slice test files listed in the command above exist in the current tree. The full repository test run on 2026-04-24 passed with `144 passed, 1 skipped`; the skip is the opt-in Isaac runtime smoke test, which still requires `RUN_ISAAC_RUNTIME_SMOKE=1`.
+All demo-slice test files listed in the command above exist in the current tree. The full repository test run on 2026-04-24 passed with `147 passed, 1 skipped`; the skip is the opt-in Isaac runtime smoke test, which still requires `RUN_ISAAC_RUNTIME_SMOKE=1`.
 
 ---
 
