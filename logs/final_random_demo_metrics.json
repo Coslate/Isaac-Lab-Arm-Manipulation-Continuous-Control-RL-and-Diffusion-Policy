@@ -1,0 +1,127 @@
+{
+  "closest_target_approach_by_episode": {
+    "episode_000": {
+      "closest_cube_position_base_m": [
+        0.42072203755378723,
+        0.20258066058158875,
+        0.020999900996685028
+      ],
+      "closest_distance_m": 0.40576034784317017,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.05717518925666809,
+        -0.21420498192310333,
+        0.3398362696170807
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4778972268104553,
+        -0.011624321341514587,
+        0.3608361780643463
+      ]
+    },
+    "episode_001": {
+      "closest_cube_position_base_m": [
+        0.5210877656936646,
+        -0.12855306267738342,
+        0.020999953150749207
+      ],
+      "closest_distance_m": 0.32859867811203003,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.04484763741493225,
+        -0.03191894292831421,
+        0.3239551782608032
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4762401282787323,
+        -0.16047200560569763,
+        0.3449551463127136
+      ]
+    },
+    "episode_002": {
+      "closest_cube_position_base_m": [
+        0.475930780172348,
+        0.0006546109216287732,
+        0.021000012755393982
+      ],
+      "closest_distance_m": 0.46224460005760193,
+      "closest_step": 1,
+      "cube_to_target_base_m_at_closest_step": [
+        0.07454410195350647,
+        -0.01138207595795393,
+        0.456052303314209
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5504748821258545,
+        -0.010727465152740479,
+        0.47705233097076416
+      ]
+    }
+  },
+  "consecutive_success_steps": 1,
+  "env_backend": "isaac",
+  "episode_successes": {
+    "episode_000": false,
+    "episode_001": false,
+    "episode_002": false
+  },
+  "mean_action_jerk": 2.078887144724528,
+  "mean_episode_length": 100.0,
+  "mean_return": -0.002898104217213889,
+  "num_episodes": 3,
+  "policy_name": "random",
+  "success_distance_metric": "euclidean_3d_cube_to_target_base_m",
+  "success_distance_source": "norm(proprio[:, 30:33]) where proprio[:, 30:33] = target_pos_base - cube_pos_base",
+  "success_rate": 0.0,
+  "success_source": "proprio_cube_to_target_norm",
+  "success_threshold_m": 0.02,
+  "target_debug_camera_name": "table_cam",
+  "target_debug_image_shape": [
+    720,
+    1280
+  ],
+  "target_debug_pixel_by_episode": {
+    "episode_000": [
+      645,
+      265
+    ],
+    "episode_001": [
+      605,
+      285
+    ],
+    "episode_002": [
+      668,
+      225
+    ]
+  },
+  "target_debug_pixel_source": "debug_camera_projection",
+  "target_debug_pixel_visible_by_episode": {
+    "episode_000": true,
+    "episode_001": true,
+    "episode_002": true
+  },
+  "target_position_constant_by_episode": true,
+  "target_positions_base_m_by_episode": {
+    "episode_000": [
+      0.4778972268104553,
+      -0.011624321341514587,
+      0.3608361780643463
+    ],
+    "episode_001": [
+      0.4762401282787323,
+      -0.16047200560569763,
+      0.3449551463127136
+    ],
+    "episode_002": [
+      0.5504748821258545,
+      -0.010727465152740479,
+      0.47705233097076416
+    ]
+  }
+}
