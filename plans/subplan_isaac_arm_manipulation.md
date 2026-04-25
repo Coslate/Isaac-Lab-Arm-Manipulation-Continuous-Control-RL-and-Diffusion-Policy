@@ -1768,9 +1768,9 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --num_episodes 3 \
   --max-steps 100 \
   --gif-max-steps 100 \
-  --settle-steps 20 \
+  --settle-steps 600 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_heuristic_demo_rollouts.h5 \
   --save_metrics logs/final_heuristic_demo_metrics.json \
@@ -1794,7 +1794,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --max-steps 100 \
   --gif-max-steps 100 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_heuristic_demo_rollouts.h5 \
   --save_gif out/gifs/final_heuristic_demo_replay_episode_001.gif \
@@ -1813,7 +1813,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --max-steps 100 \
   --gif-max-steps 100 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_heuristic_demo_rollouts.h5 \
   --save_gif out/gifs/final_heuristic_demo_replay_episode_001.gif \
@@ -1835,7 +1835,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --max-steps 100 \
   --gif-max-steps 100 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_heuristic_demo_rollouts.h5 \
   --save_gif out/gifs/final_heuristic_demo_replay_episode_002.gif \
@@ -1854,7 +1854,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --max-steps 100 \
   --gif-max-steps 100 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_heuristic_demo_rollouts.h5 \
   --save_gif out/gifs/final_heuristic_demo_replay_episode_002.gif \
@@ -1880,9 +1880,9 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --num_episodes 3 \
   --max-steps 100 \
   --gif-max-steps 100 \
-  --settle-steps 20 \
+  --settle-steps 600 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_random_demo_rollouts.h5 \
   --save_metrics logs/final_random_demo_metrics.json \
@@ -1903,9 +1903,9 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --num_episodes 3 \
   --max-steps 100 \
   --gif-max-steps 100 \
-  --settle-steps 20 \
+  --settle-steps 600 \
   --target-overlay text-reticle \
-  --table-cleanup matte-overlay \
+  --table-cleanup none \
   --min-clean-env-spacing 5.0 \
   --save_dataset data/final_replay_from_heuristic_demo_rollouts.h5 \
   --save_metrics logs/final_replay_from_heuristic_demo_metrics.json \
