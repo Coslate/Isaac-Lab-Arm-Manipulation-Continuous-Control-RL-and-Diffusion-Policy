@@ -40,6 +40,7 @@ class CheckpointMetadata:
     deterministic_action_mode: str = DETERMINISTIC_MODE_SAC
     backbone_config: dict[str, Any] = field(default_factory=dict)
     algorithm_hparams: dict[str, Any] = field(default_factory=dict)
+    normalizer_config: dict[str, Any] = field(default_factory=dict)
     replay_storage: str = REPLAY_STORAGE_CPU_UINT8
     legacy_warning: str | None = None
 

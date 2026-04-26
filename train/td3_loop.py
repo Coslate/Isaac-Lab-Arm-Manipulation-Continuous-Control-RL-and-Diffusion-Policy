@@ -106,11 +106,12 @@ def _sample_action(
     deterministic: bool = False,
 ) -> np.ndarray:
     if warming_up:
-        return rng.uniform(-1.0, 1.0, size=(images.shape[0], ACTION_DIM)).astype(np.float32)
+        learner_action = rng.uniform(-1.0, 1.0, size=(images.shape[0], ACTION_DIM)).astype(np.float32)
+        return agent.learner_action_to_env_np(learner_action)
     images_torch = torch.from_numpy(images).to(agent.device)
     proprios_torch = torch.from_numpy(proprios).to(agent.device)
-    action = agent.act(images_torch, proprios_torch, deterministic=deterministic)
-    return action.detach().cpu().numpy().astype(np.float32)
+    learner_action = agent.act(images_torch, proprios_torch, deterministic=deterministic)
+    return agent.learner_action_to_env_np(learner_action.detach().cpu().numpy().astype(np.float32))
 
 
 def _reset_and_settle(env: Any, *, seed: int, settle_steps: int) -> dict[str, np.ndarray]:
@@ -231,6 +232,10 @@ def run_td3_train_loop(
         truncs = _broadcast_per_env(truncated, num_envs, bool, "truncated")
 
         if active_train_indices.size > 0:
+            agent.update_observation_normalizer(
+                proprios[active_train_indices],
+                images=images[active_train_indices],
+            )
             replay.push_batch(
                 images=images[active_train_indices],
                 proprios=proprios[active_train_indices],
@@ -290,11 +295,9 @@ def run_td3_train_loop(
                 same_env_eval_active |= same_env_eval_ready
                 same_env_eval_pending_clean_start[same_env_eval_ready] = False
         images, proprios = next_images, next_proprios
-        _update_progress(
-            progress,
-            env_steps,
-            {"train/replay_size": float(replay.size), "train/num_env_steps": float(env_steps)},
-        )
+        env_logs = {"train/replay_size": float(replay.size), "train/num_env_steps": float(env_steps)}
+        env_logs.update(agent.normalizer_logs())
+        _update_progress(progress, env_steps, env_logs)
 
         if active_train_indices.size > 0 and not warming_up and replay.size >= cfg.batch_size:
             for _ in range(agent.config.utd_ratio):
@@ -309,6 +312,7 @@ def run_td3_train_loop(
                 final_logs["train/replay_size"] = float(replay.size)
                 final_logs["train/num_env_steps"] = float(env_steps)
                 final_logs.update(_td3_lr_logs(agent))
+                final_logs.update(agent.normalizer_logs())
                 log_history.append(final_logs)
                 if logger is not None:
                     logger.log_scalars(env_steps, final_logs)
@@ -342,17 +346,14 @@ def run_td3_train_loop(
             eval_count += 1
             next_eval_step += cfg.eval_every_env_steps
 
-    _update_progress(
-        progress,
-        env_steps,
-        final_logs
-        or {
+    if not final_logs:
+        final_logs = {
             "train/update_step": float(update_count),
             "train/replay_size": float(replay.size),
             "train/num_env_steps": float(env_steps),
-        },
-        force=True,
-    )
+        }
+    final_logs.update(agent.normalizer_logs())
+    _update_progress(progress, env_steps, final_logs, force=True)
     return TD3TrainLoopReport(
         num_env_steps=env_steps,
         num_updates=update_count,

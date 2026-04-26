@@ -38,6 +38,7 @@ from agents.checkpointing import (
 )
 from agents.distributions import LOG_STD_MAX, LOG_STD_MIN, SquashedGaussian
 from agents.heads import GaussianActorHead, HeadConfig, QHead
+from agents.normalization import IMAGE_NORMALIZATION_NONE, NormalizerBundle
 from agents.replay_buffer import ReplayBatch
 from agents.torch_image_aug import PadAndRandomCropTorch
 from configs import ACTION_DIM, ISAAC_FRANKA_IK_REL_ENV_ID
@@ -64,6 +65,7 @@ class SACConfig:
     utd_ratio: int = 1
     image_aug_pad: int = 8
     apply_image_aug: bool = True
+    image_normalization: str = IMAGE_NORMALIZATION_NONE
 
     def resolved_target_entropy(self) -> float:
         return float(-self.action_dim) if self.target_entropy is None else float(self.target_entropy)
@@ -155,6 +157,11 @@ class SACAgent(nn.Module):
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=cfg.alpha_lr)
 
         self.image_aug = PadAndRandomCropTorch(pad=cfg.image_aug_pad) if cfg.apply_image_aug else None
+        self.normalizers = NormalizerBundle(
+            proprio_dim=cfg.proprio_dim,
+            action_dim=cfg.action_dim,
+            image_normalization=cfg.image_normalization,
+        )
         self.global_update_step = 0
 
     # ------------------------------------------------------------------ helpers
@@ -168,14 +175,26 @@ class SACAgent(nn.Module):
         return next(self.parameters()).device
 
     def _normalize_images(self, images: torch.Tensor) -> torch.Tensor:
-        if images.dtype == torch.uint8:
-            return images.float() / 255.0
-        return images.float()
+        return self.normalizers.normalize_image_torch(images)
 
     def _maybe_augment(self, images: torch.Tensor) -> torch.Tensor:
         if self.image_aug is None:
             return images
         return self.image_aug(images)
+
+    def update_observation_normalizer(self, proprios: Any, *, images: Any | None = None) -> None:
+        self.normalizers.update_proprio(proprios)
+        if images is not None:
+            self.normalizers.update_image(images)
+
+    def normalizer_logs(self) -> dict[str, float]:
+        return self.normalizers.log_stats()
+
+    def learner_action_to_env_np(self, actions: Any) -> Any:
+        return self.normalizers.learner_action_to_env_np(actions)
+
+    def env_action_to_learner_torch(self, actions: torch.Tensor) -> torch.Tensor:
+        return self.normalizers.env_action_to_learner_torch(actions)
 
     # ------------------------------------------------------------------ act
 
@@ -190,7 +209,7 @@ class SACAgent(nn.Module):
         """Return clipped 7D actions for ``images``/``proprios`` on the agent's device."""
 
         images_f = self._normalize_images(images.to(self.device))
-        proprios_f = proprios.to(self.device).float()
+        proprios_f = self.normalizers.normalize_proprio_torch(proprios.to(self.device))
         mean, log_std = self.actor(images_f, proprios_f)
         if deterministic:
             return torch.tanh(mean)
@@ -205,11 +224,11 @@ class SACAgent(nn.Module):
 
         device = self.device
         images = batch.images.to(device)
-        proprios = batch.proprios.to(device).float()
-        actions = batch.actions.to(device).float()
+        proprios = self.normalizers.normalize_proprio_torch(batch.proprios.to(device))
+        actions = self.env_action_to_learner_torch(batch.actions.to(device))
         rewards = batch.rewards.to(device).float()
         next_images = batch.next_images.to(device)
-        next_proprios = batch.next_proprios.to(device).float()
+        next_proprios = self.normalizers.normalize_proprio_torch(batch.next_proprios.to(device))
         bootstrap_mask = batch.bootstrap_mask.to(device).float()
 
         images_aug = self._maybe_augment(images)
@@ -301,6 +320,7 @@ class SACAgent(nn.Module):
             deterministic_action_mode=DETERMINISTIC_MODE_SAC,
             backbone_config=backbone_cfg,
             algorithm_hparams=self.config.hparam_dict(),
+            normalizer_config=self.normalizers.config_dict(),
             replay_storage=REPLAY_STORAGE_CPU_UINT8,
         )
 
@@ -314,7 +334,10 @@ class SACAgent(nn.Module):
         extras_update: dict[str, Any] | None = None,
     ) -> Path:
         metadata = self.build_metadata(num_env_steps=num_env_steps, seed=seed, env_id=env_id)
-        extras = {"global_update_step": self.global_update_step}
+        extras = {
+            "global_update_step": self.global_update_step,
+            "normalizer_state": self.normalizers.state_dict(),
+        }
         if extras_update:
             extras.update(extras_update)
         payload = CheckpointPayload(
@@ -365,6 +388,7 @@ class SACAgent(nn.Module):
             if "alpha" in payload.optimizer_state:
                 agent.alpha_optimizer.load_state_dict(payload.optimizer_state["alpha"])
         agent.global_update_step = int(payload.extras.get("global_update_step", 0))
+        agent.normalizers.load_state_dict(payload.extras.get("normalizer_state", {}))
         agent.to(device)
         return agent
 

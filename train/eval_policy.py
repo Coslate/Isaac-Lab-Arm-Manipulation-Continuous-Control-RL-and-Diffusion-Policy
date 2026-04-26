@@ -26,14 +26,20 @@ class AgentEvalPolicy(BasePolicy):
             proprios_np = proprios_np[None, :]
         if images_np.ndim != 4 or images_np.shape[1:] != (3, 224, 224):
             raise ValueError(f"obs['image'] must have shape (N, 3, 224, 224); got {images_np.shape}")
-        if proprios_np.ndim != 2 or proprios_np.shape[1] != 40:
-            raise ValueError(f"obs['proprio'] must have shape (N, 40); got {proprios_np.shape}")
+        expected_proprio_dim = int(getattr(getattr(self.agent, "config", None), "proprio_dim", 40))
+        if proprios_np.ndim != 2 or proprios_np.shape[1] != expected_proprio_dim:
+            raise ValueError(
+                f"obs['proprio'] must have shape (N, {expected_proprio_dim}); got {proprios_np.shape}"
+            )
         device = getattr(self.agent, "device", torch.device("cpu"))
         images = torch.from_numpy(images_np).to(device)
         proprios = torch.from_numpy(proprios_np).to(device)
         with torch.no_grad():
-            actions = self.agent.act(images, proprios, deterministic=True)
-        actions_np = actions.detach().cpu().numpy().astype(np.float32)
+            learner_actions = self.agent.act(images, proprios, deterministic=True)
+        actions_np = learner_actions.detach().cpu().numpy().astype(np.float32)
+        to_env = getattr(self.agent, "learner_action_to_env_np", None)
+        if callable(to_env):
+            actions_np = to_env(actions_np)
         if actions_np.shape[0] == 1:
             return self._clip_action(actions_np[0])
         return np.stack([self._clip_action(action) for action in actions_np], axis=0)

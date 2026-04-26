@@ -6,10 +6,12 @@ import json
 import io
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 from agents.checkpointing import load_checkpoint
+from agents.normalization import ActionNormalizer
 from agents.sac import SACAgent, SACConfig
 from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
@@ -448,6 +450,8 @@ def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
 
     assert report.num_env_steps == 18
     assert report.final_logs["train/replay_size"] == pytest.approx(18)
+    assert report.final_logs["normalizer/proprio_count"] == pytest.approx(18)
+    assert agent.normalizers.proprio.count == 18
     assert any("train_rollout/mean_return" in logs for logs in report.log_history)
     assert any("eval_rollout/mean_return" in logs for logs in report.log_history)
     assert any("train_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
@@ -529,6 +533,8 @@ def test_sac_per_lane_settle_masks_replay_and_uses_zero_actions_after_done():
 
     assert report.num_env_steps == 8
     assert report.final_logs["train/replay_size"] == pytest.approx(8)
+    assert report.final_logs["normalizer/proprio_count"] == pytest.approx(8)
+    assert agent.normalizers.proprio.count == 8
     assert len(env.step_actions) == 6
     for action in env.step_actions[3:5]:
         assert torch.allclose(action, torch.zeros((2, ACTION_DIM)))
@@ -588,6 +594,8 @@ def test_td3_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
 
     assert report.num_env_steps == 18
     assert report.final_logs["train/replay_size"] == pytest.approx(18)
+    assert report.final_logs["normalizer/proprio_count"] == pytest.approx(18)
+    assert agent.normalizers.proprio.count == 18
     assert any("train_rollout/mean_return" in logs for logs in report.log_history)
     assert any("eval_rollout/mean_return" in logs for logs in report.log_history)
     assert any("train_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
@@ -619,3 +627,53 @@ def test_td3_actor_scheduler_steps_only_on_delayed_actor_updates():
     assert schedulers["actor"].step_count == 2
     assert report.final_logs["train/learning_rate_critic"] == pytest.approx(3e-4 * 0.5**4)
     assert report.final_logs["train/learning_rate_actor"] == pytest.approx(3e-4 * 0.5**2)
+
+
+def test_sac_train_loop_denormalizes_learner_actions_before_env_step():
+    torch.manual_seed(0)
+    env = _ActionRecordingFakeEnv(num_envs=1, seed=0, terminal_step=100)
+    agent = SACAgent(_tiny_sac_config())
+    agent.normalizers.action = ActionNormalizer(
+        action_dim=ACTION_DIM,
+        env_low=np.full((ACTION_DIM,), -0.25, dtype=np.float32),
+        env_high=np.full((ACTION_DIM,), 0.25, dtype=np.float32),
+    )
+    cfg = SACTrainLoopConfig(
+        replay_capacity=16,
+        warmup_steps=10,
+        batch_size=4,
+        total_env_steps=4,
+        seed=0,
+        ram_budget_gib=4.0,
+    )
+
+    run_sac_train_loop(env, agent, loop_config=cfg)
+
+    assert env.step_actions
+    for action in env.step_actions:
+        assert float(torch.max(torch.abs(action))) <= 0.25 + 1e-6
+
+
+def test_td3_train_loop_denormalizes_learner_actions_before_env_step():
+    torch.manual_seed(0)
+    env = _ActionRecordingFakeEnv(num_envs=1, seed=0, terminal_step=100)
+    agent = TD3Agent(_tiny_td3_config())
+    agent.normalizers.action = ActionNormalizer(
+        action_dim=ACTION_DIM,
+        env_low=np.full((ACTION_DIM,), -0.5, dtype=np.float32),
+        env_high=np.full((ACTION_DIM,), 0.5, dtype=np.float32),
+    )
+    cfg = TD3TrainLoopConfig(
+        replay_capacity=16,
+        warmup_steps=10,
+        batch_size=4,
+        total_env_steps=4,
+        seed=0,
+        ram_budget_gib=4.0,
+    )
+
+    run_td3_train_loop(env, agent, loop_config=cfg)
+
+    assert env.step_actions
+    for action in env.step_actions:
+        assert float(torch.max(torch.abs(action))) <= 0.5 + 1e-6

@@ -13,6 +13,7 @@ from agents.checkpointing import (
     REPLAY_STORAGE_CPU_UINT8,
     load_checkpoint,
 )
+from agents.normalization import IMAGE_NORMALIZATION_PER_CHANNEL_RUNNING_MEAN_STD
 from agents.replay_buffer import ReplayBatch, ReplayBuffer, make_dummy_transition
 from agents.sac import SACConfig
 from agents.td3 import TD3Agent, TD3Config
@@ -272,6 +273,9 @@ def test_td3_save_load_round_trip_preserves_action_and_metadata(tmp_path: Path):
     hparams = payload.metadata.algorithm_hparams
     for key in ("polyak_tau", "utd_ratio", "policy_delay", "exploration_noise_sigma", "target_noise_sigma", "target_noise_clip"):
         assert key in hparams
+    assert payload.metadata.normalizer_config["proprio"]["type"] == "running_mean_std"
+    assert payload.metadata.normalizer_config["image"]["type"] == "none"
+    assert "normalizer_state" in payload.extras
 
     loaded = TD3Agent.load(path, config=cfg)
     actual = loaded.act(images, proprios, deterministic=True)
@@ -389,6 +393,34 @@ def test_td3_train_loop_warmup_then_update():
     assert report.num_updates > 0
     assert "train/critic_loss" in report.final_logs
     assert report.final_logs["train/replay_size"] == pytest.approx(24)
+
+
+def test_td3_checkpoint_preserves_enabled_image_normalizer(tmp_path: Path) -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config(
+        apply_image_aug=False,
+        image_normalization=IMAGE_NORMALIZATION_PER_CHANNEL_RUNNING_MEAN_STD,
+    )
+    agent = TD3Agent(cfg)
+    images_for_stats = np.full((3, *IMAGE_SHAPE), 80, dtype=np.uint8)
+    images_for_stats[:, 1] = 120
+    images_for_stats[:, 2] = 160
+    agent.update_observation_normalizer(
+        np.zeros((3, PROPRIO_DIM), dtype=np.float32),
+        images=images_for_stats,
+    )
+    images = torch.randint(0, 256, (2, *IMAGE_SHAPE), dtype=torch.uint8)
+    proprios = torch.zeros((2, PROPRIO_DIM), dtype=torch.float32)
+    expected = agent.act(images, proprios, deterministic=True)
+
+    path = agent.save(tmp_path / "td3_image_norm.pt", num_env_steps=3, seed=3)
+    payload = load_checkpoint(path, expected_agent_type="td3")
+    assert payload.metadata.normalizer_config["image"]["type"] == IMAGE_NORMALIZATION_PER_CHANNEL_RUNNING_MEAN_STD
+    assert payload.extras["normalizer_state"]["image"]["rms"]["count"] == 3 * IMAGE_SHAPE[1] * IMAGE_SHAPE[2]
+
+    loaded = TD3Agent.load(path, config=cfg)
+    actual = loaded.act(images, proprios, deterministic=True)
+    assert torch.allclose(expected, actual, atol=1e-6)
 
 
 def test_train_td3_continuous_fake_backend_smoke(tmp_path: Path):

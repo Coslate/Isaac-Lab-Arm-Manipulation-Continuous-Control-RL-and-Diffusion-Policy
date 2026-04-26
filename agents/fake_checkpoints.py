@@ -23,6 +23,7 @@ from agents.checkpointing import (
     save_checkpoint,
 )
 from agents.heads import DeterministicActorHead, GaussianActorHead, HeadConfig
+from agents.normalization import NormalizerBundle
 from configs import ACTION_DIM, ISAAC_FRANKA_IK_REL_ENV_ID
 
 
@@ -152,6 +153,7 @@ def _make_fake_checkpoint(
 ) -> Path:
     torch.manual_seed(seed)
     actor = build_fake_actor(agent_type, proprio_dim=proprio_dim, action_dim=action_dim)
+    normalizers = NormalizerBundle(proprio_dim=proprio_dim, action_dim=action_dim)
     backbone_config = asdict(actor.backbone.config)
     backbone_config["image_shape"] = list(backbone_config["image_shape"])
     metadata = CheckpointMetadata(
@@ -165,10 +167,12 @@ def _make_fake_checkpoint(
         deterministic_action_mode=deterministic_mode,
         backbone_config=backbone_config,
         algorithm_hparams={"fake": True},
+        normalizer_config=normalizers.config_dict(),
     )
     payload = CheckpointPayload(
         metadata=metadata,
         model_state={"actor": actor.state_dict()},
+        extras={"normalizer_state": normalizers.state_dict()},
     )
     return save_checkpoint(path, payload)
 

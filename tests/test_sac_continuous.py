@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from agents.checkpointing import DETERMINISTIC_MODE_SAC, REPLAY_STORAGE_CPU_UINT8, load_checkpoint
+from agents.normalization import IMAGE_NORMALIZATION_PER_CHANNEL_RUNNING_MEAN_STD
 from agents.replay_buffer import ReplayBatch
 from agents.sac import SACAgent, SACConfig
 from agents.torch_image_aug import PadAndRandomCropTorch
@@ -245,6 +246,9 @@ def test_sac_save_load_round_trip(tmp_path: Path):
     assert "polyak_tau" in payload.metadata.algorithm_hparams
     assert "utd_ratio" in payload.metadata.algorithm_hparams
     assert payload.metadata.algorithm_hparams["target_entropy"] in (None, -ACTION_DIM, float(-ACTION_DIM))
+    assert payload.metadata.normalizer_config["proprio"]["type"] == "running_mean_std"
+    assert payload.metadata.normalizer_config["image"]["type"] == "none"
+    assert "normalizer_state" in payload.extras
 
     loaded = SACAgent.load(path, config=cfg)
     actual = loaded.act(images, proprios, deterministic=True)
@@ -304,6 +308,59 @@ def test_sac_train_loop_warmup_then_update(tmp_path: Path):
     assert "train/critic_loss" in report.final_logs
     assert report.final_logs["train/replay_size"] == pytest.approx(24)
     assert report.final_logs["train/num_env_steps"] == pytest.approx(24)
+
+
+def test_sac_image_normalizer_uses_train_lanes_only() -> None:
+    class _LaneImageEnv:
+        def __init__(self) -> None:
+            self.num_envs = 2
+            self._step = 0
+
+        def reset(self, seed: int | None = None):
+            self._step = 0
+            return self._obs()
+
+        def step(self, action):
+            self._step += 1
+            reward = np.zeros((2,), dtype=np.float32)
+            terminated = np.zeros((2,), dtype=bool)
+            truncated = np.zeros((2,), dtype=bool)
+            return self._obs(), reward, terminated, truncated, {}
+
+        def _obs(self):
+            images = np.zeros((2, *IMAGE_SHAPE), dtype=np.uint8)
+            images[0, 0] = 10
+            images[0, 1] = 20
+            images[0, 2] = 30
+            images[1, 0] = 200
+            images[1, 1] = 210
+            images[1, 2] = 220
+            proprios = np.zeros((2, PROPRIO_DIM), dtype=np.float32)
+            return {"image": images, "proprio": proprios}
+
+    agent = SACAgent(
+        _tiny_config(
+            apply_image_aug=False,
+            image_normalization=IMAGE_NORMALIZATION_PER_CHANNEL_RUNNING_MEAN_STD,
+        )
+    )
+    cfg = SACTrainLoopConfig(
+        replay_capacity=16,
+        warmup_steps=100,
+        batch_size=8,
+        total_env_steps=3,
+        same_env_eval_lanes=1,
+        ram_budget_gib=4.0,
+    )
+    report = run_sac_train_loop(_LaneImageEnv(), agent, loop_config=cfg)
+
+    assert report.num_env_steps == 3
+    assert agent.normalizers.image.count == 3 * IMAGE_SHAPE[1] * IMAGE_SHAPE[2]
+    np.testing.assert_allclose(
+        agent.normalizers.image.rms.mean,
+        np.array([10, 20, 30], dtype=np.float64) / 255.0,
+        atol=1e-6,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -375,10 +432,12 @@ def test_train_sac_continuous_fake_backend_smoke(tmp_path: Path):
             "16",
             "--checkpoint-name",
             "sac_smoke",
+            "--image-normalization",
+            "per_channel_running_mean_std",
         ]
     )
     env = _build_fake_env(num_envs=1, seed=args.seed)
-    agent = SACAgent(_tiny_config())
+    agent = SACAgent(_tiny_config(image_normalization=args.image_normalization))
     result = run_with_env(env, agent, args)
     checkpoint_path = Path(result["checkpoint"])
     log_path = Path(result["log_file"])
@@ -387,6 +446,8 @@ def test_train_sac_continuous_fake_backend_smoke(tmp_path: Path):
     payload = load_checkpoint(checkpoint_path, expected_agent_type="sac")
     assert payload.metadata.num_env_steps == 32
     assert payload.metadata.deterministic_action_mode == DETERMINISTIC_MODE_SAC
+    assert payload.metadata.normalizer_config["image"]["type"] == "per_channel_running_mean_std"
+    assert payload.extras["normalizer_state"]["image"]["rms"]["count"] > 0
 
 
 def test_train_sac_rejects_in_process_isaac_periodic_eval():

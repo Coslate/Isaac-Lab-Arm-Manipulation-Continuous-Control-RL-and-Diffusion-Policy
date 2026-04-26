@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.checkpointing import REPLAY_STORAGE_CPU_UINT8
+from agents.normalization import SUPPORTED_IMAGE_NORMALIZATION
 from agents.td3 import TD3Agent, TD3Config
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 from scripts.train_sac_continuous import _build_fake_env  # reuse the shared fake env
@@ -86,6 +87,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-reward-probe", action="store_true")
     parser.add_argument("--reward-probe-steps", dest="reward_probe_steps", type=int, default=200)
     parser.add_argument("--no-image-aug", dest="apply_image_aug", action="store_false", default=True)
+    parser.add_argument(
+        "--image-normalization",
+        dest="image_normalization",
+        choices=SUPPORTED_IMAGE_NORMALIZATION,
+        default="none",
+    )
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args(argv)
 
@@ -101,6 +108,7 @@ def build_agent(args: argparse.Namespace) -> TD3Agent:
         target_noise_sigma=args.target_noise_sigma,
         target_noise_clip=args.target_noise_clip,
         apply_image_aug=args.apply_image_aug,
+        image_normalization=args.image_normalization,
     )
     return TD3Agent(cfg)
 
@@ -153,6 +161,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
                 "env_id": args.env_id,
                 "loop_config": asdict(loop_cfg),
                 "agent_config": agent.config.hparam_dict(),
+                "normalizer_config": agent.normalizers.config_dict(),
                 "lr_scheduler": args.lr_scheduler,
                 "console_progress": {
                     "enabled": progress.enabled if progress is not None else False,

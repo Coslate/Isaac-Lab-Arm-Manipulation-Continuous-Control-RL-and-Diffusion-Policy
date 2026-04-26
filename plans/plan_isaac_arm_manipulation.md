@@ -85,9 +85,10 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 3.5 - Agent primitives | Done | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, fake-checkpoint factory, `CheckpointPolicy` adapter | `tests/test_agent_primitives.py` -> `21 passed` | Lays the off-policy + checkpoint infrastructure for PR6/PR7/PR11a/PR12a. |
 | PR 6 - SAC train | Done | `SACAgent`, online replay training, deterministic oracle mode (`tanh_mu`), `scripts.train_sac_continuous`, fake-env smoke + reward-probe | `tests/test_sac_continuous.py` -> `15 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
 | PR 7 - TD3 train | Done | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous`, shares replay format with SAC | `tests/test_td3_continuous.py` -> `17 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
-| PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `19 passed`; full pytest -> `244 passed, 1 skipped` | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
+| PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `19 passed`; full pytest at PR6.5 commit -> `244 passed, 1 skipped` (superseded by PR6.6 row below for current full-suite count) | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
+| PR 6.6 - Running obs/action normalization | Done | `agents.normalization` running per-dimension proprio mean/std, optional channel-wise image running mean/std (`--image-normalization none|per_channel_running_mean_std`, default off), explicit `bidirectional_env_learner_affine` action normalizer, checkpointed `normalizer_state`, SAC/TD3 train/eval/checkpoint policy consistency, optional angle sin/cos primitive only for true wrap-around angle features | `tests/test_normalization.py` + SAC/TD3 checks -> `47 passed`; full pytest -> `259 passed, 1 skipped` | Serious SAC/TD3 training can now use normalized proprio inputs, optional train-lane-only image channel stats, and stable learner-action/env-action conversion; replay still stores raw env observations/actions. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
-| PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. |
+| PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. **Currently the only blocker for the SAC train -> eval -> GIF end-to-end goal**; PR6/PR6.5/PR6.6/PR11a are all done. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
 | PR 8.5 - Diffusion sequence dataset | Pending | `(B,T_obs,3,224,224)`, `(B,T_obs,40)`, `(B,H,7)` sequence dataloader | Planned test: `tests/test_diffusion_sequence_dataset.py` | Bridge from HDF5 episodes to Diffusion training batches. |
 | PR 9a - Diffusion core | Pending | Noise schedule, timestep embeddings, conditioned temporal denoiser | Planned test: `tests/test_diffusion_core.py` | Model only; no BC train script yet. |
@@ -768,6 +769,9 @@ The dataset must be episode-safe. Sampling windows must never cross `done` or `t
 | group_size | N/A | 8 | N/A | N/A | N/A | N/A |
 | replay_size | N/A | N/A | 200k | 200k | N/A | N/A |
 | replay_storage | N/A | N/A | CPU/disk uint8 images | CPU/disk uint8 images | N/A | N/A |
+| proprio_normalization | N/A | N/A | running per-dim mean/std | running per-dim mean/std | dataset/global per-dim mean/std | running/dataset per-dim mean/std |
+| image_normalization | N/A | N/A | `none` default; optional `per_channel_running_mean_std` | `none` default; optional `per_channel_running_mean_std` | dataset/global policy-image stats if enabled | dataset/global policy-image stats if enabled |
+| action_normalization | normalized env action `[-1,1]` | normalized env action `[-1,1]` | learner action `[-1,1]` -> env action `[-1,1]` | learner action `[-1,1]` -> env action `[-1,1]` | dataset action normalized with same mapper | dataset/oracle action normalized with same mapper |
 | warmup_steps | N/A | N/A | 5k transitions | 5k transitions | N/A | N/A |
 | eval_every_env_steps | N/A | N/A | 10k | 10k | N/A | N/A |
 | same_env_eval_lanes | N/A | N/A | 0 default; set `1+` for live monitor | 0 default; set `1+` for live monitor | N/A | N/A |
@@ -791,6 +795,11 @@ The dataset must be episode-safe. Sampling windows must never cross `done` or `t
 
 For SAC/TD3:
 - `warmup_steps` is measured in individual replay transitions, not vectorized `env.step()` calls; one 64-env Isaac step can add up to 64 transitions.
+- `proprio_normalization` must use running Welford-style per-dimension mean/std from train-lane observations entering replay, not mini-batch statistics. Eval lanes and checkpoint eval must freeze the normalizer.
+- The current 40D proprio contains limited robot joint positions, Cartesian positions/deltas, gripper values, velocities, and previous normalized action. Add sin/cos features only for true periodic/wrap-around angle features; do not blindly transform all bounded joint positions or Cartesian values.
+- Image observations are stored as CPU `uint8` replay tensors. SAC/TD3 update paths apply DrQ-style `PadAndRandomCropTorch(pad=8)` to sampled image batches, then convert to float `[0,1]` before CNN forward. `--image-normalization none` keeps this baseline. `--image-normalization per_channel_running_mean_std` additionally applies running RGB channel mean/std computed only from replay-writing train lanes; eval lanes, settle steps, and checkpoint eval do not update image stats.
+- `action_normalization` is an explicit mapper between learner action space and the public env action contract. The code schema type is `bidirectional_env_learner_affine`: `env_to_learner(a_env) = clip((a_env - mid) / half, -1, 1)` and `learner_to_env(a_learner) = clip(mid + a_learner * half, env_low, env_high)`, where `mid=(env_high+env_low)/2` and `half=(env_high-env_low)/2`. The public Isaac wrapper already expects normalized 7D actions in `[-1,1]`; therefore PR6.6 denormalizes only back to this env-normalized contract before `env.step`, not directly to physical meters/radians.
+- The current default action mapper uses seven per-dimension bounds matching `dx, dy, dz, droll, dpitch, dyaw, gripper`: `env_low=[-1,-1,-1,-1,-1,-1,-1]` and `env_high=[1,1,1,1,1,1,1]`. This is numerically identity today, but it keeps learner action and env action conventions explicit for BC/TD3+BC and future datasets.
 - `eval_every_env_steps=10000` means run deterministic eval rollouts every 10k individual env transitions and log the §8.3 eval keys. This separate-env path is for fake-env smoke tests and future out-of-process eval; live Isaac training should keep it at `0` until a safe external evaluator owns that path.
 - `same_env_eval_lanes=N` reserves the last `N` vectorized Isaac lanes for deterministic current-policy monitoring inside the already-running training env. Those lanes do not enter replay, do not drive warmup/update counts, and log under `eval_rollout/*`.
 - `same_env_eval_start_env_steps=K` delays same-env eval metrics until `K` training transitions have elapsed, then waits for each eval lane's next done/reset boundary before recording a clean episode.
@@ -818,6 +827,38 @@ Every trainable checkpoint from PR4-7 and PR9-10 must include metadata so PR11a/
   "seed": 0,
   "deterministic_action_mode": "tanh_mu",
   "backbone_config": {},
+  "normalizer_config": {
+    "version": 1,
+    "proprio": {
+      "type": "running_mean_std",
+      "enabled": true,
+      "dim": 40,
+      "eps": 1e-6,
+      "clip": 10.0
+    },
+    "image": {
+      "type": "none",
+      "enabled": false,
+      "image_shape": [3, 224, 224],
+      "channel_order": "rgb",
+      "stats_space": "float_0_1",
+      "eps": 1e-6,
+      "clip": 10.0
+    },
+    "action": {
+      "type": "bidirectional_env_learner_affine",
+      "action_dim": 7,
+      "env_low": [-1, -1, -1, -1, -1, -1, -1],
+      "env_high": [1, 1, 1, 1, 1, 1, 1],
+      "clip": true
+    },
+    "feature_transform": {
+      "type": "angle_sin_cos",
+      "input_dim": 40,
+      "output_dim": 40,
+      "angle_indices": []
+    }
+  },
   "algorithm_hparams": {},
   "replay_storage": "cpu_uint8_images"
 }
@@ -828,6 +869,7 @@ Required checkpoint state:
 - target model weights when the algorithm uses target networks;
 - optimizer states;
 - entropy temperature state for SAC;
+- observation/action normalizer state when enabled (`proprio` running mean, Welford `m2`, `count`, `eps`, `clip`; optional `image` RGB channel running mean/M2/count over float `[0,1]` pixels; `bidirectional_env_learner_affine` action mapper state; and feature-transform metadata);
 - global env-step and update counters;
 - RNG seed/config needed for deterministic eval reproducibility.
 
@@ -841,6 +883,13 @@ Logging key contract:
 - `train/q_mean`
 - `train/replay_size`
 - `train/num_env_steps`
+- `normalizer/proprio_count`
+- `normalizer/proprio_mean_abs_max`
+- `normalizer/proprio_std_min`
+- `normalizer/image_count` when `per_channel_running_mean_std` is enabled
+- `normalizer/image_mean_min` when `per_channel_running_mean_std` is enabled
+- `normalizer/image_mean_max` when `per_channel_running_mean_std` is enabled
+- `normalizer/image_std_min` when `per_channel_running_mean_std` is enabled
 - `train_rollout/mean_return`
 - `train_rollout/success_rate`
 - `train_rollout/mean_episode_length`
@@ -1815,6 +1864,113 @@ git commit -m "feat(train): add per-lane settle cooldown"
 
 ---
 
+### PR 6.6 — Running Observation/Action Normalization
+
+**Goal / Why**
+
+Add the normalization contract needed before serious SAC/TD3 training and before any TD3+BC-style or BC/DAgger loss consumes dataset actions. The important rule is consistency: actor, critic, replay updates, checkpoint eval, visual rollout, and future BC losses must all see the same normalized inputs and action convention.
+
+**Decision On The Proposed Rules**
+- Use running per-dimension state normalization, not mini-batch statistics: yes. Online SAC/TD3 should update stats from train-lane observations that enter replay using Welford-style running mean/variance, then apply those frozen-at-use stats during gradient updates and eval.
+- Use sin/cos for angles: conditionally yes. Only true periodic/wrap-around angle features should be expanded to sin/cos. The current 40D proprio mostly uses limited Franka joint positions, Cartesian positions/deltas, velocities, gripper values, and previous normalized action, so PR6.6 should keep angle expansion optional/configured instead of blindly changing all joint-position dimensions.
+- Normalize state/action per dimension: yes. Proprio stats are per feature. Action normalization is also per action dimension via `bidirectional_env_learner_affine`; the default mapper is numerically identity because the public env action contract is already `[-1,1]` on all seven dimensions.
+- Denormalize before `env.step`: yes, with one correction. Denormalize from the learner action space back to the env-normalized 7D action expected by `IsaacArmEnv`, then clip to `[-1,1]`. Do **not** denormalize directly to physical meters/radians unless a future env wrapper explicitly changes its backend action contract.
+- Critic input is normalized state + learner-normalized action: yes.
+- Actor input is normalized state: yes.
+- Actor output is normalized action in `[-1,1]`: yes. The phrase "normalized state in `[-1,1]`" is treated as a typo; actor output is action, not state.
+- BC / TD3+BC loss compares actor output with normalized dataset action: yes. When offline dataset actions are already env-normalized `[-1,1]`, the default action mapper keeps them unchanged; if a future dataset uses physical actions or nonstandard scaling, the mapper owns that conversion.
+
+**Inputs**
+- PR2.5 40D proprio contract and PR1 normalized 7D action contract.
+- PR6 `SACAgent`, PR7 `TD3Agent`, replay buffer, and checkpoint helpers.
+- PR6.5 logger/progress hooks and checkpoint `extras` path.
+- PR11a/PR12a checkpoint eval/visual paths, which must load and apply the same normalizer state.
+
+**Outputs**
+- New module `agents/normalization.py` or `train/normalization.py` with:
+  - `RunningMeanStd` / `RunningProprioNormalizer` using numerically stable running count/mean/M2 or equivalent variance accumulation,
+  - optional `RunningImageChannelNormalizer` with `--image-normalization none|per_channel_running_mean_std`, default `none`; when enabled, stats are per RGB channel over float `[0,1]` policy images,
+  - `normalize(x)`, `update(x)`, `state_dict()`, `load_state_dict()`, `freeze()` semantics,
+  - epsilon/clamp config such as `eps=1e-6`, `clip=10.0`,
+  - optional configured `AngleFeatureTransform` for explicit angle indices only.
+- New `ActionNormalizer` abstraction with:
+  - per-dimension env low/high from `TaskConfig`,
+  - `env_to_learner(action_env)` and `learner_to_env(action_norm)`,
+  - config/state type `bidirectional_env_learner_affine`,
+  - default identity behavior for the current `[-1,1]` env contract with seven explicit bounds for `dx, dy, dz, droll, dpitch, dyaw, gripper`,
+  - clipping after `learner_to_env` before calling `env.step`.
+- SAC/TD3 integration:
+  - training loop updates proprio stats and optional image channel stats only from train lanes whose transitions enter replay; same-env eval lanes, settle transitions, and PR11a eval episodes do not update stats,
+  - replay stores raw env observations/actions; sampled batches are normalized immediately before actor/critic forward passes,
+  - image replay batches are augmented first, then converted to float `[0,1]`, then optionally channel-normalized before actor/critic forward,
+  - `agent.act(...)`, `AgentEvalPolicy`, and `CheckpointPolicy` apply the loaded proprio normalizer and optional image normalizer before actor forward,
+  - actor outputs learner-normalized actions in `[-1,1]`; training loops convert to env-normalized actions before `env.step`,
+  - critic receives normalized proprio/features and learner-normalized actions,
+  - SAC/TD3 checkpoint save/load stores `extras["normalizer_state"]` and metadata describing the feature transform and action mapper.
+- Logger keys:
+  - `normalizer/proprio_count`
+  - `normalizer/proprio_mean_abs_max`
+  - `normalizer/proprio_std_min`
+  - optional `normalizer/image_count`, `normalizer/image_mean_min`, `normalizer/image_mean_max`, `normalizer/image_std_min` when channel-wise image normalization is enabled,
+  - optional `normalizer/action_mode` in hparams/config rather than a scalar metric.
+
+**Implementation Notes**
+- Do not use per-mini-batch mean/std inside `agent.update`; that would make target-Q computation depend on sampled batch composition and would make checkpoint eval irreproducible.
+- Normalizer stats should be updated before gradient updates consume the latest replay transition, then treated as fixed tensors for that update.
+- Evaluation must run with normalizer updates disabled. Loading an old checkpoint without `normalizer_state` uses explicit identity proprio/action behavior and baseline uint8-to-`[0,1]` image conversion, and this missing-state fallback is covered by policy tests.
+- If angle features are enabled later, checkpoint metadata must include original proprio dim, transformed proprio dim, and angle indices so PR11a/PR12a can rebuild the exact actor input.
+- For TD3+BC or future BC losses, dataset actions must pass through `env_to_learner(action_env)` before computing `MSE(actor_action_norm, dataset_action_norm)`.
+- The public env wrapper remains stable: `IsaacArmEnv.step()` still receives normalized 7D actions in `[-1,1]`.
+
+**How To Test**
+- `tests/test_normalization.py`:
+  - running mean/std matches known per-dimension statistics and does not depend on mini-batch order,
+  - optional image normalizer computes per-channel RGB stats in float `[0,1]`,
+  - `freeze()` prevents updates during eval,
+  - zero-variance dimensions are protected by epsilon and finite outputs,
+  - state dict round-trips exactly,
+  - optional angle transform only changes configured angle indices and records transformed dimensions.
+- SAC/TD3 loop tests:
+  - proprio and optional image normalizer updates only for replay-writing train lanes, not same-env eval lanes or settle cooldown transitions,
+  - critic update receives normalized proprio and learner-normalized action,
+  - actor action is converted back to env-normalized action before `env.step`,
+  - checkpoint save/load preserves normalizer state and PR11a eval uses it.
+- Policy/eval tests:
+  - `AgentEvalPolicy` and `CheckpointPolicy` produce identical actions before/after checkpoint round-trip when the same normalizer state is loaded,
+  - missing normalizer state behavior is explicit and tested.
+
+**Acceptance Criteria**
+
+PR6.6 status: implemented. The code now keeps replay storage raw, updates proprio stats and optional image channel stats only from replay-writing train lanes, feeds SAC/TD3 actor/critic with normalized proprio, float `[0,1]` images plus optional channel normalization, and learner-normalized actions, converts learner actions back to env-normalized actions before `env.step`, and saves/loads `extras["normalizer_state"]` for checkpoint eval/visualization. Action normalizer metadata uses `type: "bidirectional_env_learner_affine"`.
+
+PR6.6 is complete when:
+
+```bash
+pytest tests/test_normalization.py tests/test_sac_continuous.py tests/test_td3_continuous.py tests/test_eval_sac_td3_checkpoints.py -q
+```
+
+passes, and a fake SAC/TD3 smoke run shows nonzero `normalizer/proprio_count`; with `--image-normalization per_channel_running_mean_std`, it also shows nonzero `normalizer/image_count` in JSONL/W&B while checkpoint eval loads the same normalizer state.
+
+Current verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm pytest -q tests/test_normalization.py tests/test_sac_continuous.py tests/test_td3_continuous.py
+# 47 passed
+
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm pytest -q
+# 259 passed, 1 skipped
+```
+
+Tiny fake-backend SAC/TD3 smoke runs also produced nonzero `normalizer/proprio_count=16.0` in JSONL/final logs, and PR11a fake checkpoint eval loaded both checkpoints successfully.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add running observation and action normalization"
+```
+
+---
+
 ### PR 11a — SAC/TD3 Checkpoint Evaluation
 
 **Goal / Why**
@@ -2464,6 +2620,9 @@ PR 3.5 Agent Primitives
   |                                      PR 6.5 training logs/schedulers/eval
   |                                            |
   |                                            v
+  |                                      PR 6.6 running obs/action normalization
+  |                                            |
+  |                                            v
   |                                      PR 11a SAC/TD3 eval
   |                                            |
   |                                            v
@@ -2572,10 +2731,18 @@ pytest tests/test_visual_comparison_outputs.py -v
 
 ### 15.1 SAC/TD3-First Train + Eval + Visualize
 
-Train SAC:
+> **Live-Isaac configuration note (see §8.3 line 908).** For real Isaac runs, set
+> `--eval-every-env-steps 0` so the loop does NOT spin up a second Isaac env, and use
+> `--same-env-eval-lanes N --same-env-eval-start-env-steps K` to reserve N of the
+> training env lanes as deterministic eval rollouts that begin reporting `eval_rollout/*`
+> after K total env transitions. The fake-backend smoke command in PR6.5 is the only
+> place separate-env periodic `eval/*` is appropriate.
+
+Train SAC (live Isaac):
 
 ```bash
 python -m scripts.train_sac_continuous \
+  --backend isaac \
   --env_id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
   --num_envs 64 \
   --total_envsteps 500000 \
@@ -2590,19 +2757,28 @@ python -m scripts.train_sac_continuous \
   --lr-scheduler warmup_cosine \
   --lr-warmup-updates 1000 \
   --lr-min-lr 1e-5 \
-  --eval-every-env-steps 10000 \
+  --eval-every-env-steps 0 \
+  --same-env-eval-lanes 8 \
+  --same-env-eval-start-env-steps 50000 \
   --eval-settle-steps 600 \
+  --settle-steps 600 \
+  --per-lane-settle-steps 20 \
   --learning_rate 3e-4 \
   --tb-log-dir ./logs/sac_franka \
   --jsonl-log ./logs/sac_franka_train.jsonl \
+  --progress-log ./logs/sac_franka_progress.txt \
+  --wandb-project isaac-arm-rl \
+  --wandb-run-name sac_franka \
+  --wandb-mode online \
   --checkpoint_dir ./checkpoints \
   --checkpoint_name sac_franka
 ```
 
-Train TD3:
+Train TD3 (live Isaac):
 
 ```bash
 python -m scripts.train_td3_continuous \
+  --backend isaac \
   --env_id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
   --num_envs 64 \
   --total_envsteps 500000 \
@@ -2619,11 +2795,19 @@ python -m scripts.train_td3_continuous \
   --lr-scheduler warmup_cosine \
   --lr-warmup-updates 1000 \
   --lr-min-lr 1e-5 \
-  --eval-every-env-steps 10000 \
+  --eval-every-env-steps 0 \
+  --same-env-eval-lanes 8 \
+  --same-env-eval-start-env-steps 50000 \
   --eval-settle-steps 600 \
+  --settle-steps 600 \
+  --per-lane-settle-steps 20 \
   --learning_rate 3e-4 \
   --tb-log-dir ./logs/td3_franka \
   --jsonl-log ./logs/td3_franka_train.jsonl \
+  --progress-log ./logs/td3_franka_progress.txt \
+  --wandb-project isaac-arm-rl \
+  --wandb-run-name td3_franka \
+  --wandb-mode online \
   --checkpoint_dir ./checkpoints \
   --checkpoint_name td3_franka
 ```

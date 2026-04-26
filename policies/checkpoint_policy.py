@@ -14,6 +14,7 @@ import torch
 
 from agents.checkpointing import CheckpointPayload, load_checkpoint
 from agents.fake_checkpoints import build_fake_actor
+from agents.normalization import NormalizerBundle
 from policies.base import BasePolicy, ObservationDict
 
 
@@ -66,6 +67,11 @@ class CheckpointPolicy(BasePolicy):
         self.deterministic = bool(deterministic)
         self.device = _select_torch_device(device)
         self.checkpoint_path = Path(checkpoint_path)
+        self.normalizers = NormalizerBundle.from_state_dict(
+            payload.extras.get("normalizer_state"),
+            proprio_dim=payload.metadata.proprio_dim,
+            action_dim=payload.metadata.action_dim,
+        )
 
         actor = build_fake_actor(
             agent_type,
@@ -98,6 +104,11 @@ class CheckpointPolicy(BasePolicy):
         instance.deterministic = bool(deterministic)
         instance.device = _select_torch_device(device)
         instance.checkpoint_path = Path("<in-memory>")
+        instance.normalizers = NormalizerBundle.from_state_dict(
+            payload.extras.get("normalizer_state"),
+            proprio_dim=payload.metadata.proprio_dim,
+            action_dim=payload.metadata.action_dim,
+        )
         actor = build_fake_actor(
             payload.metadata.agent_type,
             proprio_dim=payload.metadata.proprio_dim,
@@ -115,11 +126,14 @@ class CheckpointPolicy(BasePolicy):
             raise KeyError("obs must contain 'image' and 'proprio' keys")
         images_np = _to_batched_image(obs["image"])
         proprios_np = _to_batched_proprio(obs["proprio"], self.metadata.proprio_dim)
+        images_np = self.normalizers.normalize_image_np(images_np)
+        proprios_np = self.normalizers.normalize_proprio_np(proprios_np)
         images = torch.from_numpy(images_np).to(self.device)
         proprios = torch.from_numpy(proprios_np).to(self.device)
         with torch.no_grad():
-            action_torch = self._actor.act(images, proprios, deterministic=self.deterministic)
-        action_np = action_torch.detach().cpu().numpy().astype(np.float32)
+            learner_action_torch = self._actor.act(images, proprios, deterministic=self.deterministic)
+        action_np = learner_action_torch.detach().cpu().numpy().astype(np.float32)
+        action_np = self.normalizers.learner_action_to_env_np(action_np)
         if action_np.shape[0] == 1:
             return self._clip_action(action_np[0])
         return np.stack(

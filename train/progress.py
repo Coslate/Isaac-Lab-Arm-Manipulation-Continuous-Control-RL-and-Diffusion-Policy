@@ -30,6 +30,13 @@ class TrainProgressReporter:
         ("train/learning_rate_actor", "lr_actor"),
         ("train/learning_rate_critic", "lr_critic"),
         ("train/learning_rate_alpha", "lr_alpha"),
+        ("normalizer/proprio_count", "proprio_count"),
+        ("normalizer/proprio_mean_abs_max", "proprio_mean_abs_max"),
+        ("normalizer/proprio_std_min", "proprio_std_min"),
+        ("normalizer/image_count", "image_count"),
+        ("normalizer/image_mean_min", "image_mean_min"),
+        ("normalizer/image_mean_max", "image_mean_max"),
+        ("normalizer/image_std_min", "image_std_min"),
         ("train_rollout/mean_return", "train_rollout_return"),
         ("train_rollout/success_rate", "train_rollout_success"),
         ("train_rollout/mean_episode_length", "train_rollout_len"),
@@ -265,6 +272,8 @@ def _format_metric(key: str, value: float) -> str:
         "train_rollout/window_size",
         "eval_rollout/episode_count",
         "eval_rollout/window_size",
+        "normalizer/proprio_count",
+        "normalizer/image_count",
     }:
         return str(int(round(value)))
     if "learning_rate" in key:
