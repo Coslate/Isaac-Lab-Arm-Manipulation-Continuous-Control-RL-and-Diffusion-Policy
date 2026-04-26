@@ -64,27 +64,38 @@ Runtime requirement for live Isaac commands:
 - On WSL2 + Docker, run Xvfb on `DISPLAY=:1`.
 - Missing X authority can cause `Authorization required`, `eglInitialize failed`, or `xcb_connection_has_error()` even when Isaac is launched headless.
 
-| Area / PR | Status | Evidence in current tree | Notes |
-|---|---|---|---|
-| Runtime env | Ready with display setup | `scripts.collect_rollouts`, `scripts.demo_data_loop`, `scripts.isaac_camera_observation_smoke`, `scripts.benchmark_rollout_collection` | Live Isaac still needs working X11 display/auth. Benchmark helper can auto-discover the SDDM `XAUTHORITY` cookie when unset. |
-| PR 0 - Project scaffold | Done | `configs/`, `env/`, `dataset/`, `eval/`, `policies/`, `scripts/`, `tests/` | Known PR0 result: `tests/test_project_scaffold.py` -> `6 passed`. |
-| PR 1 - Task/action contract | Done | `configs/task_config.py`, `tests/test_task_contract.py` | Keeps `Isaac-Lift-Cube-Franka-IK-Rel-v0` and the normalized 7D action order `dx, dy, dz, droll, dpitch, dyaw, gripper`. Known result: `9 passed`. |
-| PR 2 - Formal observation wrapper | Done | `env/isaac_env.py`, `tests/test_observation_wrapper.py` | Wrapper returns `obs["image"]` as wrist RGB `(num_envs, 3, 224, 224)` `uint8` and `obs["proprio"]` as named 40D `float32`; rejects stock 35D policy tensors. Known result: `18 passed`. |
-| PR 2.5 - Camera-enabled Franka lift cfg | Done | `env/franka_lift_camera_cfg.py`, `scripts/isaac_camera_observation_smoke.py`, `tests/test_camera_enabled_env_cfg.py` | Customized cfg adds `wrist_cam`, optional `table_cam`, named 40D proprio terms, strict policy/debug camera separation, target-pose slicing, torch action bridge, and optional table visual cleanup. Known unit result: `12 passed`; live smoke returned image `(1, 3, 224, 224)` and proprio `(1, 40)`. |
-| Image augmentation utilities | Done | `utils/image_aug.py`, `tests/test_image_aug.py` | Provides deterministic wrapper contract plus training-only `PadAndRandomCrop`, optional `CenterBiasedResizedCrop`, and eval `IdentityAug`. Known result: `24 passed`. |
-| PR 8-pre - Demo policies | Done | `policies/base.py`, `policies/random_policy.py`, `policies/heuristic_policy.py`, `policies/replay_policy.py`, `tests/test_demo_policies.py` | Random, heuristic, and HDF5 replay policies share the same `act(obs) -> 7D action` interface. Known result: `10 passed`. |
-| PR 8-lite - Rollout dataset | Done | `dataset/episode_dataset.py`, `scripts/collect_rollouts.py`, `scripts/inspect_rollout_dataset.py`, `scripts/benchmark_rollout_collection.py` | HDF5 episodes are stored safely per env lane with `images`, `proprios`, `actions`, rewards, done/truncated flags, optional raw wrist/debug images, and metadata such as `source_env_index`, `reset_round`, `reset_seed`, `terminated_by`, and `settle_steps`. |
-| PR 11-lite - Evaluation metrics | Done | `eval/eval_loop.py`, `tests/test_eval_metrics.py` | Computes return, success rate, episode length, action jerk, per-episode success, closest target approach, and target metadata from rollout HDF5 files. Success falls back to `norm(proprio[:, 30:33]) <= 0.02` when Isaac does not emit explicit success flags. |
-| PR 12-lite - Visual rollout output | Done | `eval/gif_recorder.py`, `tests/test_visual_outputs.py` | Records fixed-debug-camera GIFs/MP4s and sampled debug PNGs while keeping wrist RGB as the policy image stream. Supports post-processing overlays instead of re-enabling Isaac debug visualizers. |
-| Demo PR - One-command data loop | Done | `scripts/demo_data_loop.py`, `tests/test_demo_data_loop.py` | One command creates dataset, metrics JSON, GIF/MP4, and sampled debug PNGs for random, heuristic, or replay policy. Known result on 2026-04-25: `tests/test_demo_data_loop.py` -> `13 passed`; full pytest -> `149 passed, 1 skipped` (`RUN_ISAAC_RUNTIME_SMOKE=1` opt-in smoke skipped). |
-| Final live demo artifacts | Generated | `data/final_heuristic_demo_rollouts.h5`, `logs/final_heuristic_demo_metrics.json`, `out/gifs/final_heuristic_demo.gif`, `out/gifs/final_heuristic_demo.mp4`, `out/debug_frames/final_heuristic_demo/` | Current heuristic demo metrics: 3 episodes, mean return `27.3684`, success `2/3`, success rate `0.6667`, mean action jerk `0.2926`. Random comparison artifacts and replay-from-heuristic artifacts are also present. |
-| PR 3 - Shared backbone | Done | `agents/backbone.py`, `tests/test_nn_backbone.py` | Adds the shared image-proprio encoder consumed by future RL and Diffusion Policy agents. Known result: `8 passed`. |
-| PR 3.5 - Agent primitives | Pending | No `tests/test_agent_primitives.py` in current tree | Needed before PR4-7 so actor distributions, replay/rollout batches, checkpoints, and policy adapters are shared instead of duplicated. |
-| PR 4-7 - PPO / pure GRPO / SAC / TD3 | Pending | No continuous-control RL agent tests or train scripts yet | SAC remains the intended expert/oracle, but the RL training stack is not implemented yet. |
-| PR 8-full - SAC demonstrations | Infrastructure done; SAC expert pending | PR8-lite dataset exists; SAC checkpoint collection script is not implemented | Episode-safe data format is ready, but expert demonstrations still depend on PR6 SAC. |
-| PR 8.5 - Diffusion sequence dataset | Pending | No `tests/test_diffusion_sequence_dataset.py` in current tree | Needed to guarantee `images/proprios/actions` sequence batches before Diffusion Policy model work starts. |
-| PR 9a-c / PR10 - Diffusion BC / deployment / DAgger | Pending | No diffusion policy or DAgger tests yet | These should plug into the existing dataset, policy interface, and eval/GIF loop after SAC demos and sequence dataloaders exist. |
-| PR 11-full / PR12-full - Reporting and visual comparison | Partial | Dataset metrics JSON and GIF/MP4 outputs exist | Full trained-checkpoint evaluation, side-by-side GIF grids, and comparison plots remain future work. |
+This is the single source of truth for implementation status. Do not maintain a second PR roadmap table elsewhere in this plan.
+
+| PR / Area | Status | What it provides | Test / evidence | Next / notes |
+|---|---|---|---|---|
+| Runtime env | Ready with display setup | Live Isaac command path for collection, smoke, benchmark, and demo scripts | `scripts.collect_rollouts`, `scripts.demo_data_loop`, `scripts.isaac_camera_observation_smoke`, `scripts.benchmark_rollout_collection` | Live Isaac still needs working X11 display/auth; benchmark helper can auto-discover SDDM `XAUTHORITY` when unset. |
+| PR 0 - Project scaffold | Done | Package layout, project config, output dirs, seed utilities | `tests/test_project_scaffold.py` -> `6 passed` | Foundation for all later packages. |
+| PR 1 - Task/action contract | Done | `Isaac-Lift-Cube-Franka-IK-Rel-v0`, normalized 7D action order, clipping, gripper convention | `tests/test_task_contract.py` -> `9 passed` | Public action contract stays `dx, dy, dz, droll, dpitch, dyaw, gripper`. |
+| PR 2 - Formal observation wrapper | Done | `IsaacArmEnv`, wrist image + 40D proprio contract, strict stock-35D rejection | `tests/test_observation_wrapper.py` -> `18 passed` | Formal policy obs is `obs["image"]` `(N,3,224,224)` and `obs["proprio"]` `(N,40)`. |
+| PR 2.5 - Camera-enabled Franka cfg | Done | Customized Isaac cfg with `wrist_cam`, optional `table_cam`, named proprio terms, debug/policy camera separation | `tests/test_camera_enabled_env_cfg.py` -> `12 passed`; live camera smoke image `(1,3,224,224)`, proprio `(1,40)` | Stock `--enable_cameras` alone is not enough; use customized cfg. |
+| Image augmentation utilities | Done | `PadAndRandomCrop`, `CenterBiasedResizedCrop`, `IdentityAug` | `tests/test_image_aug.py` -> `24 passed` | Training-only augmentation; env wrapper remains deterministic. |
+| PR 8-pre - Demo policies | Done | `BasePolicy`, random, heuristic, HDF5 replay policy interface | `tests/test_demo_policies.py` -> `10 passed` | All policies expose `act(obs) -> 7D action`. |
+| PR 8-lite - Rollout dataset | Done | Episode-safe HDF5 schema, collector, inspector, benchmark helper | `tests/test_demo_dataset.py`, `tests/test_rollout_benchmark.py` | Stores wrist `images`, `proprios`, actions, rewards, done/truncated, optional raw/debug images, lane/reset metadata. |
+| PR 11-lite - Dataset metrics | Done | Dataset-level return, success, length, jerk, target diagnostics | `tests/test_eval_metrics.py` | Success falls back to `norm(proprio[:, 30:33]) <= 0.02` when explicit success flags are absent. |
+| PR 12-lite - Visual output | Done | Fixed-debug-camera GIF/MP4, sampled PNGs, overlay support | `tests/test_visual_outputs.py` | Human-facing frames come from debug camera, not policy wrist image. |
+| Demo PR - One-command data loop | Done | Dataset + metrics + GIF/MP4 + debug PNG artifacts in one command | `tests/test_demo_data_loop.py` -> `13 passed`; full pytest at demo completion -> `149 passed, 1 skipped` | Used for interview/demo vertical slice. |
+| Final live demo artifacts | Generated | `final_heuristic_demo` HDF5/JSON/GIF/MP4/debug PNGs | `logs/final_heuristic_demo_metrics.json`: 3 eps, mean return `27.3684`, success `2/3`, jerk `0.2926` | Random and replay comparison artifacts also exist. |
+| PR 3 - Shared backbone | Done | `ImageProprioBackbone` shared image-proprio encoder | `tests/test_nn_backbone.py` -> `8 passed`; full pytest after PR3 -> `157 passed, 1 skipped` | First research-model component is complete. |
+| PR 3.5 - Agent primitives | Pending | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, policy adapter | Planned test: `tests/test_agent_primitives.py` | Next PR. Needed before SAC/TD3 to avoid duplicate infrastructure. |
+| PR 6 - SAC train | Pending | `SACAgent`, online replay training, deterministic oracle mode, `scripts.train_sac_continuous` | Planned test: `tests/test_sac_continuous.py` | First off-policy training algorithm; unlocks SAC oracle. |
+| PR 7 - TD3 train | Pending | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous` | Planned test: `tests/test_td3_continuous.py` | Shares replay/twin-Q infrastructure with SAC. |
+| PR 11a - SAC/TD3 eval | Pending | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | Planned test: `tests/test_eval_sac_td3_checkpoints.py` | First trained-checkpoint eval path. |
+| PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. |
+| PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
+| PR 8.5 - Diffusion sequence dataset | Pending | `(B,T_obs,3,224,224)`, `(B,T_obs,40)`, `(B,H,7)` sequence dataloader | Planned test: `tests/test_diffusion_sequence_dataset.py` | Bridge from HDF5 episodes to Diffusion training batches. |
+| PR 9a - Diffusion core | Pending | Noise schedule, timestep embeddings, conditioned temporal denoiser | Planned test: `tests/test_diffusion_core.py` | Model only; no BC train script yet. |
+| PR 9b - Diffusion BC training | Pending | BC train script, denoising loss, checkpoints, resume, synthetic overfit mode | Planned test: `tests/test_diffusion_bc_training.py` | Trains from SAC demos via PR8.5 dataloader. |
+| PR 9c - Diffusion deployment | Pending | DDIM inference, action queue, `DiffusionPolicy.act(obs)` | Planned test: `tests/test_diffusion_policy_deployment.py` | Enables eval/visual rollout for BC policy. |
+| PR 10 - DAgger | Pending | Student rollout, SAC oracle relabeling, aggregation, fine-tuning loop | Planned test: `tests/test_dagger_diffusion.py` | Uses SAC oracle and deployed Diffusion student. |
+| PR 4 - PPO | Deferred | On-policy PPO baseline | Planned test: `tests/test_ppo_continuous.py` | Not blocking SAC/TD3-first path. |
+| PR 5 - Pure GRPO | Deferred | No-critic group-relative on-policy baseline | Planned test: `tests/test_grpo_continuous.py` | Not blocking SAC/TD3-first path. |
+| PR 11-full - General checkpoint eval | Pending | Extends PR11a to PPO/GRPO/Diffusion/DAgger | Planned test: `tests/test_eval_agent.py` | After more trained agents exist. |
+| PR 12-full - Full visual comparison | Pending | Side-by-side GIF grids and plots across all methods | Planned test: `tests/test_visual_comparison_outputs.py` | After PR11-full and multiple trained checkpoints. |
 
 Current measured demo-slice results from the final live artifacts:
 
@@ -413,6 +424,80 @@ Metrics:
 - action jerk,
 - steps-to-threshold.
 
+Before PR6/PR7 training, run a reward sanity probe:
+- confirm `Isaac-Lift-Cube-Franka-IK-Rel-v0` produces a dense, non-constant reward during random and heuristic rollouts;
+- log reward min/mean/max and at least a few per-step reward traces;
+- compare random and heuristic reward distributions to verify the reward signal reflects meaningful progress;
+- record whether explicit success flags are present or whether evaluation must use the 40D proprio fallback.
+
+If the reward probe shows sparse or nearly constant rewards, do not start long SAC/TD3 runs. First add reward diagnostics, curriculum, or documented reward shaping as a separate PR.
+
+### 3.5 Off-Policy Training Runtime Contracts
+
+SAC and TD3 are image-based off-policy methods, so PR3.5/PR6/PR7 must lock down a few runtime contracts before long training.
+
+**Replay storage and memory budget**
+
+The current training GPU is an NVIDIA RTX 5000 Ada with 32 GB VRAM. That is not enough for a naive GPU replay buffer:
+
+```text
+200k * 3 * 224 * 224 uint8 ~= 30.1 GB decimal ~= 28.0 GiB
+```
+
+That estimate is for one image stream only. Storing both `obs_image` and `next_obs_image` doubles the image storage before proprio, actions, rewards, done flags, Python overhead, sampled GPU batches, model activations, or optimizer state.
+
+Required replay-buffer contract:
+- Replay storage lives in CPU RAM, memory-mapped files, or a disk-backed array store; never store the full replay buffer on CUDA.
+- Store policy images as `uint8`; convert to float and move only sampled minibatches to GPU.
+- Store `proprios`, `actions`, rewards, and done/truncated flags as compact numeric arrays.
+- Prefer storing each transition once and reconstructing `next_obs` by index when possible. If `next_obs` must be stored explicitly because vectorized lanes reset independently, document the memory cost and keep it on CPU/disk.
+- PR3.5 must expose a replay-buffer capacity/memory estimator so PR6/PR7 can print the expected storage footprint before training starts.
+
+**Vectorized env terminal-transition rule**
+
+Isaac Lab vectorized envs may auto-reset a finished lane inside `env.step()`. Therefore `next_obs` returned for a terminal lane may already be the reset observation for the next episode. Off-policy training must not treat that reset observation as a same-episode continuation.
+
+Required transition rule:
+- Store `terminated` and `truncated` separately when available.
+- Store a scalar training mask such as `bootstrap_mask = 0.0` for true terminal transitions and for truncations when the trainer chooses not to bootstrap through time limits.
+- Critic targets must use:
+
+```text
+target = reward + gamma * bootstrap_mask * target_q(next_obs, next_action)
+```
+
+- If a lane auto-resets, the replay buffer may store the post-reset `next_obs`, but `bootstrap_mask` must still prevent bootstrapping across the boundary.
+- Tests must include a fake vectorized env where one lane terminates early while sibling lanes continue, matching the PR8-lite per-lane collection bug class.
+
+**Deterministic action convention**
+
+Use one convention everywhere:
+- SAC deterministic eval/oracle action = `tanh(mu)`, where `mu` is the Gaussian actor mean before squashing.
+- SAC training action = reparameterized squashed Gaussian sample.
+- TD3 deterministic eval action = actor output without exploration noise.
+- TD3 training action = actor output plus clipped exploration noise before env clipping.
+
+PR11a, PR12a, PR8-full, and PR10 must use the same deterministic convention when loading checkpoints.
+
+**Backbone sharing convention for off-policy agents**
+
+For the first SAC/TD3 implementation, keep actor and critic encoders separate:
+- actor has its own `ImageProprioBackbone`;
+- critic/twin-Q module has its own `ImageProprioBackbone`;
+- target networks own their own target encoders;
+- no hidden actor/critic encoder parameter sharing in PR6/PR7.
+
+This is more memory-heavy than shared encoders, but it avoids ambiguous gradient coupling and makes checkpoint loading simpler. Shared encoders or actor stop-gradient variants can be explored later as an explicit optimization PR.
+
+**Settle-steps comparison profile**
+
+Use one settle-step value for a given comparison table. The demo has used `--settle-steps 600` for final visual artifacts; quick training-data probes may use `20`.
+
+Contract:
+- PR11a eval and PR12a visual commands must record `settle_steps` in metrics/artifact metadata.
+- Final SAC-vs-TD3 metric and GIF comparisons must use the same `settle_steps` value, recommended `600` for final demo-quality artifacts.
+- Smoke tests may use smaller values, but their outputs should be labeled as smoke/debug, not final comparison results.
+
 ---
 
 ## 4. Baselines
@@ -680,12 +765,78 @@ The dataset must be episode-safe. Sampling windows must never cross `done` or `t
 | gae_lambda | 0.95 | N/A | N/A | N/A | N/A | N/A |
 | group_size | N/A | 8 | N/A | N/A | N/A | N/A |
 | replay_size | N/A | N/A | 200k | 200k | N/A | N/A |
-| warmup_steps | N/A | N/A | 5k | 5k | N/A | N/A |
+| replay_storage | N/A | N/A | CPU/disk uint8 images | CPU/disk uint8 images | N/A | N/A |
+| warmup_steps | N/A | N/A | 5k transitions | 5k transitions | N/A | N/A |
+| eval_every_env_steps | N/A | N/A | 10k | 10k | N/A | N/A |
+| utd_ratio | N/A | N/A | 1 | 1 | N/A | N/A |
+| polyak_tau | N/A | N/A | 0.005 | 0.005 | N/A | N/A |
+| sac_target_entropy | N/A | N/A | `-action_dim` | N/A | N/A | N/A |
+| sac_initial_alpha | N/A | N/A | 0.2 | N/A | N/A | N/A |
 | policy_delay | N/A | N/A | 1 | 2 | N/A | N/A |
+| td3_exploration_noise_sigma | N/A | N/A | N/A | 0.1 | N/A | N/A |
+| td3_target_noise_sigma | N/A | N/A | N/A | 0.2 | N/A | N/A |
+| td3_target_noise_clip | N/A | N/A | N/A | 0.5 | N/A | N/A |
+| deterministic_eval_action | deferred to PR4 | deferred to PR5 | `tanh(mu)` | actor output, no noise | DDIM deterministic | DDIM deterministic |
 | diffusion_T | N/A | N/A | N/A | N/A | 100 | 100 |
 | ddim_steps | N/A | N/A | N/A | N/A | 10 | 10 |
 | action_horizon | N/A | N/A | N/A | N/A | 8 | 8 |
 | exec_horizon | N/A | N/A | N/A | N/A | 4 | 4 |
+
+For SAC/TD3:
+- `warmup_steps` is measured in individual replay transitions, not vectorized `env.step()` calls; one 64-env Isaac step can add up to 64 transitions.
+- `eval_every_env_steps=10000` means run deterministic eval rollouts every 10k individual env transitions and log the §8.3 eval keys.
+- `utd_ratio=1` means one gradient update per env step after warmup unless explicitly changed.
+- `polyak_tau=0.005` means target parameters update as `target = (1 - tau) * target + tau * online`.
+- TD3 exploration noise is added to actor actions during data collection; target smoothing noise is added only in target-Q computation.
+- All replay storage is CPU/disk-backed; only sampled minibatches are moved to GPU.
+
+### 8.3 Checkpoint And Logging Contract
+
+Every trainable checkpoint from PR4-7 and PR9-10 must include metadata so PR11a/PR12a can evaluate without guessing:
+
+```json
+{
+  "agent_type": "sac",
+  "env_id": "Isaac-Lift-Cube-Franka-IK-Rel-v0",
+  "action_dim": 7,
+  "proprio_dim": 40,
+  "image_shape": [3, 224, 224],
+  "num_env_steps": 500000,
+  "global_update_step": 12345,
+  "seed": 0,
+  "deterministic_action_mode": "tanh_mu",
+  "backbone_config": {},
+  "algorithm_hparams": {},
+  "replay_storage": "cpu_uint8_images"
+}
+```
+
+Required checkpoint state:
+- model weights;
+- target model weights when the algorithm uses target networks;
+- optimizer states;
+- entropy temperature state for SAC;
+- global env-step and update counters;
+- RNG seed/config needed for deterministic eval reproducibility.
+
+PR11a may write `num_env_steps: null` only for legacy checkpoints that genuinely lack this metadata, and must include a warning field. New PR6/PR7 checkpoints must always write `num_env_steps`.
+
+Logging key contract:
+- `train/critic_loss`
+- `train/actor_loss`
+- `train/alpha_loss` for SAC
+- `train/alpha` for SAC
+- `train/q_mean`
+- `train/replay_size`
+- `train/num_env_steps`
+- `eval/mean_return`
+- `eval/success_rate`
+- `eval/mean_episode_length`
+- `eval/mean_action_jerk`
+
+Use these exact keys in TensorBoard/CSV/JSON logs where applicable so comparison scripts do not need method-specific adapters.
+
+During PR6/PR7 training, eval rollouts should run on the `eval_every_env_steps=10000` cadence from §8.2, using deterministic actions and `eval_settle_steps=600` for final comparison logs. Smoke/debug runs may use fewer settle steps, but must not overwrite final-comparison metrics.
 
 ---
 
@@ -801,7 +952,21 @@ Roadmap layers:
 |---|---|---|
 | Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
 | Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
-| Research model layer | In progress | PR3 shared backbone is done; PR3.5, PR4-7, PR8-full, PR9a-c, PR10, PR11-full, and PR12-full add the remaining trained RL/IL benchmark and final comparisons. |
+| Research model layer | In progress | PR3 shared backbone is done; the immediate path is PR3.5 -> PR6 SAC -> PR7 TD3 -> PR11a SAC/TD3 eval -> PR12a SAC/TD3 GIF/MP4, then PR8-full SAC demos and Diffusion/DAgger. |
+
+Current priority path:
+
+```text
+PR3 done
+  -> PR3.5 Agent Primitives
+  -> PR6 SAC train
+  -> PR7 TD3 train
+  -> PR11a SAC/TD3 checkpoint eval
+  -> PR12a SAC/TD3 checkpoint visual rollout
+  -> PR8-full SAC expert demos
+```
+
+PPO and pure GRPO remain in the plan, but they are no longer blockers for the first complete train/eval/visualize loop.
 
 Future PRs should use this handoff pattern:
 
@@ -1192,6 +1357,18 @@ Add reusable RL building blocks before implementing PPO, GRPO, SAC, and TD3. Thi
 - Rollout batch dataclasses for on-policy methods.
 - Replay batch/replay buffer dataclasses for off-policy methods.
 - Checkpoint save/load helpers that preserve model config, normalizer/augmentation config if present, optimizer state, and global step.
+- Replay-buffer storage tier config:
+  - CPU RAM or disk-backed storage;
+  - policy images stored as `uint8`;
+  - sampled batches moved to GPU only after indexing;
+  - memory estimator for image/proprio/action/reward/done storage.
+- Explicit terminal-transition fields:
+  - `terminated`;
+  - `truncated`;
+  - `bootstrap_mask`;
+  - optional `reset_after_step` diagnostic for auto-reset lanes.
+- Checkpoint metadata dataclass matching §8.3.
+- Fake checkpoint factory for PR11a/PR12a tests, supporting both SAC-like and TD3-like deterministic policies before real training converges.
 - A common evaluation/deployment policy adapter:
 
 ```python
@@ -1203,6 +1380,11 @@ action = policy.act(obs, deterministic=True)  # shape (B, 7) or (7,)
 - Keep algorithm-specific losses out of this PR.
 - Keep env rollout collection out of this PR except for tiny fake-env interface tests.
 - Define which tensors are stored as `uint8` (`images`) versus `float32` (`proprios`, `actions`, rewards).
+- Implement deterministic action modes as named metadata values:
+  - SAC: `"tanh_mu"`;
+  - TD3: `"actor_no_noise"`.
+- Implement a replay memory estimator and print/warn when a requested capacity would exceed a configurable CPU RAM budget.
+- Implement fake checkpoint writers/readers used only by tests for eval/GIF plumbing.
 
 **How To Test**
 - Verify squashed Gaussian sampled actions are in `[-1, 1]`.
@@ -1211,6 +1393,10 @@ action = policy.act(obs, deterministic=True)  # shape (B, 7) or (7,)
 - Verify replay buffer preserves image dtype as `uint8` and action/proprio dtype as `float32`.
 - Verify rollout/replay batch shape validation rejects malformed tensors.
 - Verify checkpoint save/load round trip reproduces action output for deterministic mode.
+- Verify replay memory estimator reports about 28 GiB for `200k` single-image observations at `(3, 224, 224)` `uint8`.
+- Verify terminal transitions set `bootstrap_mask=0` and nonterminal transitions set `bootstrap_mask=1`.
+- Verify fake SAC/TD3 checkpoint factory writes metadata fields needed by PR11a/PR12a.
+- Verify checkpoint loading rejects mismatched `action_dim`, `proprio_dim`, or `env_id` with readable errors.
 
 **Pytest**
 
@@ -1338,6 +1524,8 @@ Implement SAC as the main off-policy sample-efficient baseline and expert oracle
 - `SACAgent` with stochastic training actions and deterministic oracle mode.
 - SAC checkpoint format consumed by PR8-full demo collection and PR10 DAgger oracle labeling.
 - Online replay buffer and train script with critic loss, actor loss, alpha loss, entropy, and Q-value logs.
+- `scripts.train_sac_continuous` that writes checkpoints under `checkpoints/` and logs under `logs/`.
+- Reward sanity probe command or train-script preflight output confirming non-constant dense rewards before long runs.
 
 **Implementation**
 - Add 7D squashed Gaussian actor.
@@ -1345,8 +1533,14 @@ Implement SAC as the main off-policy sample-efficient baseline and expert oracle
 - Add target critics with soft update.
 - Add replay buffer with uint8 images and float32 proprio/actions.
 - Add automatic entropy temperature tuning.
+- Use `polyak_tau=0.005`, `utd_ratio=1`, initial `alpha=0.2`, and target entropy `-action_dim` by default.
+- Apply `PadAndRandomCrop(pad=8)` to sampled replay image batches before critic and actor forward passes, DrQ-style; keep eval/checkpoint action paths deterministic and unaugmented.
+- Use separate actor and critic image-proprio backbones for the first implementation; no actor/critic encoder sharing in PR6.
 - Ensure actor loss does not detach `Q(s, a_new)` from actor gradients.
-- Add deterministic action mode for oracle data collection.
+- Define deterministic action mode for eval/oracle data collection as `tanh(mu)`.
+- Store terminal transitions with `bootstrap_mask=0` so auto-reset `next_obs` cannot bootstrap across episode boundaries.
+- Save checkpoint metadata from §8.3, including `num_env_steps`, `global_update_step`, `deterministic_action_mode="tanh_mu"`, replay storage config, and algorithm hyperparameters.
+- Emit log keys from §8.3.
 - Do not add TD3 or diffusion logic.
 
 **How To Test**
@@ -1356,9 +1550,14 @@ Implement SAC as the main off-policy sample-efficient baseline and expert oracle
 - Verify alpha changes in the correct direction.
 - Verify target networks lag online networks.
 - Verify replay buffer stores image as uint8 and action as float32.
+- Verify sampled replay image batches receive `PadAndRandomCrop(pad=8)` during training updates and eval batches do not.
 - Verify deterministic oracle action is repeatable after save/load.
 - Verify a tiny fake continuous-control env can run warmup -> update -> eval without Isaac.
 - Verify actor and critic optimizer states resume correctly from checkpoint.
+- Verify terminal fake-env lanes set `bootstrap_mask=0` and Q targets do not bootstrap through terminal transitions.
+- Verify checkpoint metadata includes `num_env_steps`, deterministic action mode, `polyak_tau`, `utd_ratio`, `target_entropy`, and replay storage config.
+- Verify actor and critic do not share encoder parameters in the default config.
+- Verify reward sanity probe detects constant rewards and fails before long training.
 
 **Pytest**
 
@@ -1389,6 +1588,8 @@ Implement TD3 as the deterministic off-policy baseline.
 - `TD3Agent` with deterministic eval action and exploration-noise training action.
 - TD3 checkpoints and logs comparable with SAC in PR11-full/PR12-full.
 - Shared replay-buffer-compatible training script.
+- `scripts.train_td3_continuous` that writes checkpoints under `checkpoints/` and logs under `logs/`.
+- Reward sanity probe command or train-script preflight output shared with SAC.
 
 **Implementation**
 - Add deterministic 7D actor.
@@ -1396,8 +1597,15 @@ Implement TD3 as the deterministic off-policy baseline.
 - Add target actor and target critics.
 - Add target policy smoothing.
 - Add delayed actor updates.
+- Use `polyak_tau=0.005`, `utd_ratio=1`, `policy_delay=2`, exploration noise sigma `0.1`, target smoothing noise sigma `0.2`, and target noise clip `0.5` by default.
+- Apply `PadAndRandomCrop(pad=8)` to sampled replay image batches before critic and actor forward passes, DrQ-style; keep eval/checkpoint action paths deterministic and unaugmented.
+- Use separate actor and critic image-proprio backbones for the first implementation; no actor/critic encoder sharing in PR7.
 - Add checkpoint save/load.
 - Reuse replay buffer format from SAC if already implemented.
+- Define deterministic eval action as actor output with no exploration noise.
+- Store terminal transitions with `bootstrap_mask=0` so auto-reset `next_obs` cannot bootstrap across episode boundaries.
+- Save checkpoint metadata from §8.3, including `num_env_steps`, `global_update_step`, `deterministic_action_mode="actor_no_noise"`, noise hyperparameters, and replay storage config.
+- Emit log keys from §8.3.
 - Do not add SAC temperature logic or diffusion code.
 
 **How To Test**
@@ -1405,10 +1613,16 @@ Implement TD3 as the deterministic off-policy baseline.
 - Verify training action with noise varies.
 - Verify policy delay skips actor update on the correct steps.
 - Verify target smoothing noise is clipped.
+- Verify sampled replay image batches receive `PadAndRandomCrop(pad=8)` during training updates and eval batches do not.
 - Verify save/load round trip.
 - Verify a tiny fake env can run warmup -> update -> eval without Isaac.
 - Verify target actor/critic checkpoint state resumes exactly.
 - Verify TD3 and SAC can share replay batch shapes without conversion glue.
+- Verify terminal fake-env lanes set `bootstrap_mask=0` and Q targets do not bootstrap through terminal transitions.
+- Verify target smoothing noise and exploration noise use distinct sigma/clip parameters.
+- Verify checkpoint metadata includes `num_env_steps`, deterministic action mode, `polyak_tau`, `utd_ratio`, `policy_delay`, and TD3 noise hyperparameters.
+- Verify actor and critic do not share encoder parameters in the default config.
+- Verify reward sanity probe detects constant rewards and fails before long training.
 
 **Pytest**
 
@@ -1424,6 +1638,224 @@ git commit -m "feat(rl): add continuous TD3 baseline"
 
 ---
 
+### PR 11a — SAC/TD3 Checkpoint Evaluation
+
+**Goal / Why**
+
+Add the first online checkpoint evaluation path for the two off-policy baselines. This is intentionally narrower than PR11-full: it only needs to load SAC and TD3 checkpoints, run Isaac/fake env episodes, and save metrics compatible with the already-completed PR11-lite dataset metrics.
+
+**Inputs**
+- PR6 SAC checkpoints from `scripts.train_sac_continuous`.
+- PR7 TD3 checkpoints from `scripts.train_td3_continuous`.
+- PR2.5 env wrapper and PR11-lite metric definitions.
+- PR8-lite collector only if the eval run also saves rollout HDF5 for inspection.
+
+**Outputs**
+- `scripts.eval_checkpoint_continuous` with `--agent-type/--agent_type sac|td3`.
+- Metrics JSON files such as `logs/eval_sac.json` and `logs/eval_td3.json`.
+- Optional eval rollout HDF5 files using the PR8-lite schema.
+
+**CLI Contract**
+
+```bash
+python -m scripts.eval_checkpoint_continuous \
+  --agent_type sac \
+  --checkpoint ./checkpoints/sac_franka_final.pt \
+  --num_episodes 20 \
+  --num-parallel-envs 1 \
+  --settle-steps 600 \
+  --seed 0 \
+  --device cuda:0 \
+  --save_metrics ./logs/eval_sac.json \
+  --save_dataset ./data/eval_sac_rollouts.h5
+```
+
+Required args:
+- `--agent_type {sac,td3}`
+- `--checkpoint PATH`
+- `--save_metrics PATH`
+
+Optional but recommended args:
+- `--save_dataset PATH` for post-hoc inspection with the existing HDF5 tools.
+- `--include-debug-images` when eval rollouts should be visually inspectable.
+- `--deterministic` defaulting to true for checkpoint comparison.
+- `--settle-steps 600` for final SAC-vs-TD3 comparisons; smaller values such as `20` are allowed only for smoke/debug runs and must be recorded in metrics.
+
+**Metrics JSON Contract**
+
+Minimum required fields:
+
+```json
+{
+  "agent_type": "sac",
+  "checkpoint": "checkpoints/sac_franka_final.pt",
+  "env_id": "Isaac-Lift-Cube-Franka-IK-Rel-v0",
+  "num_eval_episodes": 20,
+  "num_env_steps": 500000,
+  "mean_return": 0.0,
+  "success_rate": 0.0,
+  "mean_episode_length": 100.0,
+  "mean_action_jerk": 0.0,
+  "success_threshold_m": 0.02,
+  "success_source": "proprio_cube_to_target_norm",
+  "episode_successes": {}
+}
+```
+
+`num_env_steps` should be loaded from checkpoint metadata when available. If an older checkpoint does not contain it, write `null` and include a warning field rather than fabricating the value.
+
+**Implementation**
+- Load SAC or TD3 checkpoint and construct the matching deterministic eval policy.
+- Run `num_episodes` with the camera-enabled Isaac env or a fake env in tests.
+- Compute mean return, success rate, mean episode length, mean action jerk, and per-episode diagnostics using the same definitions as PR11-lite.
+- Compute action jerk inline during rollout even when `--save_dataset` is not provided. If `--save_dataset` is provided, optionally verify the offline HDF5 jerk matches the inline value on deterministic fake rollouts.
+- Support `--settle-steps`, `--num-parallel-envs`, `--seed`, `--device`, and camera/debug-camera names.
+- Fail readably for missing checkpoints, unknown agent types, or checkpoint/action-dim mismatches.
+- Read `num_env_steps`, deterministic action mode, env/action/proprio/image contract, and algorithm hyperparameters from checkpoint metadata.
+- Do not add PPO/GRPO/Diffusion checkpoint loading in this PR.
+
+**How To Test**
+- Verify fake SAC and fake TD3 checkpoints route to the correct policy loader.
+- Verify returned metrics match PR11-lite metrics when saving and re-reading a deterministic fake rollout.
+- Verify `num_envs=1` and `num_envs>1` evaluation preserves episode counts.
+- Verify deterministic eval is repeatable with fixed seed.
+- Verify missing checkpoint, unknown agent type, and wrong action dimension fail readably.
+- Verify metrics JSON contains the minimum required fields and does not invent `num_env_steps`.
+- Verify optional `--save_dataset` writes PR8-lite-compatible HDF5 episodes.
+- Verify action jerk is computed when `--save_dataset` is omitted.
+- Verify `settle_steps` is recorded in metrics and eval HDF5 metadata when present.
+- Verify PR6/PR7 checkpoints without required new metadata fail, while explicitly marked legacy checkpoints may write `num_env_steps: null` with a warning.
+
+**Acceptance Criteria**
+
+PR11a is complete when both commands work against fake checkpoints in tests:
+
+```bash
+python -m scripts.eval_checkpoint_continuous --agent_type sac ...
+python -m scripts.eval_checkpoint_continuous --agent_type td3 ...
+```
+
+and live Isaac evaluation can be run after real PR6/PR7 checkpoints exist without changing the metrics schema.
+
+**Pytest**
+
+```bash
+pytest tests/test_eval_sac_td3_checkpoints.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(eval): add SAC and TD3 checkpoint evaluation"
+```
+
+---
+
+### PR 12a — SAC/TD3 Checkpoint Visual Rollouts
+
+**Goal / Why**
+
+Add the first trained-checkpoint visualization path, with outputs matching the style of `scripts.demo_data_loop`: fixed-debug-camera GIF/MP4 plus sampled debug PNGs and optional overlay text. This proves SAC and TD3 can be inspected visually before the full multi-method comparison grid exists.
+
+**Inputs**
+- PR6 SAC checkpoint and PR7 TD3 checkpoint.
+- PR11a checkpoint loading/eval policy adapters.
+- PR12-lite GIF/MP4/debug-frame recorder.
+- PR2.5 debug-camera accessor and target-overlay projection support.
+
+**Outputs**
+- `scripts.record_gif_continuous` with `--agent-type/--agent_type sac|td3`.
+- Visual artifacts:
+
+```text
+out/gifs/sac_seed0.gif
+out/gifs/sac_seed0.mp4
+out/gifs/td3_seed0.gif
+out/gifs/td3_seed0.mp4
+out/debug_frames/sac_seed0/
+out/debug_frames/td3_seed0/
+```
+
+**CLI Contract**
+
+```bash
+python -m scripts.record_gif_continuous \
+  --agent_type sac \
+  --checkpoint ./checkpoints/sac_franka_final.pt \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 600 \
+  --gif-max-steps 100 \
+  --target-overlay text-reticle \
+  --save_gif ./out/gifs/sac_seed0.gif \
+  --save_mp4 ./out/gifs/sac_seed0.mp4 \
+  --save-debug-frames-dir ./out/debug_frames/sac_seed0 \
+  --save_metrics ./logs/visual_sac_seed0_metrics.json
+```
+
+Required args:
+- `--agent_type {sac,td3}`
+- `--checkpoint PATH`
+- `--save_gif PATH`
+
+Optional outputs:
+- `--save_mp4 PATH`
+- `--save-debug-frames-dir PATH`
+- `--save_metrics PATH`, written after the visual rollout so overlay metrics and saved JSON agree.
+
+For final comparisons, use the same `--settle-steps` value as PR11a evaluation. The recommended final comparison value is `600`; smaller values are acceptable only for smoke/debug artifacts and must be visible in metrics/metadata.
+
+**Output Semantics**
+
+- GIF/MP4/debug PNGs use the fixed debug camera.
+- Policy actions are computed only from wrist RGB plus 40D proprio.
+- Overlay text may show policy, return, success, jerk, step, seed, and target reticle/pixel when projection is available.
+- The script should not write fixed-debug-camera frames into the policy `images` stream.
+
+**Implementation**
+- Load SAC or TD3 checkpoint and roll out deterministic actions.
+- Keep policy input as wrist RGB + 40D proprio.
+- Record visual frames from the fixed debug camera only.
+- Reuse PR12-lite overlay utilities for policy name, return, success, jerk, seed, and optional target text/reticle.
+- Support `--settle-steps`, `--target-overlay`, `--gif-max-steps`, `--save-gif`, `--save-mp4`, and `--save-debug-frames-dir`.
+- Compute return/success/jerk inline during the visual rollout or consume a PR11a metrics payload that was generated under the same checkpoint, seed, and settle-step contract.
+- Do not implement side-by-side grids or PPO/GRPO/Diffusion visualization in this PR.
+
+**How To Test**
+- Verify fake SAC/TD3 checkpoint policies create GIF, MP4, and sampled PNG outputs.
+- Verify GIF frames come from `get_debug_frame(...)`, not `obs["image"]`.
+- Verify overlay text can consume PR11a metrics payload.
+- Verify missing checkpoint and unknown agent type fail readably.
+- Verify output directories are created automatically.
+- Verify `--save_metrics` and overlay payload use the same return/success/jerk values.
+- Verify `--target-overlay text-reticle` gracefully falls back to text-only when projection is unavailable.
+- Verify final-comparison mode rejects mismatched PR11a metrics when checkpoint, seed, or `settle_steps` differ.
+
+**Acceptance Criteria**
+
+PR12a is complete when fake checkpoint tests produce non-empty GIF/MP4/PNG files for both SAC and TD3, and live Isaac can run:
+
+```bash
+python -m scripts.record_gif_continuous --agent_type sac ...
+python -m scripts.record_gif_continuous --agent_type td3 ...
+```
+
+after PR6/PR7 checkpoints exist.
+
+**Pytest**
+
+```bash
+pytest tests/test_visual_sac_td3_checkpoints.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(viz): add SAC and TD3 checkpoint GIFs"
+```
+
+---
+
 ### PR 8-full — SAC Expert Demonstration Collection
 
 **Goal / Why**
@@ -1432,6 +1864,7 @@ Collect SAC expert demonstrations in the episode-safe HDF5 format that PR8-lite 
 
 **Inputs**
 - PR6 `SACAgent` checkpoint with deterministic oracle mode.
+- PR11a/PR12a metrics and visual checks confirming the SAC checkpoint is worth using as an oracle.
 - PR8-lite rollout dataset schema and collector conventions.
 - PR2.5 camera-enabled Isaac env and 7D action contract.
 
@@ -1714,6 +2147,7 @@ git commit -m "feat(il): add DAgger fine-tuning loop"
 Provide one full online evaluator that works for RL agents and Diffusion Policy agents, so all methods are compared with the same metrics. PR11-lite already evaluates rollout HDF5 files; PR11-full adds checkpoint/agent evaluation against envs.
 
 **Inputs**
+- PR11a SAC/TD3 checkpoint evaluation path.
 - PR11-lite dataset metrics functions.
 - Agent deployment interfaces from PR4-7 and PR9c/PR10.
 - PR2.5 env wrapper and optional PR8-lite collector when saving eval rollouts.
@@ -1724,7 +2158,7 @@ Provide one full online evaluator that works for RL agents and Diffusion Policy 
 - Optional eval rollout HDF5 files for post-hoc inspection.
 
 **Implementation**
-- Add `evaluate_agent()`.
+- Generalize `evaluate_agent()` beyond the PR11a SAC/TD3-only scope.
 - Track mean return, success rate, episode length, action jerk, and optional steps-to-threshold.
 - Add adapter for diffusion action chunks using an action queue.
 - Support deterministic evaluation.
@@ -1763,6 +2197,7 @@ git commit -m "feat(eval): add checkpoint evaluation loop"
 Create visual artifacts that make the project easy to inspect. PR12-lite already records debug-camera GIF/MP4 outputs for demo policies; PR12-full adds checkpoint-based visual comparison, side-by-side grids, and summary plots for trained methods.
 
 **Inputs**
+- PR12a SAC/TD3 checkpoint visual rollout path.
 - PR12-lite GIF/MP4/debug-frame recorder.
 - PR11-full checkpoint evaluator and metric files.
 - Agent checkpoints from PR4-7, PR9c, and PR10.
@@ -1806,37 +2241,7 @@ git commit -m "feat(viz): add trained-policy comparison outputs"
 
 ---
 
-## 13. PR Roadmap Summary
-
-| PR | Status | What it does | Test command | Suggested commit |
-|---|---|---|---|---|
-| PR 0 | Done | Project scaffold | `pytest tests/test_project_scaffold.py -v` | `chore: scaffold Isaac Lab manipulation project` |
-| PR 1 | Done | IK-relative Franka task + 7D action | `conda run -n isaac_arm python -m pytest tests/test_task_contract.py -v` | `feat(env): add Franka IK-relative lift task config` |
-| PR 2 | Done | Image-proprio observation wrapper | `conda run -n isaac_arm python -m pytest tests/test_observation_wrapper.py -v` | `feat(env): add image-proprio observation wrapper` |
-| PR 2.5 | Done | Camera-enabled Franka lift cfg | `conda run -n isaac_arm python -m pytest tests/test_camera_enabled_env_cfg.py -v` plus live camera smoke | `feat(env): add camera-enabled Franka lift cfg` |
-| PR 8-pre | Done | Demo policy interface, random/heuristic/replay policies | `conda run -n isaac_arm python -m pytest tests/test_demo_policies.py -v` | `feat(policy): add random and heuristic demo policies` |
-| PR 8-lite | Done | Episode-safe rollout HDF5 dataset and collector | `conda run -n isaac_arm python -m pytest tests/test_demo_dataset.py -v` | `feat(data): add episode-safe rollout dataset` |
-| PR 11-lite | Done | Dataset-level rollout metrics | `conda run -n isaac_arm python -m pytest tests/test_eval_metrics.py -v` | `feat(eval): add rollout metrics for data-loop demo` |
-| PR 12-lite | Done | Debug-camera GIF/MP4 and sampled PNG output | `conda run -n isaac_arm python -m pytest tests/test_visual_outputs.py -v` | `feat(viz): add rollout GIF recording` |
-| Demo PR | Done | One-command dataset + metrics + visual artifact loop | `conda run -n isaac_arm python -m pytest tests/test_demo_data_loop.py -v` | `feat(demo): add one-command robotics data loop` |
-| PR 3 | Done | Shared backbone | `pytest tests/test_nn_backbone.py -v` | `feat(model): add image-proprio fusion backbone` |
-| PR 3.5 | Pending | Shared agent primitives, buffers, checkpoints, policy adapter | `pytest tests/test_agent_primitives.py -v` | `feat(agents): add continuous-control agent primitives` |
-| PR 4 | Pending | PPO baseline | `pytest tests/test_ppo_continuous.py -v` | `feat(rl): add continuous PPO baseline` |
-| PR 5 | Pending | Pure GRPO baseline | `pytest tests/test_grpo_continuous.py -v` | `feat(rl): add pure GRPO baseline` |
-| PR 6 | Pending | SAC baseline | `pytest tests/test_sac_continuous.py -v` | `feat(rl): add continuous SAC baseline` |
-| PR 7 | Pending | TD3 baseline | `pytest tests/test_td3_continuous.py -v` | `feat(rl): add continuous TD3 baseline` |
-| PR 8-full | Pending | SAC expert demonstration collection using the existing HDF5 schema | `pytest tests/test_sac_demo_collection.py -v` | `feat(data): collect SAC expert demonstrations` |
-| PR 8.5 | Pending | Diffusion sequence dataset and dataloader I/O contract | `pytest tests/test_diffusion_sequence_dataset.py -v` | `feat(data): add diffusion sequence dataset` |
-| PR 9a | Pending | Diffusion core model and scheduler | `pytest tests/test_diffusion_core.py -v` | `feat(il): add diffusion policy core model` |
-| PR 9b | Pending | Diffusion Policy BC training | `pytest tests/test_diffusion_bc_training.py -v` | `feat(il): train diffusion policy behavior cloning` |
-| PR 9c | Pending | Diffusion Policy DDIM deployment and action queue | `pytest tests/test_diffusion_policy_deployment.py -v` | `feat(il): deploy diffusion policy with DDIM` |
-| PR 10 | Pending | DAgger | `pytest tests/test_dagger_diffusion.py -v` | `feat(il): add DAgger fine-tuning loop` |
-| PR 11-full | Pending | Online checkpoint/agent evaluation | `conda run -n isaac_arm python -m pytest tests/test_eval_agent.py -v` | `feat(eval): add checkpoint evaluation loop` |
-| PR 12-full | Pending | Trained-policy GIFs, side-by-side grids, and plots | `pytest tests/test_visual_comparison_outputs.py -v` | `feat(viz): add trained-policy comparison outputs` |
-
----
-
-## 14. Dependency Graph
+## 13. Dependency Graph
 
 ```text
 PR 0 Project Scaffold
@@ -1873,35 +2278,49 @@ PR 3 Shared Backbone
   v
 PR 3.5 Agent Primitives
   |
-  +--> PR 4 PPO ------------------------------+
-  +--> PR 5 Pure GRPO ------------------------+--> PR 11-full Online evaluation --> PR 12-full visual comparison
-  +--> PR 6 SAC ----+                         |
-  +--> PR 7 TD3 ----+                         |
-                  |                           |
-                  v                           |
-             PR 8-full SAC expert demos       |
-                  |                           |
-                  v                           |
-             PR 8.5 Diffusion sequence data   |
-                  |                           |
-                  v                           |
-             PR 9a Diffusion core             |
-                  |                           |
-                  v                           |
-             PR 9b Diffusion BC training      |
-                  |                           |
-                  v                           |
-             PR 9c Diffusion deployment ------+
-                  |
-                  v
-             PR 10 DAgger --------------------+
+  +--> SAC/TD3-first branch:
+  |      |
+  |      +--> PR 6 SAC train/checkpoints -------+
+  |      +--> PR 7 TD3 train/checkpoints -------+
+  |                                            |
+  |                                            v
+  |                                      PR 11a SAC/TD3 eval
+  |                                            |
+  |                                            v
+  |                                      PR 12a SAC/TD3 GIF/MP4
+  |                                            |
+  |                                            v
+  |                                      PR 8-full SAC expert demos
+  |                                            |
+  |                                            v
+  |                                      PR 8.5 Diffusion sequence data
+  |                                            |
+  |                                            v
+  |                                      PR 9a Diffusion core
+  |                                            |
+  |                                            v
+  |                                      PR 9b Diffusion BC training
+  |                                            |
+  |                                            v
+  |                                      PR 9c Diffusion deployment
+  |                                            |
+  |                                            v
+  |                                      PR 10 DAgger
+  |
+  +--> Later on-policy branch:
+         |
+         +--> PR 4 PPO
+         +--> PR 5 Pure GRPO
+
+PR11-full generalizes PR11a to PPO/GRPO/Diffusion/DAgger after those agents exist.
+PR12-full generalizes PR12a to full side-by-side visual comparison and plots.
 
 PR11-lite and PR12-lite remain reusable by full PRs for dataset metrics and debug-camera visual artifact generation.
 ```
 
 ---
 
-## 15. Global Test Commands
+## 14. Global Test Commands
 
 Fast CPU/unit tests, no Isaac Sim required:
 
@@ -1954,6 +2373,9 @@ Single PR examples:
 pytest tests/test_nn_backbone.py -v
 pytest tests/test_agent_primitives.py -v
 pytest tests/test_sac_continuous.py -v
+pytest tests/test_td3_continuous.py -v
+pytest tests/test_eval_sac_td3_checkpoints.py -v
+pytest tests/test_visual_sac_td3_checkpoints.py -v
 pytest tests/test_sac_demo_collection.py -v
 pytest tests/test_diffusion_sequence_dataset.py -v
 pytest tests/test_diffusion_core.py -v
@@ -1965,9 +2387,11 @@ pytest tests/test_visual_comparison_outputs.py -v
 
 ---
 
-## 16. Example Run Commands
+## 15. Example Run Commands
 
-Train SAC expert:
+### 15.1 SAC/TD3-First Train + Eval + Visualize
+
+Train SAC:
 
 ```bash
 python -m scripts.train_sac_continuous \
@@ -1976,11 +2400,86 @@ python -m scripts.train_sac_continuous \
   --total_envsteps 500000 \
   --batch_size 256 \
   --replay_buffer_size 200000 \
+  --warmup_steps 5000 \
+  --replay_storage cpu \
+  --utd-ratio 1 \
+  --polyak-tau 0.005 \
+  --initial-alpha 0.2 \
+  --target-entropy auto \
+  --eval-every-env-steps 10000 \
+  --eval-settle-steps 600 \
   --learning_rate 3e-4 \
   --tb_log_dir ./logs/sac_franka \
   --checkpoint_dir ./checkpoints \
   --checkpoint_name sac_franka
 ```
+
+Train TD3:
+
+```bash
+python -m scripts.train_td3_continuous \
+  --env_id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num_envs 64 \
+  --total_envsteps 500000 \
+  --batch_size 256 \
+  --replay_buffer_size 200000 \
+  --warmup_steps 5000 \
+  --replay_storage cpu \
+  --utd-ratio 1 \
+  --polyak-tau 0.005 \
+  --policy-delay 2 \
+  --exploration-noise-sigma 0.1 \
+  --target-noise-sigma 0.2 \
+  --target-noise-clip 0.5 \
+  --eval-every-env-steps 10000 \
+  --eval-settle-steps 600 \
+  --learning_rate 3e-4 \
+  --tb_log_dir ./logs/td3_franka \
+  --checkpoint_dir ./checkpoints \
+  --checkpoint_name td3_franka
+```
+
+Evaluate SAC and TD3 checkpoints:
+
+```bash
+python -m scripts.eval_checkpoint_continuous \
+  --agent_type sac \
+  --checkpoint ./checkpoints/sac_franka_final.pt \
+  --num_episodes 20 \
+  --settle-steps 600 \
+  --save_metrics ./logs/eval_sac.json
+
+python -m scripts.eval_checkpoint_continuous \
+  --agent_type td3 \
+  --checkpoint ./checkpoints/td3_franka_final.pt \
+  --num_episodes 20 \
+  --settle-steps 600 \
+  --save_metrics ./logs/eval_td3.json
+```
+
+Record SAC and TD3 debug-camera GIF/MP4 artifacts:
+
+```bash
+python -m scripts.record_gif_continuous \
+  --agent_type sac \
+  --checkpoint ./checkpoints/sac_franka_final.pt \
+  --settle-steps 600 \
+  --target-overlay text-reticle \
+  --save_gif ./out/gifs/sac_seed0.gif \
+  --save_mp4 ./out/gifs/sac_seed0.mp4 \
+  --save-debug-frames-dir ./out/debug_frames/sac_seed0
+
+python -m scripts.record_gif_continuous \
+  --agent_type td3 \
+  --checkpoint ./checkpoints/td3_franka_final.pt \
+  --settle-steps 600 \
+  --target-overlay text-reticle \
+  --save_gif ./out/gifs/td3_seed0.gif \
+  --save_mp4 ./out/gifs/td3_seed0.mp4 \
+  --save-debug-frames-dir ./out/debug_frames/td3_seed0
+```
+
+### 15.2 Diffusion / DAgger Follow-Up
 
 Collect demonstrations:
 
