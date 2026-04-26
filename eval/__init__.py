@@ -1,5 +1,10 @@
 """Evaluation and visualization helpers for manipulation experiments."""
 
+from .checkpoint_eval import (
+    EvalCheckpointMetrics,
+    evaluate_episodes,
+    metadata_to_eval_fields,
+)
 from .eval_loop import (
     CUBE_POS_BASE_SLICE,
     CUBE_TO_TARGET_SLICE,
@@ -49,8 +54,11 @@ __all__ = [
     "SUCCESS_SOURCE_MIXED",
     "SUCCESS_SOURCE_PROPRIO",
     "TARGET_POS_BASE_SLICE",
+    "EvalCheckpointMetrics",
     "EvalMetrics",
     "closest_target_approach_by_episode",
+    "evaluate_episodes",
+    "metadata_to_eval_fields",
     "cube_positions_from_proprio",
     "cube_to_target_distances",
     "cube_to_target_vectors",
