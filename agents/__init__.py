@@ -45,6 +45,8 @@ from .replay_buffer import (
     estimate_replay_memory,
     make_dummy_transition,
 )
+from .sac import SAC_AGENT_TYPE, SACAgent, SACConfig
+from .torch_image_aug import PadAndRandomCropTorch
 
 __all__ = [
     "CheckpointMetadata",
@@ -68,8 +70,12 @@ __all__ = [
     "ImageProprioBackbone",
     "ImageProprioBackboneConfig",
     "POLICY_IMAGE_SHAPE",
+    "PadAndRandomCropTorch",
     "QHead",
     "REPLAY_STORAGE_CPU_UINT8",
+    "SACAgent",
+    "SACConfig",
+    "SAC_AGENT_TYPE",
     "ReplayBatch",
     "ReplayBuffer",
     "ReplayMemoryEstimate",
