@@ -88,7 +88,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `19 passed`; full pytest at PR6.5 commit -> `244 passed, 1 skipped` (superseded by PR6.6 row below for current full-suite count) | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
 | PR 6.6 - Running obs/action normalization | Done | `agents.normalization` running per-dimension proprio mean/std, optional channel-wise image running mean/std (`--image-normalization none|per_channel_running_mean_std`, default off), explicit `bidirectional_env_learner_affine` action normalizer, checkpointed `normalizer_state`, SAC/TD3 train/eval/checkpoint policy consistency, optional angle sin/cos primitive only for true wrap-around angle features | `tests/test_normalization.py` + SAC/TD3 checks -> `47 passed`; full pytest -> `259 passed, 1 skipped` | Serious SAC/TD3 training can now use normalized proprio inputs, optional train-lane-only image channel stats, and stable learner-action/env-action conversion; replay still stores raw env observations/actions. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
-| PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. **Currently the only blocker for the SAC train -> eval -> GIF end-to-end goal**; PR6/PR6.5/PR6.6/PR11a are all done. |
+| PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
 | PR 8.5 - Diffusion sequence dataset | Pending | `(B,T_obs,3,224,224)`, `(B,T_obs,40)`, `(B,H,7)` sequence dataloader | Planned test: `tests/test_diffusion_sequence_dataset.py` | Bridge from HDF5 episodes to Diffusion training batches. |
 | PR 9a - Diffusion core | Pending | Noise schedule, timestep embeddings, conditioned temporal denoiser | Planned test: `tests/test_diffusion_core.py` | Model only; no BC train script yet. |
@@ -2098,6 +2098,10 @@ Add the first trained-checkpoint visualization path, with outputs matching the s
 
 **Outputs**
 - `scripts.record_gif_continuous` with `--agent-type/--agent_type sac|td3`.
+- Shared visual wrappers in `eval.visual_helpers`:
+  - `SettledResetEnv` for zero-action reset warmup,
+  - `TargetOverlayEnv` for debug-camera target text/reticle,
+  - `target_projection_payload(...)` for metrics JSON target-pixel diagnostics.
 - Visual artifacts:
 
 ```text
@@ -2135,6 +2139,7 @@ Optional outputs:
 - `--save_mp4 PATH`
 - `--save-debug-frames-dir PATH`
 - `--save_metrics PATH`, written after the visual rollout so overlay metrics and saved JSON agree.
+- `--metrics-payload PATH` / `--pr11a-metrics PATH`, optional PR11a eval metrics used for final-comparison overlay text. The script rejects mismatched checkpoint, seed, settle steps, agent type, or deterministic mode before recording.
 
 For final comparisons, use the same `--settle-steps` value as PR11a evaluation. The recommended final comparison value is `600`; smaller values are acceptable only for smoke/debug artifacts and must be visible in metrics/metadata.
 
@@ -2144,29 +2149,26 @@ For final comparisons, use the same `--settle-steps` value as PR11a evaluation. 
 - Policy actions are computed only from wrist RGB plus 40D proprio.
 - Overlay text may show policy, return, success, jerk, step, seed, and target reticle/pixel when projection is available.
 - The script should not write fixed-debug-camera frames into the policy `images` stream.
+- By default, metrics are computed from the exact rollout being recorded, so `--save_metrics` and overlay text refer to the same episode. If an external PR11a metrics payload is supplied, the JSON keeps those final-comparison metrics at top level and stores the recorded single-episode metrics under `visual_rollout_metrics`.
 
 **Implementation**
 - Load SAC or TD3 checkpoint and roll out deterministic actions.
 - Keep policy input as wrist RGB + 40D proprio.
 - Record visual frames from the fixed debug camera only.
-- Reuse PR12-lite overlay utilities for policy name, return, success, jerk, seed, and optional target text/reticle.
+- Reuse PR12-lite recorder plus shared `eval.visual_helpers` for settle reset, target text/reticle, and target pixel projection diagnostics.
 - Support `--settle-steps`, `--target-overlay`, `--gif-max-steps`, `--save-gif`, `--save-mp4`, and `--save-debug-frames-dir`.
-- Compute return/success/jerk inline during the visual rollout or consume a PR11a metrics payload that was generated under the same checkpoint, seed, and settle-step contract.
+- Compute return/success/jerk inline during the visual rollout by wrapping the env and buffering the selected lane's policy images, proprio, actions, rewards, done/truncated, and optional success flags. External PR11a metrics payloads are accepted only after contract validation.
 - Do not implement side-by-side grids or PPO/GRPO/Diffusion visualization in this PR.
 
 **How To Test**
-- Verify fake SAC/TD3 checkpoint policies create GIF, MP4, and sampled PNG outputs.
-- Verify GIF frames come from `get_debug_frame(...)`, not `obs["image"]`.
-- Verify overlay text can consume PR11a metrics payload.
-- Verify missing checkpoint and unknown agent type fail readably.
-- Verify output directories are created automatically.
-- Verify `--save_metrics` and overlay payload use the same return/success/jerk values.
-- Verify `--target-overlay text-reticle` gracefully falls back to text-only when projection is unavailable.
-- Verify final-comparison mode rejects mismatched PR11a metrics when checkpoint, seed, or `settle_steps` differ.
+- `tests/test_visual_sac_td3_checkpoints.py` verifies fake SAC/TD3 checkpoints create GIF, MP4, sampled PNGs, and metrics JSON.
+- It checks debug frames come from the fixed debug camera rather than `obs["image"]`, output directories are created automatically, target reticle overlays draw when projection is available, and projection absence falls back cleanly.
+- It checks missing checkpoint and unknown agent types fail readably.
+- It checks external PR11a metrics payloads can drive overlay/top-level saved metrics and rejects mismatched seed/checkpoint/settle/agent contracts before recording.
 
 **Acceptance Criteria**
 
-PR12a is complete when fake checkpoint tests produce non-empty GIF/MP4/PNG files for both SAC and TD3, and live Isaac can run:
+PR12a is complete when fake checkpoint tests produce non-empty GIF/MP4/PNG files for both SAC and TD3, same-rollout metrics JSON is written, and live Isaac can run:
 
 ```bash
 python -m scripts.record_gif_continuous --agent_type sac ...

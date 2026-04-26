@@ -42,6 +42,18 @@ from .gif_recorder import (
     save_mp4,
     save_sampled_debug_frames,
 )
+from .visual_helpers import (
+    TARGET_OVERLAY_CHOICES,
+    TARGET_OVERLAY_NONE,
+    TARGET_OVERLAY_RETICLE,
+    TARGET_OVERLAY_TEXT,
+    TARGET_OVERLAY_TEXT_RETICLE,
+    TARGET_RETICLE_COLOR,
+    SettledResetEnv,
+    TargetOverlayEnv,
+    draw_target_overlay,
+    target_projection_payload,
+)
 
 __all__ = [
     "CUBE_POS_BASE_SLICE",
@@ -80,4 +92,14 @@ __all__ = [
     "save_gif",
     "save_mp4",
     "save_sampled_debug_frames",
+    "TARGET_OVERLAY_CHOICES",
+    "TARGET_OVERLAY_NONE",
+    "TARGET_OVERLAY_RETICLE",
+    "TARGET_OVERLAY_TEXT",
+    "TARGET_OVERLAY_TEXT_RETICLE",
+    "TARGET_RETICLE_COLOR",
+    "SettledResetEnv",
+    "TargetOverlayEnv",
+    "draw_target_overlay",
+    "target_projection_payload",
 ]
