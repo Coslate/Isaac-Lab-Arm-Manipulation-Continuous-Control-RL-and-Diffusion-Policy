@@ -46,6 +46,7 @@ from .replay_buffer import (
     make_dummy_transition,
 )
 from .sac import SAC_AGENT_TYPE, SACAgent, SACConfig
+from .td3 import TD3_AGENT_TYPE, TD3Agent, TD3Config
 from .torch_image_aug import PadAndRandomCropTorch
 
 __all__ = [
@@ -76,6 +77,9 @@ __all__ = [
     "SACAgent",
     "SACConfig",
     "SAC_AGENT_TYPE",
+    "TD3Agent",
+    "TD3Config",
+    "TD3_AGENT_TYPE",
     "ReplayBatch",
     "ReplayBuffer",
     "ReplayMemoryEstimate",

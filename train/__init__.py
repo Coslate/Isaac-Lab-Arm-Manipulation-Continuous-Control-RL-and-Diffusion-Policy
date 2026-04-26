@@ -15,6 +15,11 @@ from .sac_loop import (
     SACTrainLoopReport,
     run_sac_train_loop,
 )
+from .td3_loop import (
+    TD3TrainLoopConfig,
+    TD3TrainLoopReport,
+    run_td3_train_loop,
+)
 
 __all__ = [
     "DEFAULT_BATCH_SIZE",
@@ -26,6 +31,9 @@ __all__ = [
     "RewardProbeReport",
     "SACTrainLoopConfig",
     "SACTrainLoopReport",
+    "TD3TrainLoopConfig",
+    "TD3TrainLoopReport",
     "probe_reward_signal",
     "run_sac_train_loop",
+    "run_td3_train_loop",
 ]
