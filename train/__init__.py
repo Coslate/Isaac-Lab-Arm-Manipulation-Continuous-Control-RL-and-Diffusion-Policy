@@ -26,6 +26,11 @@ from .lr_scheduler import (
     scheduler_collection_state,
 )
 from .progress import TrainProgressReporter
+from .rollout_metrics import (
+    LaneEpisodeMetricTracker,
+    infer_successes,
+    split_train_eval_lanes,
+)
 from .sac_loop import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_REPLAY_CAPACITY,
@@ -48,6 +53,7 @@ __all__ = [
     "DEFAULT_WARMUP_STEPS",
     "CompositeLogger",
     "JSONLinesLogger",
+    "LaneEpisodeMetricTracker",
     "LearningRateScheduler",
     "RewardProbeError",
     "RewardProbeReport",
@@ -63,6 +69,7 @@ __all__ = [
     "TrainProgressReporter",
     "WandbLogger",
     "estimate_total_update_steps",
+    "infer_successes",
     "load_scheduler_collection_state",
     "make_scheduler",
     "optimizer_lr",
@@ -70,4 +77,5 @@ __all__ = [
     "run_sac_train_loop",
     "run_td3_train_loop",
     "scheduler_collection_state",
+    "split_train_eval_lanes",
 ]

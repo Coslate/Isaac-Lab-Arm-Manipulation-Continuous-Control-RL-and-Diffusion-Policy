@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-04-25. The repository has completed the interview/demo vertical slice from
+Updated 2026-04-26. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -56,8 +56,9 @@ policy rollout -> episode-safe dataset -> metrics -> GIF/MP4/debug PNGs
 ```
 
 The current code base proves the robot-learning data and evaluation loop against the live
-Isaac backend. The full research-training stack is still the next phase: shared backbone,
-PPO, pure GRPO, SAC, TD3, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
+Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, and live-monitor scaffolding.
+The remaining research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion
+Policy BC, and DAgger.
 
 Runtime requirement for live Isaac commands:
 - On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
@@ -84,7 +85,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 3.5 - Agent primitives | Done | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, fake-checkpoint factory, `CheckpointPolicy` adapter | `tests/test_agent_primitives.py` -> `21 passed` | Lays the off-policy + checkpoint infrastructure for PR6/PR7/PR11a/PR12a. |
 | PR 6 - SAC train | Done | `SACAgent`, online replay training, deterministic oracle mode (`tanh_mu`), `scripts.train_sac_continuous`, fake-env smoke + reward-probe | `tests/test_sac_continuous.py` -> `15 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
 | PR 7 - TD3 train | Done | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous`, shares replay format with SAC | `tests/test_td3_continuous.py` -> `17 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
-| PR 6.5 - Training logger + LR scheduler + periodic eval | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console tqdm/fallback progress for SAC/TD3 with env-step and train-update refresh cadence, in-loop scheduler hooks (step LR + warmup-cosine), fake-env `eval_every_env_steps` periodic eval that emits `eval/*` keys, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `10 passed`; full pytest -> `235 passed, 1 skipped` | Live Isaac in-loop eval is guarded off because a second Isaac env can close the simulator; use `--eval-every-env-steps 0` during live training and PR11a for checkpoint eval. |
+| PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `19 passed`; full pytest -> `244 passed, 1 skipped` | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -769,6 +770,11 @@ The dataset must be episode-safe. Sampling windows must never cross `done` or `t
 | replay_storage | N/A | N/A | CPU/disk uint8 images | CPU/disk uint8 images | N/A | N/A |
 | warmup_steps | N/A | N/A | 5k transitions | 5k transitions | N/A | N/A |
 | eval_every_env_steps | N/A | N/A | 10k | 10k | N/A | N/A |
+| same_env_eval_lanes | N/A | N/A | 0 default; set `1+` for live monitor | 0 default; set `1+` for live monitor | N/A | N/A |
+| same_env_eval_start_env_steps | N/A | N/A | 0 default; use warmup/50k+ for real runs | 0 default; use warmup/50k+ for real runs | N/A | N/A |
+| rollout_metrics_window | N/A | N/A | 20 completed episodes | 20 completed episodes | N/A | N/A |
+| settle_steps | N/A | N/A | 0 smoke; 20/600 if needed | 0 smoke; 20/600 if needed | N/A | N/A |
+| per_lane_settle_steps | N/A | N/A | 0 default; 20 if reset settling is needed | 0 default; 20 if reset settling is needed | N/A | N/A |
 | utd_ratio | N/A | N/A | 1 | 1 | N/A | N/A |
 | polyak_tau | N/A | N/A | 0.005 | 0.005 | N/A | N/A |
 | sac_target_entropy | N/A | N/A | `-action_dim` | N/A | N/A | N/A |
@@ -785,7 +791,12 @@ The dataset must be episode-safe. Sampling windows must never cross `done` or `t
 
 For SAC/TD3:
 - `warmup_steps` is measured in individual replay transitions, not vectorized `env.step()` calls; one 64-env Isaac step can add up to 64 transitions.
-- `eval_every_env_steps=10000` means run deterministic eval rollouts every 10k individual env transitions and log the §8.3 eval keys.
+- `eval_every_env_steps=10000` means run deterministic eval rollouts every 10k individual env transitions and log the §8.3 eval keys. This separate-env path is for fake-env smoke tests and future out-of-process eval; live Isaac training should keep it at `0` until a safe external evaluator owns that path.
+- `same_env_eval_lanes=N` reserves the last `N` vectorized Isaac lanes for deterministic current-policy monitoring inside the already-running training env. Those lanes do not enter replay, do not drive warmup/update counts, and log under `eval_rollout/*`.
+- `same_env_eval_start_env_steps=K` delays same-env eval metrics until `K` training transitions have elapsed, then waits for each eval lane's next done/reset boundary before recording a clean episode.
+- `rollout_metrics_window=20` is the rolling completed-episode window for `train_rollout/*` and `eval_rollout/*` episode metrics.
+- `settle_steps=S` runs `S` zero-action physics steps immediately after the explicit training env reset. These settle transitions are not logged, not stored in replay, and do not increment `env_steps`.
+- `per_lane_settle_steps=S` runs `S` zero-action cooldown steps after an individual vectorized lane reports done/truncated and Isaac auto-resets that lane. Cooldown transitions are not stored in replay, do not increment `env_steps`, and are masked out of rollout/eval episode metrics while other lanes continue normally.
 - `utd_ratio=1` means one gradient update per env step after warmup unless explicitly changed.
 - `polyak_tau=0.005` means target parameters update as `target = (1 - tau) * target + tau * online`.
 - TD3 exploration noise is added to actor actions during data collection; target smoothing noise is added only in target-Q computation.
@@ -830,6 +841,14 @@ Logging key contract:
 - `train/q_mean`
 - `train/replay_size`
 - `train/num_env_steps`
+- `train_rollout/mean_return`
+- `train_rollout/success_rate`
+- `train_rollout/mean_episode_length`
+- `train_rollout/episode_count`
+- `eval_rollout/mean_return`
+- `eval_rollout/success_rate`
+- `eval_rollout/mean_episode_length`
+- `eval_rollout/episode_count`
 - `eval/mean_return`
 - `eval/success_rate`
 - `eval/mean_episode_length`
@@ -837,7 +856,7 @@ Logging key contract:
 
 Use these exact keys in TensorBoard/CSV/JSON logs where applicable so comparison scripts do not need method-specific adapters.
 
-After PR6.5, SAC/TD3 training rollouts should run eval on the `eval_every_env_steps=10000` cadence from §8.2, using deterministic actions, a separate eval env, and `eval_settle_steps=600` for final comparison logs. Smoke/debug runs may use fewer settle steps, but must not overwrite final-comparison metrics.
+After PR6.5, live Isaac SAC/TD3 training should set `--eval-every-env-steps 0` and use `--same-env-eval-lanes N` for train-time deterministic monitoring in the already-running Isaac env. Final comparison logs still come from PR11a checkpoint evaluation with deterministic actions and `eval_settle_steps=600`. Smoke/debug fake-env runs may use separate periodic `eval/*` with fewer settle steps, but must not overwrite final-comparison metrics.
 
 ---
 
@@ -1639,15 +1658,20 @@ git commit -m "feat(rl): add continuous TD3 baseline"
 
 ---
 
-### PR 6.5 — Training Logger, LR Scheduler, And Periodic Eval
+### PR 6.5 — Training Logger, LR Scheduler, And Live Monitors
 
 **Goal / Why**
 
 PR6 and PR7 currently log only the final-step scalars to a JSON file. Long Isaac SAC/TD3 runs need:
 
 - live training-loss curves (critic, actor, alpha, q_mean, entropy, replay_size, learning rate),
-- terminal-side training progress that shows env-step progress plus the latest train losses and eval metrics during long runs,
-- periodic in-loop evaluation rollouts that emit `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`,
+- terminal-side training progress that shows env-step progress plus the latest train losses, training rollout metrics, and eval metrics during long runs,
+- training rollout episode metrics that summarize the exploratory lanes actually entering replay,
+- same-Isaac-env deterministic eval lanes for live train-time monitoring without constructing a second Isaac env,
+- delayed same-env eval metric start so untrained/warmup policy episodes do not pollute the live eval curve,
+- training reset settle steps so replay collection starts from a post-reset stabilized scene when requested,
+- per-lane post-auto-reset settle steps so vectorized lanes can cool down independently after done/truncated without stopping sibling lanes,
+- periodic fake/separate-env evaluation rollouts that emit `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`,
 - the §8.3 log-key contract actually wired to TensorBoard and/or wandb,
 - a learning-rate scheduler so the same code path can run a fixed-LR baseline and the recommended warmup + cosine annealing schedule.
 
@@ -1666,7 +1690,8 @@ This PR closes that gap before §10.1 measured results are populated.
   - `WandbLogger` (`--wandb-project`, `--wandb-run-name`, `--wandb-mode online|offline|disabled`),
   - `JSONLinesLogger` always-on fallback that writes one JSON object per step to `logs/<run_name>_train.jsonl`,
   - `CompositeLogger` that fan-outs to any subset of the above without method-specific glue.
-- New module `train/progress.py` with `TrainProgressReporter`, a tqdm-backed console progress helper with plain-stderr fallback. It advances the bar on every vectorized env step, keeps moving during replay warmup, and prints separate one-line `train` / `eval` metric records instead of hiding losses in the tqdm postfix. Loss printing can be throttled by optimizer-update count, so long runs can show losses every N SAC/TD3 train updates even when env-step reporting is sparse.
+- New module `train/progress.py` with `TrainProgressReporter`, a tqdm-backed console progress helper with plain-stderr fallback and optional `--progress-log` text-file mirroring. It advances the bar on every vectorized env step, keeps moving during replay warmup, and prints/writes separate one-line `train` / `eval` metric records instead of hiding losses in the tqdm postfix. Loss printing can be throttled by optimizer-update count, so long runs can show losses every N SAC/TD3 train updates even when env-step reporting is sparse.
+- New module `train/rollout_metrics.py` with per-lane episode trackers, success inference from `info["success"]` / `info["is_success"]`, and the same `norm(proprio[:, 30:33]) <= 0.02` fallback used by PR11-lite dataset metrics.
 - New module `train/lr_scheduler.py` with:
   - `make_scheduler(scheduler_type, optimizer, *, warmup_steps, total_update_steps, ...)`,
   - `scheduler_type="constant"` (default for backwards compat),
@@ -1675,29 +1700,45 @@ This PR closes that gap before §10.1 measured results are populated.
 - Integration into `run_sac_train_loop` and `run_td3_train_loop`:
   - per-update logger calls,
   - scheduler step hooks for each optimizer (actor, critic, alpha for SAC; actor, critic for TD3),
-  - periodic `eval/*` rollouts every `eval_every_env_steps` individual env transitions using a deterministic `CheckpointPolicy`-equivalent path on a separate eval env,
+  - training rollout episode summaries from replay-writing lanes under `train_rollout/mean_return`, `train_rollout/success_rate`, `train_rollout/mean_episode_length`, `train_rollout/episode_count`,
+  - optional same-env deterministic eval rollout summaries under `eval_rollout/mean_return`, `eval_rollout/success_rate`, `eval_rollout/mean_episode_length`, `eval_rollout/episode_count`, with an optional delayed clean-episode start,
+  - periodic `eval/*` rollouts every `eval_every_env_steps` individual train transitions using a deterministic `CheckpointPolicy`-equivalent path on a separate eval env when that path is enabled,
   - `train/learning_rate_actor`, `train/learning_rate_critic`, `train/learning_rate_alpha` (when applicable) emitted every step.
 - CLI extensions in `scripts.train_sac_continuous` and `scripts.train_td3_continuous`:
   - `--lr-scheduler {constant,step,warmup_cosine}` (default `constant`),
   - `--lr-warmup-updates`, `--lr-step-size`, `--lr-gamma`, `--lr-min-lr`,
   - `--total-update-steps` optional override for scheduler horizon,
   - `--tb-log-dir`, `--wandb-project`, `--wandb-run-name`, `--wandb-mode`, `--jsonl-log` (default `logs/<run_name>_train.jsonl`),
+  - `--progress-log PATH` to mirror the human-readable progress lines to a plain text file for post-run terminal-log review,
   - `--progress/--no-progress` (default auto-enabled only for interactive stderr), `--log-every-env-steps` (default `1000`), and `--log-every-train-steps` / `--log-every-updates` (default `100`) for terminal progress refresh cadence,
   - `--eval-every-env-steps` (default `10000` per §8.2), `--eval-num-episodes` (default `5`), `--eval-settle-steps` (default `600`), `--eval-seed` (default `args.seed + 1000`),
-  - `--eval-backend {same-as-train,fake,isaac}` and eval env args mirroring the training env args when a separate Isaac eval env is needed.
+  - `--eval-backend {same-as-train,fake,isaac}` and eval env args mirroring the training env args when a separate eval env is needed,
+  - `--same-env-eval-lanes N` (default `0`) to reserve the last `N` vectorized lanes for deterministic current-policy monitoring inside the same training env,
+  - `--same-env-eval-start-env-steps K` (default `0`) to delay same-env eval metrics until training has reached `K` train transitions and the eval lane has crossed a clean reset boundary,
+  - `--rollout-metrics-window N` (default `20`) for rolling completed-episode summaries,
+  - `--settle-steps S` (default `0`) to run zero-action physics settle steps after the explicit training env reset and before replay collection,
+  - `--per-lane-settle-steps S` (default `0`) to run per-lane zero-action cooldown after Isaac auto-resets a done/truncated lane.
 
 **Implementation**
 - Keep all loggers optional: missing wandb / TensorBoard installs degrade to JSONL only, with a single warning at startup. TensorBoard event-file assertions in tests should skip when `torch.utils.tensorboard` is unavailable; JSONL logging remains mandatory.
 - Run `logger.log_scalars(env_steps, metrics)` after every `agent.update(...)` so `train/*` curves include warmup updates as soon as updates begin.
-- Run `progress.update(env_steps, ...)` after every vectorized env step, after train update logs, and after periodic eval logs. Include `train/update_step` in train logs so `--log-every-train-steps N` means every N optimizer update calls, not every N env transitions. The progress reporter prints metric lines such as `sac train | train | env_step=... | update=... critic=...` and `sac train | eval | env_step=... | eval_return=...`; it must not duplicate TensorBoard/wandb/JSONL records, and `--no-progress` must silence it for batch jobs.
-- Eval cadence is measured in individual env transitions (matches §8.2 `eval_every_env_steps=10000`), not in update steps and not in raw vectorized `env.step()` calls. With `num_envs=64`, one vectorized step advances the cadence counter by up to 64.
-- Eval rollouts must use deterministic actions, the §3.5 `eval_settle_steps=600` default, a separate seed, and a separate eval env so they do not reset or advance the training env. Same-env eval is allowed only for CPU fake-env tests that explicitly construct a new fake env instance.
-- Live Isaac train-time periodic eval is **not** currently supported in-process: constructing a second `IsaacArmEnv` while the training env is alive can cause Isaac Sim to close the app with exit code 0 before training resumes. For live Isaac SAC/TD3 runs, set `--eval-every-env-steps 0` and run PR11a `scripts.eval_checkpoint_continuous` after saving a checkpoint. `--eval-backend fake` is acceptable only for logger/progress smoke tests, not for real task metrics.
+- Run `progress.update(env_steps, ...)` after every vectorized env step, after train update logs, after rollout episode summaries, and after periodic eval logs. Include `train/update_step` in train logs so `--log-every-train-steps N` means every N optimizer update calls, not every N env transitions. The progress reporter prints metric lines such as `sac train | train | env_step=... | update=... critic=...`, `sac train | train rollout | env_step=... | train_rollout_return=...`, `sac train | eval rollout | env_step=... | eval_rollout_return=...`, and `sac train | eval | env_step=... | eval_return=...`; `--progress-log` may mirror those exact human-readable lines to disk, while TensorBoard/wandb/JSONL scalar records remain separate machine-readable logs.
+- `--log-every-env-steps` and `--log-every-train-steps` are independent cadences. Printing a train-loss line must not reset the env/replay progress cadence; otherwise frequent optimizer logs can starve `sac train | env | ...` lines.
+- Eval cadence is measured in individual train transitions (matches §8.2 `eval_every_env_steps=10000`), not in update steps and not in raw vectorized `env.step()` calls. With `num_envs=64` and no same-env eval lanes, one vectorized step advances the cadence counter by 64; with reserved eval lanes, it advances by `num_envs - same_env_eval_lanes`.
+- Separate-env periodic eval rollouts must use deterministic actions, the §3.5 `eval_settle_steps=600` default, a separate seed, and a separate eval env so they do not reset or advance the training env.
+- Live Isaac separate-env train-time periodic eval is **not** currently supported in-process: constructing a second `IsaacArmEnv` while the training env is alive can cause Isaac Sim to close the app with exit code 0 before training resumes. For live Isaac SAC/TD3 runs, set `--eval-every-env-steps 0` and use `--same-env-eval-lanes N` for live monitoring; run PR11a `scripts.eval_checkpoint_continuous` after saving a checkpoint for final comparable eval. `--eval-backend fake` is acceptable only for logger/progress smoke tests, not for real task metrics.
 - The eval rollouts call `evaluate_episodes` from PR11a; results write to `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`, `eval/episode_successes_count`.
+- Same-env eval lanes use deterministic current-policy actions every step inside the same vectorized Isaac env. They share the training env's reset/randomization stream and are meant for live trend monitoring, not final benchmark reporting. Their transitions are excluded from replay, warmup counts, scheduler horizon, and `total_env_steps`.
+- When `same_env_eval_lanes > 0`, the last `N` lanes are eval lanes and the first `num_envs - N` lanes are train lanes. `env_steps` counts only train-lane transitions; for example `num_envs=64` and `--same-env-eval-lanes 4` advances the training counter by `60` per vectorized Isaac step.
+- `same_env_eval_start_env_steps` must not start a metric from a partial episode. When the threshold is reached, keep stepping the eval lane but ignore metrics until that lane next reports done/truncated and auto-resets; the following episode is the first episode counted in `eval_rollout/*`.
+- `settle_steps` mirrors the demo-data-loop reset warmup for the explicit training reset only: call `env.reset(seed)`, run zero actions for `S` steps, then start replay collection from the resulting observation. Do not increment `env_steps`, do not push settle transitions to replay, and do not step optimizers during initial settle.
+- `per_lane_settle_steps` is a per-lane cooldown state machine after Isaac auto-reset. If a lane is cooling down, force its action to zero, skip replay insertion, skip rollout/eval metric accumulation, and do not count that lane toward `env_steps`. Sibling lanes whose cooldown is zero continue collecting replay and training normally. If a lane terminates again during cooldown, restart that lane's cooldown from `S`.
+- Same-env eval lanes also respect per-lane cooldown: `eval_rollout/*` resumes only after the eval lane's cooldown reaches zero, so live eval metrics start from a post-settle observation.
 - Off-policy update semantics must be explicit: the existing PR6/PR7 loops perform `utd_ratio` gradient updates per vectorized environment step after warmup, while `env_steps` counts individual transitions. Derive the default scheduler horizon from the expected number of actual update calls:
 
 ```text
-num_vector_steps_after_warmup = ceil(max(total_env_steps - warmup_steps, 0) / num_envs)
+num_train_lanes = num_envs - same_env_eval_lanes
+num_vector_steps_after_warmup = ceil(max(total_env_steps - warmup_steps, 0) / num_train_lanes)
 total_update_steps = num_vector_steps_after_warmup * utd_ratio
 ```
 
@@ -1715,10 +1756,16 @@ total_update_steps = num_vector_steps_after_warmup * utd_ratio
   - `WandbLogger` is exercised with `mode="disabled"` so no network call happens; verify the log calls were forwarded to its proxy run object,
   - `CompositeLogger` fan-out to two backends does not duplicate events for a single backend,
   - `TrainProgressReporter` prints latest train losses every configured train-update interval and eval metrics immediately in its fallback mode, while loop-level progress hooks advance during replay warmup before losses exist,
+  - `TrainProgressReporter` keeps env-step and train-update print cadences independent, so `--log-every-env-steps N` still emits env/replay lines even when `--log-every-train-steps` is much smaller,
+  - `TrainProgressReporter` prints `train rollout` and `eval rollout` metric lines as standalone records, not as tqdm postfix text, and can mirror those lines to `--progress-log`,
   - `make_scheduler("step", ...)` reduces the actor LR by `gamma` after `step_size` updates,
   - `make_scheduler("warmup_cosine", ...)` LR rises linearly during warmup, then monotonically decays to `min_lr` near the end of the schedule (check three sample points: warmup tail, mid-schedule, last update),
   - `make_scheduler("constant", ...)` keeps LR equal to the optimizer's initial LR,
   - SAC and TD3 train loops emit `train/learning_rate_actor` matching the scheduler value at each logged step,
+  - SAC and TD3 train loops reserve `same_env_eval_lanes`, exclude those lanes from replay, and emit both `train_rollout/*` and `eval_rollout/*` metrics to progress plus logger backends,
+  - same-env eval metrics respect `same_env_eval_start_env_steps` and wait for the next clean eval-lane episode before logging,
+  - training `settle_steps` uses zero actions before replay collection and does not increase replay size or `env_steps`,
+  - `per_lane_settle_steps` forces zero actions after lane done/truncated, masks those cooldown transitions out of replay and metrics, and lets sibling lanes keep training,
   - vectorized fake env with `num_envs>1` triggers eval by individual transition count, not by raw `env.step()` count,
   - TD3 actor scheduler advances only on delayed actor optimizer steps while the critic scheduler advances every critic update,
   - periodic `eval_every_env_steps` actually runs at the configured cadence, uses a separate fake eval env instance, and writes `eval/mean_return` / `eval/success_rate` / `eval/mean_action_jerk`,
@@ -1742,13 +1789,15 @@ python -m scripts.train_sac_continuous \
   --replay-capacity 64 --device cpu --ram-budget-gib 4 \
   --reward-probe-steps 16 \
   --lr-scheduler warmup_cosine --lr-warmup-updates 4 --lr-min-lr 1e-5 \
-  --tb-log-dir /tmp/sac_tb --jsonl-log /tmp/sac.jsonl \
+  --tb-log-dir /tmp/sac_tb --jsonl-log /tmp/sac.jsonl --progress-log /tmp/sac_progress.log \
   --wandb-mode disabled \
   --progress --log-every-env-steps 16 --log-every-train-steps 4 \
+  --same-env-eval-lanes 1 --same-env-eval-start-env-steps 32 \
+  --rollout-metrics-window 10 --settle-steps 2 --per-lane-settle-steps 2 \
   --eval-every-env-steps 16 --eval-num-episodes 2 --eval-settle-steps 0
 ```
 
-emits a JSONL log with `train/*` and at least one `eval/*` line, emits non-empty TensorBoard event files when TensorBoard is installed, and writes a checkpoint whose `extras["scheduler_state"]` round-trips.
+emits a JSONL log with `train/*`, `train_rollout/*`, `eval_rollout/*`, and at least one `eval/*` line, emits matching human-readable lines to `--progress-log`, emits non-empty TensorBoard event files when TensorBoard is installed, and writes a checkpoint whose `extras["scheduler_state"]` round-trips.
 
 **Pytest**
 
@@ -1756,10 +1805,12 @@ emits a JSONL log with `train/*` and at least one `eval/*` line, emits non-empty
 pytest tests/test_training_logger_and_scheduler.py -v
 ```
 
+Latest result: `19 passed`; full suite: `244 passed, 1 skipped`.
+
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(train): add console progress for SAC and TD3"
+git commit -m "feat(train): add per-lane settle cooldown"
 ```
 
 ---

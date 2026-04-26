@@ -66,6 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", dest="wandb_run_name")
     parser.add_argument("--wandb-mode", dest="wandb_mode", choices=["online", "offline", "disabled"], default="disabled")
     parser.add_argument("--jsonl-log", dest="jsonl_log")
+    parser.add_argument("--progress-log", dest="progress_log")
     parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--log-every-env-steps", dest="log_every_env_steps", type=int, default=1_000)
     parser.add_argument("--log-every-train-steps", "--log-every-updates", dest="log_every_train_steps", type=int, default=100)
@@ -75,6 +76,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eval-settle-steps", dest="eval_settle_steps", type=int, default=600)
     parser.add_argument("--eval-seed", dest="eval_seed", type=int)
     parser.add_argument("--eval-backend", dest="eval_backend", choices=["same-as-train", "fake", "isaac"], default="same-as-train")
+    parser.add_argument("--same-env-eval-lanes", dest="same_env_eval_lanes", type=int, default=0)
+    parser.add_argument("--same-env-eval-start-env-steps", dest="same_env_eval_start_env_steps", type=int, default=0)
+    parser.add_argument("--rollout-metrics-window", dest="rollout_metrics_window", type=int, default=20)
+    parser.add_argument("--settle-steps", "--settle_steps", dest="settle_steps", type=int, default=0)
+    parser.add_argument("--per-lane-settle-steps", dest="per_lane_settle_steps", type=int, default=0)
     parser.add_argument("--checkpoint-dir", "--checkpoint_dir", dest="checkpoint_dir", default="checkpoints")
     parser.add_argument("--checkpoint-name", "--checkpoint_name", dest="checkpoint_name", default="sac_franka")
     parser.add_argument("--logs-dir", dest="logs_dir", default="logs")
@@ -109,6 +115,7 @@ def _parse_target_entropy(value: str | float | int | None) -> float | None:
 
 
 def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[str, Any]:
+    _validate_same_env_eval_args(args)
     if not args.skip_reward_probe:
         probe_reward_signal(
             env,
@@ -134,6 +141,11 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
         eval_settle_steps=args.eval_settle_steps,
         eval_seed=eval_seed,
         eval_backend=resolved_eval_backend,
+        same_env_eval_lanes=args.same_env_eval_lanes,
+        same_env_eval_start_env_steps=args.same_env_eval_start_env_steps,
+        rollout_metrics_window=args.rollout_metrics_window,
+        settle_steps=args.settle_steps,
+        per_lane_settle_steps=args.per_lane_settle_steps,
     )
     logger = _build_logger(args)
     progress = _build_progress(args, description="sac train")
@@ -155,6 +167,12 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
                     "enabled": progress.enabled if progress is not None else False,
                     "log_every_env_steps": args.log_every_env_steps,
                     "log_every_train_steps": args.log_every_train_steps,
+                    "progress_log": args.progress_log,
+                    "same_env_eval_lanes": args.same_env_eval_lanes,
+                    "same_env_eval_start_env_steps": args.same_env_eval_start_env_steps,
+                    "rollout_metrics_window": args.rollout_metrics_window,
+                    "settle_steps": args.settle_steps,
+                    "per_lane_settle_steps": args.per_lane_settle_steps,
                 },
             }
         )
@@ -238,6 +256,21 @@ def _validate_periodic_eval_args(args: argparse.Namespace, resolved_eval_backend
         )
 
 
+def _validate_same_env_eval_args(args: argparse.Namespace) -> None:
+    if args.same_env_eval_lanes < 0:
+        raise ValueError("--same-env-eval-lanes must be non-negative")
+    if args.same_env_eval_lanes >= args.num_envs:
+        raise ValueError("--same-env-eval-lanes must be smaller than --num-envs")
+    if args.same_env_eval_start_env_steps < 0:
+        raise ValueError("--same-env-eval-start-env-steps must be non-negative")
+    if args.rollout_metrics_window <= 0:
+        raise ValueError("--rollout-metrics-window must be positive")
+    if args.settle_steps < 0:
+        raise ValueError("--settle-steps must be non-negative")
+    if args.per_lane_settle_steps < 0:
+        raise ValueError("--per-lane-settle-steps must be non-negative")
+
+
 def _build_progress(args: argparse.Namespace, *, description: str) -> TrainProgressReporter | None:
     return TrainProgressReporter(
         total_env_steps=args.total_env_steps,
@@ -245,6 +278,7 @@ def _build_progress(args: argparse.Namespace, *, description: str) -> TrainProgr
         log_every_train_steps=args.log_every_train_steps,
         enabled=args.progress,
         description=description,
+        log_path=args.progress_log,
     )
 
 
@@ -287,10 +321,11 @@ def _build_schedulers(
 def _resolve_total_update_steps(args: argparse.Namespace, utd_ratio: int) -> int | None:
     if args.total_update_steps is not None:
         return args.total_update_steps
+    num_train_lanes = args.num_envs - args.same_env_eval_lanes
     total_update_steps = estimate_total_update_steps(
         total_env_steps=args.total_env_steps,
         warmup_steps=args.warmup_steps,
-        num_envs=args.num_envs,
+        num_envs=num_train_lanes,
         utd_ratio=utd_ratio,
     )
     if args.lr_scheduler == "warmup_cosine" and total_update_steps <= 0:
@@ -413,7 +448,7 @@ class _FakeSACEnv:
         truncated = np.zeros(self.num_envs, dtype=bool)
         if terminated.any():
             self._step[terminated] = 0
-        info: dict[str, Any] = {}
+        info: dict[str, Any] = {"success": terminated.copy()}
         return self._obs(), reward.astype(np.float32), terminated, truncated, info
 
     def _obs(self) -> dict[str, np.ndarray]:

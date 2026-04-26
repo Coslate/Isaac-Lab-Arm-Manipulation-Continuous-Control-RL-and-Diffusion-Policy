@@ -1,0 +1,145 @@
+sac train | env | env_step=129/2024 | replay=129
+sac train | train | env_step=144/2024 | update=5 critic=0.175 actor=-1.553 alpha_loss=-19.232 alpha=0.200 q=0.511 entropy=4.940 replay=144 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=159/2024 | update=10 critic=0.054 actor=-2.000 alpha_loss=-19.039 alpha=0.199 q=1.135 entropy=4.810 replay=159 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=174/2024 | update=15 critic=0.014 actor=-1.752 alpha_loss=-18.782 alpha=0.199 q=0.882 entropy=4.639 replay=174 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=189/2024 | update=20 critic=0.021 actor=-1.768 alpha_loss=-18.950 alpha=0.199 q=0.920 entropy=4.733 replay=189 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=204/2024 | update=25 critic=0.005 actor=-1.935 alpha_loss=-19.311 alpha=0.199 q=0.998 entropy=4.945 replay=204 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=219/2024 | update=30 critic=0.007 actor=-1.993 alpha_loss=-19.142 alpha=0.198 q=1.055 entropy=4.830 replay=219 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=234/2024 | update=35 critic=0.007 actor=-1.952 alpha_loss=-19.362 alpha=0.198 q=1.020 entropy=4.955 replay=234 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=249/2024 | update=40 critic=0.006 actor=-2.016 alpha_loss=-19.055 alpha=0.198 q=1.060 entropy=4.754 replay=249 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=258/2024 | replay=258
+sac train | train | env_step=264/2024 | update=45 critic=0.004 actor=-2.077 alpha_loss=-19.055 alpha=0.197 q=1.152 entropy=4.743 replay=264 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=279/2024 | update=50 critic=0.005 actor=-2.037 alpha_loss=-19.174 alpha=0.197 q=1.107 entropy=4.806 replay=279 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=294/2024 | update=55 critic=0.012 actor=-2.126 alpha_loss=-19.160 alpha=0.197 q=1.189 entropy=4.786 replay=294 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=309/2024 | update=60 critic=0.003 actor=-2.149 alpha_loss=-19.527 alpha=0.196 q=1.199 entropy=5.001 replay=309 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=324/2024 | update=65 critic=0.003 actor=-2.213 alpha_loss=-19.675 alpha=0.196 q=1.233 entropy=5.081 replay=324 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=339/2024 | update=70 critic=0.004 actor=-2.125 alpha_loss=-19.073 alpha=0.196 q=1.228 entropy=4.700 replay=339 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=354/2024 | update=75 critic=0.011 actor=-2.241 alpha_loss=-19.284 alpha=0.196 q=1.301 entropy=4.818 replay=354 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=369/2024 | update=80 critic=0.003 actor=-2.173 alpha_loss=-19.121 alpha=0.195 q=1.261 entropy=4.708 replay=369 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=384/2024 | update=85 critic=0.011 actor=-2.200 alpha_loss=-18.919 alpha=0.195 q=1.311 entropy=4.574 replay=384 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=387/2024 | replay=387
+sac train | train | env_step=399/2024 | update=90 critic=0.003 actor=-2.231 alpha_loss=-19.324 alpha=0.195 q=1.306 entropy=4.810 replay=399 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=414/2024 | update=95 critic=0.008 actor=-2.254 alpha_loss=-19.144 alpha=0.194 q=1.361 entropy=4.690 replay=414 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=429/2024 | update=100 critic=0.004 actor=-2.291 alpha_loss=-19.279 alpha=0.194 q=1.349 entropy=4.762 replay=429 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=444/2024 | update=105 critic=0.004 actor=-2.316 alpha_loss=-19.271 alpha=0.194 q=1.408 entropy=4.746 replay=444 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=459/2024 | update=110 critic=0.005 actor=-2.364 alpha_loss=-19.651 alpha=0.194 q=1.401 entropy=4.967 replay=459 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=474/2024 | update=115 critic=0.013 actor=-2.319 alpha_loss=-19.257 alpha=0.193 q=1.409 entropy=4.716 replay=474 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=489/2024 | update=120 critic=0.004 actor=-2.351 alpha_loss=-19.339 alpha=0.193 q=1.436 entropy=4.755 replay=489 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=504/2024 | update=125 critic=0.002 actor=-2.326 alpha_loss=-19.313 alpha=0.193 q=1.413 entropy=4.729 replay=504 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=516/2024 | replay=516
+sac train | train | env_step=519/2024 | update=130 critic=0.007 actor=-2.441 alpha_loss=-19.792 alpha=0.192 q=1.494 entropy=5.008 replay=519 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=534/2024 | update=135 critic=0.006 actor=-2.362 alpha_loss=-19.434 alpha=0.192 q=1.445 entropy=4.781 replay=534 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=549/2024 | update=140 critic=0.004 actor=-2.429 alpha_loss=-19.398 alpha=0.192 q=1.521 entropy=4.748 replay=549 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=564/2024 | update=145 critic=0.006 actor=-2.400 alpha_loss=-19.425 alpha=0.191 q=1.501 entropy=4.754 replay=564 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=579/2024 | update=150 critic=0.008 actor=-2.452 alpha_loss=-19.472 alpha=0.191 q=1.531 entropy=4.772 replay=579 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=594/2024 | update=155 critic=0.004 actor=-2.452 alpha_loss=-19.437 alpha=0.191 q=1.556 entropy=4.740 replay=594 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=609/2024 | update=160 critic=0.002 actor=-2.488 alpha_loss=-19.312 alpha=0.191 q=1.586 entropy=4.654 replay=609 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=624/2024 | update=165 critic=0.004 actor=-2.441 alpha_loss=-19.465 alpha=0.190 q=1.537 entropy=4.735 replay=624 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=639/2024 | update=170 critic=0.004 actor=-2.512 alpha_loss=-19.493 alpha=0.190 q=1.614 entropy=4.742 replay=639 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=645/2024 | replay=645
+sac train | train | env_step=654/2024 | update=175 critic=0.006 actor=-2.495 alpha_loss=-19.255 alpha=0.190 q=1.602 entropy=4.588 replay=654 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=669/2024 | update=180 critic=0.004 actor=-2.477 alpha_loss=-19.645 alpha=0.189 q=1.614 entropy=4.812 replay=669 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=684/2024 | update=185 critic=0.005 actor=-2.585 alpha_loss=-19.633 alpha=0.189 q=1.687 entropy=4.794 replay=684 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train rollout | env_step=690/2024 | train_rollout_return=0.004 train_rollout_success=0.000 train_rollout_len=230.000 train_rollout_eps=3
+sac train | train | env_step=699/2024 | update=190 critic=0.016 actor=-2.545 alpha_loss=-19.716 alpha=0.189 q=1.624 entropy=4.833 replay=699 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=714/2024 | update=195 critic=0.004 actor=-2.608 alpha_loss=-19.682 alpha=0.189 q=1.724 entropy=4.802 replay=714 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=729/2024 | update=200 critic=0.012 actor=-2.500 alpha_loss=-19.506 alpha=0.188 q=1.596 entropy=4.686 replay=729 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=744/2024 | update=205 critic=0.008 actor=-2.502 alpha_loss=-19.397 alpha=0.188 q=1.761 entropy=4.610 replay=744 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=759/2024 | update=210 critic=0.004 actor=-2.605 alpha_loss=-19.673 alpha=0.188 q=1.705 entropy=4.765 replay=759 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=774/2024 | replay=774
+sac train | train | env_step=774/2024 | update=215 critic=0.004 actor=-2.609 alpha_loss=-19.924 alpha=0.188 q=1.740 entropy=4.905 replay=774 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=789/2024 | update=220 critic=0.004 actor=-2.641 alpha_loss=-19.657 alpha=0.187 q=1.760 entropy=4.734 replay=789 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=804/2024 | update=225 critic=0.004 actor=-2.669 alpha_loss=-19.711 alpha=0.187 q=1.779 entropy=4.756 replay=804 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=819/2024 | update=230 critic=0.005 actor=-2.679 alpha_loss=-19.807 alpha=0.187 q=1.782 entropy=4.803 replay=819 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=834/2024 | update=235 critic=0.004 actor=-2.640 alpha_loss=-19.613 alpha=0.186 q=1.814 entropy=4.677 replay=834 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=849/2024 | update=240 critic=0.002 actor=-2.713 alpha_loss=-19.747 alpha=0.186 q=1.798 entropy=4.746 replay=849 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=864/2024 | update=245 critic=0.006 actor=-2.645 alpha_loss=-19.697 alpha=0.186 q=1.767 entropy=4.706 replay=864 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=879/2024 | update=250 critic=0.216 actor=-2.668 alpha_loss=-19.942 alpha=0.186 q=1.876 entropy=4.841 replay=879 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=894/2024 | update=255 critic=0.006 actor=-2.870 alpha_loss=-19.963 alpha=0.185 q=1.925 entropy=4.843 replay=894 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=903/2024 | replay=903
+sac train | train | env_step=909/2024 | update=260 critic=0.006 actor=-2.702 alpha_loss=-19.731 alpha=0.185 q=1.830 entropy=4.695 replay=909 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=924/2024 | update=265 critic=0.007 actor=-2.739 alpha_loss=-19.788 alpha=0.185 q=1.885 entropy=4.718 replay=924 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=939/2024 | update=270 critic=0.004 actor=-2.831 alpha_loss=-20.034 alpha=0.184 q=1.946 entropy=4.853 replay=939 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=954/2024 | update=275 critic=0.225 actor=-2.744 alpha_loss=-19.867 alpha=0.184 q=1.892 entropy=4.744 replay=954 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=969/2024 | update=280 critic=0.008 actor=-2.903 alpha_loss=-20.105 alpha=0.184 q=2.011 entropy=4.874 replay=969 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=984/2024 | update=285 critic=0.015 actor=-2.743 alpha_loss=-19.822 alpha=0.184 q=1.852 entropy=4.697 replay=984 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=999/2024 | update=290 critic=0.016 actor=-2.862 alpha_loss=-19.947 alpha=0.183 q=2.079 entropy=4.760 replay=999 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1014/2024 | update=295 critic=0.202 actor=-2.816 alpha_loss=-20.059 alpha=0.183 q=1.943 entropy=4.816 replay=1014 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1029/2024 | update=300 critic=0.012 actor=-2.930 alpha_loss=-20.097 alpha=0.183 q=2.016 entropy=4.827 replay=1029 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1032/2024 | replay=1032
+sac train | train | env_step=1044/2024 | update=305 critic=0.004 actor=-2.966 alpha_loss=-20.500 alpha=0.183 q=2.028 entropy=5.054 replay=1044 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1059/2024 | update=310 critic=0.005 actor=-2.930 alpha_loss=-19.970 alpha=0.182 q=2.062 entropy=4.732 replay=1059 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1074/2024 | update=315 critic=0.003 actor=-2.930 alpha_loss=-19.975 alpha=0.182 q=2.080 entropy=4.725 replay=1074 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1089/2024 | update=320 critic=0.006 actor=-2.986 alpha_loss=-20.234 alpha=0.182 q=2.064 entropy=4.866 replay=1089 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1104/2024 | update=325 critic=0.003 actor=-2.951 alpha_loss=-20.199 alpha=0.181 q=2.098 entropy=4.835 replay=1104 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1119/2024 | update=330 critic=0.011 actor=-2.999 alpha_loss=-20.178 alpha=0.181 q=2.069 entropy=4.812 replay=1119 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1134/2024 | update=335 critic=0.294 actor=-2.879 alpha_loss=-20.062 alpha=0.181 q=2.137 entropy=4.734 replay=1134 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1149/2024 | update=340 critic=0.030 actor=-3.157 alpha_loss=-19.956 alpha=0.181 q=2.262 entropy=4.662 replay=1149 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1161/2024 | replay=1161
+sac train | train | env_step=1164/2024 | update=345 critic=0.016 actor=-2.888 alpha_loss=-19.901 alpha=0.180 q=2.043 entropy=4.620 replay=1164 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1179/2024 | update=350 critic=0.012 actor=-3.078 alpha_loss=-20.214 alpha=0.180 q=2.289 entropy=4.792 replay=1179 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1194/2024 | update=355 critic=0.019 actor=-3.043 alpha_loss=-20.154 alpha=0.180 q=2.094 entropy=4.747 replay=1194 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1209/2024 | update=360 critic=0.004 actor=-3.011 alpha_loss=-20.405 alpha=0.180 q=2.246 entropy=4.883 replay=1209 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1224/2024 | update=365 critic=0.003 actor=-3.158 alpha_loss=-20.064 alpha=0.179 q=2.254 entropy=4.674 replay=1224 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1239/2024 | update=370 critic=0.007 actor=-3.039 alpha_loss=-20.304 alpha=0.179 q=2.198 entropy=4.803 replay=1239 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1254/2024 | update=375 critic=0.007 actor=-3.135 alpha_loss=-20.048 alpha=0.179 q=2.321 entropy=4.644 replay=1254 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1269/2024 | update=380 critic=0.005 actor=-3.135 alpha_loss=-20.212 alpha=0.178 q=2.312 entropy=4.729 replay=1269 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1284/2024 | update=385 critic=0.008 actor=-3.165 alpha_loss=-20.001 alpha=0.178 q=2.320 entropy=4.597 replay=1284 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1290/2024 | replay=1290
+sac train | train | env_step=1299/2024 | update=390 critic=0.011 actor=-3.023 alpha_loss=-20.142 alpha=0.178 q=2.236 entropy=4.669 replay=1299 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1314/2024 | update=395 critic=0.009 actor=-3.293 alpha_loss=-20.341 alpha=0.178 q=2.436 entropy=4.773 replay=1314 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1329/2024 | update=400 critic=0.010 actor=-3.149 alpha_loss=-20.448 alpha=0.177 q=2.290 entropy=4.825 replay=1329 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1344/2024 | update=405 critic=0.004 actor=-3.276 alpha_loss=-20.526 alpha=0.177 q=2.445 entropy=4.860 replay=1344 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1359/2024 | update=410 critic=0.009 actor=-3.246 alpha_loss=-20.469 alpha=0.177 q=2.364 entropy=4.817 replay=1359 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1374/2024 | update=415 critic=0.003 actor=-3.264 alpha_loss=-20.327 alpha=0.177 q=2.444 entropy=4.725 replay=1374 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train rollout | env_step=1380/2024 | train_rollout_return=-0.003 train_rollout_success=0.000 train_rollout_len=230.000 train_rollout_eps=6
+sac train | eval rollout | env_step=1380/2024 | eval_rollout_return=3.208e-04 eval_rollout_success=0.000 eval_rollout_len=230.000 eval_rollout_eps=1
+sac train | train | env_step=1389/2024 | update=420 critic=0.005 actor=-3.279 alpha_loss=-20.419 alpha=0.176 q=2.428 entropy=4.768 replay=1389 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1404/2024 | update=425 critic=0.009 actor=-3.200 alpha_loss=-20.626 alpha=0.176 q=2.379 entropy=4.877 replay=1404 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1419/2024 | replay=1419
+sac train | train | env_step=1419/2024 | update=430 critic=0.011 actor=-3.379 alpha_loss=-20.504 alpha=0.176 q=2.566 entropy=4.796 replay=1419 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1434/2024 | update=435 critic=0.005 actor=-3.310 alpha_loss=-20.602 alpha=0.176 q=2.431 entropy=4.842 replay=1434 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1449/2024 | update=440 critic=0.003 actor=-3.327 alpha_loss=-20.727 alpha=0.175 q=2.511 entropy=4.904 replay=1449 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1464/2024 | update=445 critic=0.003 actor=-3.372 alpha_loss=-20.317 alpha=0.175 q=2.562 entropy=4.658 replay=1464 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1479/2024 | update=450 critic=0.007 actor=-3.392 alpha_loss=-20.651 alpha=0.175 q=2.498 entropy=4.840 replay=1479 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1494/2024 | update=455 critic=0.006 actor=-3.392 alpha_loss=-20.567 alpha=0.174 q=2.565 entropy=4.781 replay=1494 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1509/2024 | update=460 critic=0.005 actor=-3.412 alpha_loss=-20.467 alpha=0.174 q=2.587 entropy=4.714 replay=1509 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1524/2024 | update=465 critic=0.002 actor=-3.439 alpha_loss=-20.642 alpha=0.174 q=2.596 entropy=4.804 replay=1524 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1539/2024 | update=470 critic=0.013 actor=-3.325 alpha_loss=-20.637 alpha=0.174 q=2.521 entropy=4.792 replay=1539 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1548/2024 | replay=1548
+sac train | train | env_step=1554/2024 | update=475 critic=0.017 actor=-3.445 alpha_loss=-20.723 alpha=0.173 q=2.708 entropy=4.831 replay=1554 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1569/2024 | update=480 critic=0.011 actor=-3.527 alpha_loss=-20.561 alpha=0.173 q=2.691 entropy=4.728 replay=1569 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1584/2024 | update=485 critic=0.012 actor=-3.472 alpha_loss=-20.637 alpha=0.173 q=2.581 entropy=4.761 replay=1584 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1599/2024 | update=490 critic=0.020 actor=-3.424 alpha_loss=-20.669 alpha=0.173 q=2.568 entropy=4.769 replay=1599 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1614/2024 | update=495 critic=0.017 actor=-3.648 alpha_loss=-20.974 alpha=0.172 q=2.817 entropy=4.933 replay=1614 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1629/2024 | update=500 critic=0.005 actor=-3.545 alpha_loss=-20.835 alpha=0.172 q=2.666 entropy=4.843 replay=1629 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1644/2024 | update=505 critic=0.014 actor=-3.519 alpha_loss=-20.537 alpha=0.172 q=2.667 entropy=4.664 replay=1644 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1659/2024 | update=510 critic=0.003 actor=-3.516 alpha_loss=-20.679 alpha=0.172 q=2.753 entropy=4.735 replay=1659 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1674/2024 | update=515 critic=0.004 actor=-3.580 alpha_loss=-20.685 alpha=0.171 q=2.793 entropy=4.728 replay=1674 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1677/2024 | replay=1677
+sac train | train | env_step=1689/2024 | update=520 critic=0.002 actor=-3.643 alpha_loss=-20.787 alpha=0.171 q=2.740 entropy=4.776 replay=1689 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1704/2024 | update=525 critic=0.006 actor=-3.531 alpha_loss=-20.617 alpha=0.171 q=2.715 entropy=4.670 replay=1704 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1719/2024 | update=530 critic=0.016 actor=-3.550 alpha_loss=-20.581 alpha=0.171 q=2.776 entropy=4.640 replay=1719 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1734/2024 | update=535 critic=0.005 actor=-3.576 alpha_loss=-20.715 alpha=0.170 q=2.826 entropy=4.706 replay=1734 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1749/2024 | update=540 critic=0.004 actor=-3.595 alpha_loss=-20.777 alpha=0.170 q=2.849 entropy=4.730 replay=1749 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1764/2024 | update=545 critic=0.005 actor=-3.647 alpha_loss=-20.817 alpha=0.170 q=2.867 entropy=4.743 replay=1764 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1779/2024 | update=550 critic=0.026 actor=-3.714 alpha_loss=-21.176 alpha=0.170 q=2.810 entropy=4.936 replay=1779 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1794/2024 | update=555 critic=0.003 actor=-3.621 alpha_loss=-20.798 alpha=0.169 q=2.856 entropy=4.713 replay=1794 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1806/2024 | replay=1806
+sac train | train | env_step=1809/2024 | update=560 critic=0.003 actor=-3.702 alpha_loss=-21.009 alpha=0.169 q=2.935 entropy=4.822 replay=1809 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1824/2024 | update=565 critic=0.006 actor=-3.757 alpha_loss=-20.923 alpha=0.169 q=2.944 entropy=4.763 replay=1824 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1839/2024 | update=570 critic=0.005 actor=-3.747 alpha_loss=-20.891 alpha=0.169 q=2.900 entropy=4.735 replay=1839 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1854/2024 | update=575 critic=0.005 actor=-3.728 alpha_loss=-20.846 alpha=0.168 q=2.929 entropy=4.700 replay=1854 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1869/2024 | update=580 critic=0.005 actor=-3.728 alpha_loss=-20.885 alpha=0.168 q=2.963 entropy=4.712 replay=1869 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1884/2024 | update=585 critic=0.004 actor=-3.829 alpha_loss=-21.387 alpha=0.168 q=2.996 entropy=4.984 replay=1884 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1899/2024 | update=590 critic=0.049 actor=-3.742 alpha_loss=-21.036 alpha=0.168 q=2.993 entropy=4.777 replay=1899 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1914/2024 | update=595 critic=0.005 actor=-3.847 alpha_loss=-21.114 alpha=0.167 q=3.066 entropy=4.811 replay=1914 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1929/2024 | update=600 critic=0.010 actor=-3.865 alpha_loss=-21.198 alpha=0.167 q=3.097 entropy=4.848 replay=1929 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | env | env_step=1935/2024 | replay=1935
+sac train | train | env_step=1944/2024 | update=605 critic=0.006 actor=-3.930 alpha_loss=-21.212 alpha=0.167 q=3.037 entropy=4.846 replay=1944 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1959/2024 | update=610 critic=0.074 actor=-3.687 alpha_loss=-21.187 alpha=0.167 q=2.796 entropy=4.822 replay=1959 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1974/2024 | update=615 critic=0.010 actor=-3.800 alpha_loss=-21.433 alpha=0.166 q=3.157 entropy=4.949 replay=1974 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=1989/2024 | update=620 critic=0.105 actor=-3.971 alpha_loss=-21.222 alpha=0.166 q=3.179 entropy=4.822 replay=1989 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=2004/2024 | update=625 critic=0.049 actor=-3.771 alpha_loss=-21.009 alpha=0.166 q=2.900 entropy=4.693 replay=2004 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=2019/2024 | update=630 critic=0.007 actor=-3.862 alpha_loss=-21.084 alpha=0.166 q=3.195 entropy=4.725 replay=2019 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04
+sac train | train | env_step=2024/2024 | update=632 critic=0.014 actor=-3.821 alpha_loss=-21.324 alpha=0.165 q=3.032 entropy=4.855 replay=2025 lr_actor=3.00e-04 lr_critic=3.00e-04 lr_alpha=3.00e-04

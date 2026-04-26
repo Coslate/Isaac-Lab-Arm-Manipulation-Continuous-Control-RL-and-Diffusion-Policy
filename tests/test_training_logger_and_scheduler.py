@@ -13,7 +13,7 @@ from agents.checkpointing import load_checkpoint
 from agents.sac import SACAgent, SACConfig
 from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
-from scripts.train_sac_continuous import _build_fake_env
+from scripts.train_sac_continuous import _FakeSACEnv, _build_fake_env
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
 from train.lr_scheduler import (
     estimate_total_update_steps,
@@ -98,6 +98,16 @@ class _RecordingProgress:
         self.notes.append((step, kind, dict(fields or {})))
 
 
+class _ActionRecordingFakeEnv(_FakeSACEnv):
+    def __init__(self, *, num_envs: int = 1, seed: int = 0, terminal_step: int = 50) -> None:
+        super().__init__(num_envs=num_envs, seed=seed, terminal_step=terminal_step)
+        self.step_actions: list[torch.Tensor] = []
+
+    def step(self, action):
+        self.step_actions.append(torch.as_tensor(action).detach().clone())
+        return super().step(action)
+
+
 def test_jsonlines_logger_writes_parseable_objects(tmp_path: Path):
     path = tmp_path / "train.jsonl"
     logger = JSONLinesLogger(path)
@@ -174,6 +184,101 @@ def test_train_progress_reporter_prints_losses_and_eval_metrics():
     assert "replay=4" in output
     assert "eval_return=2.500" in output
     assert "eval_success=0.500" in output
+
+
+def test_train_progress_reporter_keeps_env_and_train_cadence_independent():
+    stream = io.StringIO()
+    progress = TrainProgressReporter(
+        total_env_steps=30,
+        log_every_env_steps=10,
+        log_every_train_steps=2,
+        enabled=True,
+        description="sac train",
+        use_tqdm=False,
+        stream=stream,
+    )
+
+    progress.update(10, {"train/replay_size": 10, "train/num_env_steps": 10})
+    progress.update(12, {"train/update_step": 2, "train/critic_loss": 0.5, "train/replay_size": 12})
+    progress.update(20, {"train/replay_size": 20, "train/num_env_steps": 20})
+    progress.update(22, {"train/update_step": 4, "train/critic_loss": 0.25, "train/replay_size": 22})
+    progress.close()
+
+    output = stream.getvalue()
+    assert "sac train | env | env_step=10/30" in output
+    assert "sac train | env | env_step=20/30" in output
+    assert "sac train | train | env_step=12/30" in output
+    assert "sac train | train | env_step=22/30" in output
+
+
+def test_train_progress_reporter_prints_rollout_and_same_env_eval_metrics():
+    stream = io.StringIO()
+    progress = TrainProgressReporter(
+        total_env_steps=12,
+        log_every_env_steps=100,
+        log_every_train_steps=100,
+        enabled=True,
+        description="sac train",
+        use_tqdm=False,
+        stream=stream,
+    )
+
+    progress.update(
+        6,
+        {
+            "train_rollout/mean_return": 1.25,
+            "train_rollout/success_rate": 0.5,
+            "train_rollout/mean_episode_length": 3.0,
+            "train_rollout/episode_count": 2.0,
+        },
+        force=True,
+    )
+    progress.update(
+        6,
+        {
+            "eval_rollout/mean_return": 2.0,
+            "eval_rollout/success_rate": 1.0,
+            "eval_rollout/mean_episode_length": 3.0,
+            "eval_rollout/episode_count": 1.0,
+        },
+        force=True,
+    )
+    progress.close()
+
+    output = stream.getvalue()
+    assert "sac train | train rollout | env_step=6/12" in output
+    assert "train_rollout_return=1.250" in output
+    assert "train_rollout_success=0.500" in output
+    assert "sac train | eval rollout | env_step=6/12" in output
+    assert "eval_rollout_return=2.000" in output
+    assert "eval_rollout_success=1.000" in output
+
+
+def test_train_progress_reporter_can_write_messages_to_log_file(tmp_path: Path):
+    stream = io.StringIO()
+    progress_log = tmp_path / "progress.log"
+    progress = TrainProgressReporter(
+        total_env_steps=12,
+        log_every_env_steps=100,
+        log_every_train_steps=100,
+        enabled=False,
+        description="sac train",
+        use_tqdm=False,
+        stream=stream,
+        log_path=progress_log,
+    )
+
+    progress.update(
+        6,
+        {"train_rollout/mean_return": 1.25, "train_rollout/episode_count": 2.0},
+        force=True,
+    )
+    progress.close()
+
+    assert stream.getvalue() == ""
+    output = progress_log.read_text(encoding="utf-8")
+    assert "sac train | train rollout | env_step=6/12" in output
+    assert "train_rollout_return=1.250" in output
 
 
 def test_constant_and_step_schedulers():
@@ -320,6 +425,173 @@ def test_sac_train_loop_logs_lr_periodic_eval_and_checkpoint_scheduler_state(tmp
     }
     load_scheduler_collection_state(reloaded_schedulers, payload.extras["scheduler_state"])
     assert reloaded_schedulers["actor"].step_count == schedulers["actor"].step_count
+
+
+def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    agent = SACAgent(_tiny_sac_config())
+    logger = _CountingLogger()
+    progress = _RecordingProgress()
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=6,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+    )
+
+    report = run_sac_train_loop(env, agent, loop_config=cfg, logger=logger, progress=progress)
+
+    assert report.num_env_steps == 18
+    assert report.final_logs["train/replay_size"] == pytest.approx(18)
+    assert any("train_rollout/mean_return" in logs for logs in report.log_history)
+    assert any("eval_rollout/mean_return" in logs for logs in report.log_history)
+    assert any("train_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("eval_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("train_rollout/mean_return" in metrics for _step, metrics, _force in progress.calls)
+    assert any("eval_rollout/mean_return" in metrics for _step, metrics, _force in progress.calls)
+
+
+def test_sac_same_env_eval_waits_for_clean_episode_after_start_threshold():
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    agent = SACAgent(_tiny_sac_config())
+    logger = _CountingLogger()
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=6,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        same_env_eval_start_env_steps=9,
+        rollout_metrics_window=10,
+    )
+
+    run_sac_train_loop(env, agent, loop_config=cfg, logger=logger)
+
+    eval_lane_calls = [
+        (step, metrics)
+        for step, metrics in logger.scalar_calls
+        if "eval_rollout/mean_return" in metrics
+    ]
+    assert len(eval_lane_calls) == 1
+    step, metrics = eval_lane_calls[0]
+    assert step == 18
+    assert metrics["eval_rollout/episode_count"] == pytest.approx(1.0)
+    assert metrics["eval_rollout/mean_episode_length"] == pytest.approx(3.0)
+
+
+def test_sac_train_loop_settles_with_zero_actions_before_replay_collection():
+    torch.manual_seed(0)
+    env = _ActionRecordingFakeEnv(num_envs=2, seed=0, terminal_step=100)
+    agent = SACAgent(_tiny_sac_config())
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=0,
+        batch_size=4,
+        total_env_steps=4,
+        seed=0,
+        ram_budget_gib=4.0,
+        settle_steps=3,
+    )
+
+    report = run_sac_train_loop(env, agent, loop_config=cfg)
+
+    assert report.num_env_steps == 4
+    assert report.final_logs["train/replay_size"] == pytest.approx(4)
+    assert len(env.step_actions) == 5
+    for action in env.step_actions[:3]:
+        assert torch.allclose(action, torch.zeros((2, ACTION_DIM)))
+    assert not torch.allclose(env.step_actions[3], torch.zeros((2, ACTION_DIM)))
+
+
+def test_sac_per_lane_settle_masks_replay_and_uses_zero_actions_after_done():
+    torch.manual_seed(0)
+    env = _ActionRecordingFakeEnv(num_envs=2, seed=0, terminal_step=3)
+    agent = SACAgent(_tiny_sac_config())
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=0,
+        batch_size=4,
+        total_env_steps=8,
+        seed=0,
+        ram_budget_gib=4.0,
+        per_lane_settle_steps=2,
+    )
+
+    report = run_sac_train_loop(env, agent, loop_config=cfg)
+
+    assert report.num_env_steps == 8
+    assert report.final_logs["train/replay_size"] == pytest.approx(8)
+    assert len(env.step_actions) == 6
+    for action in env.step_actions[3:5]:
+        assert torch.allclose(action, torch.zeros((2, ACTION_DIM)))
+    assert any(logs.get("train_rollout/mean_episode_length") == pytest.approx(3.0) for logs in report.log_history)
+    assert any(logs.get("train_rollout/mean_episode_length") == pytest.approx(2.0) for logs in report.log_history)
+
+
+def test_sac_same_env_eval_start_waits_for_per_lane_settle_completion():
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    agent = SACAgent(_tiny_sac_config())
+    logger = _CountingLogger()
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=6,
+        batch_size=4,
+        total_env_steps=12,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        same_env_eval_start_env_steps=9,
+        rollout_metrics_window=10,
+        per_lane_settle_steps=2,
+    )
+
+    run_sac_train_loop(env, agent, loop_config=cfg, logger=logger)
+
+    eval_lane_calls = [
+        (step, metrics)
+        for step, metrics in logger.scalar_calls
+        if "eval_rollout/mean_return" in metrics
+    ]
+    assert len(eval_lane_calls) == 1
+    step, metrics = eval_lane_calls[0]
+    assert step == 12
+    assert metrics["eval_rollout/episode_count"] == pytest.approx(1.0)
+    assert metrics["eval_rollout/mean_episode_length"] == pytest.approx(1.0)
+
+
+def test_td3_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=1, terminal_step=3)
+    agent = TD3Agent(_tiny_td3_config())
+    logger = _CountingLogger()
+    cfg = TD3TrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=6,
+        batch_size=4,
+        total_env_steps=18,
+        seed=1,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+    )
+
+    report = run_td3_train_loop(env, agent, loop_config=cfg, logger=logger)
+
+    assert report.num_env_steps == 18
+    assert report.final_logs["train/replay_size"] == pytest.approx(18)
+    assert any("train_rollout/mean_return" in logs for logs in report.log_history)
+    assert any("eval_rollout/mean_return" in logs for logs in report.log_history)
+    assert any("train_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("eval_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
 
 
 def test_td3_actor_scheduler_steps_only_on_delayed_actor_updates():

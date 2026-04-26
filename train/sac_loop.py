@@ -25,6 +25,7 @@ from agents.sac import SACAgent, SACConfig
 from configs import ACTION_DIM
 from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_collection_state
 from train.loggers import TrainLogger
+from train.rollout_metrics import LaneEpisodeMetricTracker, infer_successes, split_train_eval_lanes
 
 
 DEFAULT_REPLAY_CAPACITY = 200_000
@@ -48,6 +49,11 @@ class SACTrainLoopConfig:
     eval_settle_steps: int = 600
     eval_seed: int | None = None
     eval_backend: str = "fake"
+    same_env_eval_lanes: int = 0
+    same_env_eval_start_env_steps: int = 0
+    rollout_metrics_window: int = 20
+    settle_steps: int = 0
+    per_lane_settle_steps: int = 0
 
 
 @dataclass
@@ -103,13 +109,39 @@ def _sample_action(
     *,
     rng: np.random.Generator,
     warming_up: bool,
+    deterministic: bool = False,
 ) -> np.ndarray:
     if warming_up:
         return rng.uniform(-1.0, 1.0, size=(images.shape[0], ACTION_DIM)).astype(np.float32)
     images_torch = torch.from_numpy(images).to(agent.device)
     proprios_torch = torch.from_numpy(proprios).to(agent.device)
-    action = agent.act(images_torch, proprios_torch, deterministic=False)
+    action = agent.act(images_torch, proprios_torch, deterministic=deterministic)
     return action.detach().cpu().numpy().astype(np.float32)
+
+
+def _reset_and_settle(env: Any, *, seed: int, settle_steps: int) -> dict[str, np.ndarray]:
+    if settle_steps < 0:
+        raise ValueError("settle_steps must be non-negative")
+    obs = env.reset(seed=seed)
+    for _ in range(settle_steps):
+        num_envs = _obs_num_envs(obs)
+        actions = np.zeros((num_envs, ACTION_DIM), dtype=np.float32)
+        backend_action = actions[0] if num_envs == 1 else actions
+        obs, _reward, _terminated, _truncated, _info = env.step(backend_action)
+    return obs
+
+
+def _advance_per_lane_settle(
+    settle_remaining: np.ndarray,
+    reset_lanes: np.ndarray,
+    per_lane_settle_steps: int,
+) -> np.ndarray:
+    if per_lane_settle_steps < 0:
+        raise ValueError("per_lane_settle_steps must be non-negative")
+    next_remaining = np.maximum(np.asarray(settle_remaining, dtype=np.int64) - 1, 0)
+    if per_lane_settle_steps > 0:
+        next_remaining[np.asarray(reset_lanes, dtype=bool)] = int(per_lane_settle_steps)
+    return next_remaining
 
 
 def run_sac_train_loop(
@@ -130,10 +162,16 @@ def run_sac_train_loop(
     """
 
     cfg = loop_config or SACTrainLoopConfig()
+    if cfg.same_env_eval_start_env_steps < 0:
+        raise ValueError("same_env_eval_start_env_steps must be non-negative")
+    if cfg.per_lane_settle_steps < 0:
+        raise ValueError("per_lane_settle_steps must be non-negative")
     rng = np.random.default_rng(cfg.seed)
 
-    obs = env.reset(seed=cfg.seed)
+    obs = _reset_and_settle(env, seed=cfg.seed, settle_steps=cfg.settle_steps)
     num_envs = _obs_num_envs(obs)
+    train_indices, same_env_eval_indices = split_train_eval_lanes(num_envs, cfg.same_env_eval_lanes)
+    num_train_lanes = int(train_indices.shape[0])
     replay = ReplayBuffer(
         capacity=cfg.replay_capacity,
         proprio_dim=agent.config.proprio_dim,
@@ -150,10 +188,52 @@ def run_sac_train_loop(
     final_logs: dict[str, float] = {}
     next_eval_step = cfg.eval_every_env_steps if cfg.eval_every_env_steps > 0 else None
     eval_count = 0
+    train_rollout_tracker = LaneEpisodeMetricTracker(
+        num_lanes=num_train_lanes,
+        prefix="train_rollout",
+        window_size=cfg.rollout_metrics_window,
+    )
+    same_env_eval_tracker = (
+        LaneEpisodeMetricTracker(
+            num_lanes=int(same_env_eval_indices.shape[0]),
+            prefix="eval_rollout",
+            window_size=cfg.rollout_metrics_window,
+        )
+        if same_env_eval_indices.size > 0
+        else None
+    )
+    same_env_eval_active = (
+        np.ones((int(same_env_eval_indices.shape[0]),), dtype=bool)
+        if same_env_eval_indices.size > 0 and cfg.same_env_eval_start_env_steps <= 0
+        else np.zeros((int(same_env_eval_indices.shape[0]),), dtype=bool)
+    )
+    same_env_eval_pending_clean_start = np.zeros((int(same_env_eval_indices.shape[0]),), dtype=bool)
+    per_lane_settle_remaining = np.zeros((num_envs,), dtype=np.int64)
 
     while env_steps < cfg.total_env_steps:
         warming_up = env_steps < cfg.warmup_steps
-        actions = _sample_action(agent, images, proprios, rng=rng, warming_up=warming_up)
+        settling_before = per_lane_settle_remaining > 0
+        active_train_indices = train_indices[~settling_before[train_indices]]
+        active_eval_indices = same_env_eval_indices[~settling_before[same_env_eval_indices]]
+        actions = np.zeros((num_envs, ACTION_DIM), dtype=np.float32)
+        if active_train_indices.size > 0:
+            actions[active_train_indices] = _sample_action(
+                agent,
+                images[active_train_indices],
+                proprios[active_train_indices],
+                rng=rng,
+                warming_up=warming_up,
+                deterministic=False,
+            )
+        if active_eval_indices.size > 0:
+            actions[active_eval_indices] = _sample_action(
+                agent,
+                images[active_eval_indices],
+                proprios[active_eval_indices],
+                rng=rng,
+                warming_up=False,
+                deterministic=True,
+            )
         backend_action = actions[0] if num_envs == 1 else actions
         next_obs, reward, terminated, truncated, _info = env.step(backend_action)
         next_images, next_proprios = _split_per_env(next_obs, num_envs)
@@ -161,17 +241,65 @@ def run_sac_train_loop(
         dones = _broadcast_per_env(terminated, num_envs, bool, "terminated")
         truncs = _broadcast_per_env(truncated, num_envs, bool, "truncated")
 
-        replay.push_batch(
-            images=images,
-            proprios=proprios,
-            actions=actions,
-            rewards=rewards,
-            next_images=next_images,
-            next_proprios=next_proprios,
-            terminated=dones,
-            truncated=truncs,
+        if active_train_indices.size > 0:
+            replay.push_batch(
+                images=images[active_train_indices],
+                proprios=proprios[active_train_indices],
+                actions=actions[active_train_indices],
+                rewards=rewards[active_train_indices],
+                next_images=next_images[active_train_indices],
+                next_proprios=next_proprios[active_train_indices],
+                terminated=dones[active_train_indices],
+                truncated=truncs[active_train_indices],
+            )
+        env_steps += int(active_train_indices.size)
+        successes = infer_successes(_info, num_envs=num_envs, proprios=next_proprios)
+        _log_loop_metrics(
+            logger,
+            progress,
+            env_steps,
+            train_rollout_tracker.step(
+                rewards=rewards[train_indices],
+                terminated=dones[train_indices],
+                truncated=truncs[train_indices],
+                successes=successes[train_indices],
+                active_mask=~settling_before[train_indices],
+            ),
+            log_history,
+            force=True,
         )
-        env_steps += num_envs
+        if same_env_eval_tracker is not None:
+            same_env_eval_active_before = same_env_eval_active.copy()
+            same_env_eval_metric_mask = same_env_eval_active_before & ~settling_before[same_env_eval_indices]
+            _log_loop_metrics(
+                logger,
+                progress,
+                env_steps,
+                same_env_eval_tracker.step(
+                    rewards=rewards[same_env_eval_indices],
+                    terminated=dones[same_env_eval_indices],
+                    truncated=truncs[same_env_eval_indices],
+                    successes=successes[same_env_eval_indices],
+                    active_mask=same_env_eval_metric_mask,
+                ),
+                log_history,
+                force=True,
+            )
+        per_lane_settle_remaining = _advance_per_lane_settle(
+            per_lane_settle_remaining,
+            dones | truncs,
+            cfg.per_lane_settle_steps,
+        )
+        if same_env_eval_tracker is not None:
+            if env_steps >= cfg.same_env_eval_start_env_steps:
+                same_env_eval_completed = dones[same_env_eval_indices] | truncs[same_env_eval_indices]
+                same_env_eval_pending_clean_start |= same_env_eval_completed & ~same_env_eval_active
+                same_env_eval_ready = (
+                    same_env_eval_pending_clean_start
+                    & (per_lane_settle_remaining[same_env_eval_indices] == 0)
+                )
+                same_env_eval_active |= same_env_eval_ready
+                same_env_eval_pending_clean_start[same_env_eval_ready] = False
         images, proprios = next_images, next_proprios
         _update_progress(
             progress,
@@ -179,7 +307,7 @@ def run_sac_train_loop(
             {"train/replay_size": float(replay.size), "train/num_env_steps": float(env_steps)},
         )
 
-        if not warming_up and replay.size >= cfg.batch_size:
+        if active_train_indices.size > 0 and not warming_up and replay.size >= cfg.batch_size:
             for _ in range(agent.config.utd_ratio):
                 batch = replay.sample(cfg.batch_size, device=agent.device)
                 final_logs = agent.update(batch)
@@ -254,6 +382,23 @@ def _step_schedulers(
         scheduler = schedulers.get(name)
         if scheduler is not None:
             scheduler.step()
+
+
+def _log_loop_metrics(
+    logger: TrainLogger | None,
+    progress: Any | None,
+    step: int,
+    metrics: dict[str, float],
+    log_history: list[dict[str, float]],
+    *,
+    force: bool = False,
+) -> None:
+    if not metrics:
+        return
+    log_history.append(metrics)
+    if logger is not None:
+        logger.log_scalars(step, metrics)
+    _update_progress(progress, step, metrics, force=force)
 
 
 def _sac_lr_logs(agent: SACAgent) -> dict[str, float]:

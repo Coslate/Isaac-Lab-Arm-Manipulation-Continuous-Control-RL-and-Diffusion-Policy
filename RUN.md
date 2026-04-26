@@ -6,13 +6,15 @@ python -m scripts.train_sac_continuous \
   --num_envs 4 \
   --total-env-steps 2024 \
   --progress \
+  --warmup-steps 128 \
   --log-every-train-steps 5 \
   --log-every-env-steps 128 \
+  --settle-steps 20 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 1 \
+  --same-env-eval-start-env-steps 500 \
+  --rollout-metrics-window 20 \
   --eval-every-env-steps 0 \
-  --eval-num-episodes 1 \
-  --eval-max-steps 50 \
-  --eval-settle-steps 20  \
-  --warmup-steps 128 \
   --batch-size 16 \
   --replay-capacity 5000 \
   --device cuda:0 \
@@ -23,7 +25,8 @@ python -m scripts.train_sac_continuous \
   --checkpoint-name sac_smoke \
   --logs-dir ./logs \
   --jsonl-log ./logs/sac_smoke_train.jsonl \
+  --progress-log ./logs/sac_smoke_progress.log \
   --tb-log-dir ./logs/tb/sac_smoke \
   --wandb-project isaac-arm \
-  --wandb-run-name sac_smoke_test8 \
+  --wandb-run-name sac_smoke_test10 \
   --wandb-mode online

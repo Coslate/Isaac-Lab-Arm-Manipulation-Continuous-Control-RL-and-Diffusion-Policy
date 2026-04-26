@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, TextIO
 
 import numpy as np
@@ -29,10 +30,18 @@ class TrainProgressReporter:
         ("train/learning_rate_actor", "lr_actor"),
         ("train/learning_rate_critic", "lr_critic"),
         ("train/learning_rate_alpha", "lr_alpha"),
+        ("train_rollout/mean_return", "train_rollout_return"),
+        ("train_rollout/success_rate", "train_rollout_success"),
+        ("train_rollout/mean_episode_length", "train_rollout_len"),
+        ("train_rollout/episode_count", "train_rollout_eps"),
         ("eval/mean_return", "eval_return"),
         ("eval/success_rate", "eval_success"),
         ("eval/mean_episode_length", "eval_len"),
         ("eval/mean_action_jerk", "eval_jerk"),
+        ("eval_rollout/mean_return", "eval_rollout_return"),
+        ("eval_rollout/success_rate", "eval_rollout_success"),
+        ("eval_rollout/mean_episode_length", "eval_rollout_len"),
+        ("eval_rollout/episode_count", "eval_rollout_eps"),
     )
 
     def __init__(
@@ -45,6 +54,7 @@ class TrainProgressReporter:
         description: str = "train",
         use_tqdm: bool = True,
         stream: TextIO | None = None,
+        log_path: str | Path | None = None,
     ) -> None:
         if total_env_steps <= 0:
             raise ValueError("total_env_steps must be positive")
@@ -57,15 +67,21 @@ class TrainProgressReporter:
         self.log_every_train_steps = int(log_every_train_steps)
         self.description = description
         self.stream = stream or sys.stderr
-        self.enabled = self.stream.isatty() if enabled is None else bool(enabled)
+        self._log_file: TextIO | None = None
+        if log_path is not None:
+            path = Path(log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = path.open("a", encoding="utf-8")
+        self._console_enabled = self.stream.isatty() if enabled is None else bool(enabled)
+        self.enabled = self._console_enabled or self._log_file is not None
         self._latest_metrics: dict[str, float] = {}
         self._last_step = 0
-        self._last_report_step = 0
+        self._last_report_env_step = 0
         self._last_report_train_step = 0
         self._closed = False
         self._bar: Any | None = None
 
-        if self.enabled and use_tqdm:
+        if self._console_enabled and use_tqdm:
             try:
                 from tqdm.auto import tqdm
             except Exception:
@@ -103,18 +119,23 @@ class TrainProgressReporter:
             self._last_step = bounded_step
 
         train_step = _train_step(current_metrics)
+        env_due = _is_env_metric_record(current_metrics) and (
+            bounded_step - self._last_report_env_step >= self.log_every_env_steps
+        )
+        train_due = (
+            train_step is not None
+            and train_step - self._last_report_train_step >= self.log_every_train_steps
+        )
         should_report = (
             force
-            or bounded_step - self._last_report_step >= self.log_every_env_steps
-            or (
-                train_step is not None
-                and train_step - self._last_report_train_step >= self.log_every_train_steps
-            )
+            or env_due
+            or train_due
             or _has_eval_metric(metrics)
         )
         if should_report:
             self._report(bounded_step, current_metrics or self._latest_metrics)
-            self._last_report_step = bounded_step
+            if env_due or (force and _is_env_metric_record(current_metrics)):
+                self._last_report_env_step = bounded_step
             if train_step is not None:
                 self._last_report_train_step = train_step
 
@@ -123,6 +144,8 @@ class TrainProgressReporter:
             return
         if self._bar is not None:
             self._bar.close()
+        if self._log_file is not None and not self._log_file.closed:
+            self._log_file.close()
         self._closed = True
 
     def note(self, step: int, kind: str, fields: Mapping[str, Any] | None = None) -> None:
@@ -135,11 +158,7 @@ class TrainProgressReporter:
         summary = _format_fields(fields or {})
         if summary:
             message = f"{message} | {summary}"
-        if self._bar is not None:
-            self._bar.write(message)
-            self._bar.refresh()
-            return
-        print(message, file=self.stream, flush=True)
+        self._emit(message)
 
     def _report(self, step: int, metrics: Mapping[str, float]) -> None:
         summary = self._summary(metrics)
@@ -147,12 +166,7 @@ class TrainProgressReporter:
         message = f"{self.description} | {kind} | env_step={step}/{self.total_env_steps}"
         if summary:
             message = f"{message} | {summary}"
-        if self._bar is not None:
-            self._bar.write(message)
-            self._bar.refresh()
-            return
-
-        print(message, file=self.stream, flush=True)
+        self._emit(message)
 
     def _summary(self, metrics: Mapping[str, float]) -> str:
         parts: list[str] = []
@@ -161,6 +175,16 @@ class TrainProgressReporter:
                 continue
             parts.append(f"{label}={_format_metric(key, metrics[key])}")
         return " ".join(parts)
+
+    def _emit(self, message: str) -> None:
+        if self._console_enabled:
+            if self._bar is not None:
+                self._bar.write(message)
+                self._bar.refresh()
+            else:
+                print(message, file=self.stream, flush=True)
+        if self._log_file is not None:
+            print(message, file=self._log_file, flush=True)
 
 
 def _numeric_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
@@ -191,7 +215,9 @@ def _maybe_float(value: Any) -> float | None:
 
 
 def _has_eval_metric(metrics: Mapping[str, Any] | None) -> bool:
-    return bool(metrics) and any(str(key).startswith("eval/") for key in metrics)
+    return bool(metrics) and any(
+        str(key).startswith(("eval/", "eval_rollout/", "train_rollout/")) for key in metrics
+    )
 
 
 def _train_step(metrics: Mapping[str, float]) -> int | None:
@@ -200,7 +226,15 @@ def _train_step(metrics: Mapping[str, float]) -> int | None:
     return int(metrics["train/update_step"])
 
 
+def _is_env_metric_record(metrics: Mapping[str, float]) -> bool:
+    return bool(metrics) and _line_kind(metrics) == "env"
+
+
 def _line_kind(metrics: Mapping[str, float]) -> str:
+    if any(key.startswith("eval_rollout/") for key in metrics):
+        return "eval rollout"
+    if any(key.startswith("train_rollout/") for key in metrics):
+        return "train rollout"
     if any(key.startswith("eval/") for key in metrics):
         return "eval"
     if "train/update_step" in metrics or any(key.endswith("_loss") for key in metrics):
@@ -227,11 +261,15 @@ def _format_metric(key: str, value: float) -> str:
         "episodes",
         "max_steps",
         "settle_steps",
+        "train_rollout/episode_count",
+        "train_rollout/window_size",
+        "eval_rollout/episode_count",
+        "eval_rollout/window_size",
     }:
         return str(int(round(value)))
     if "learning_rate" in key:
         return f"{value:.2e}"
-    if key == "eval/success_rate":
+    if key.endswith("success_rate"):
         return f"{value:.3f}"
     if abs(value) >= 1000.0 or (0.0 < abs(value) < 1e-3):
         return f"{value:.3e}"
