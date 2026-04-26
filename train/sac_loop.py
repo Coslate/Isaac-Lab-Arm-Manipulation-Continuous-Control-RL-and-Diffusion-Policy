@@ -13,6 +13,7 @@ Single-env shorthand (action ``(7,)``, reward scalar) is also accepted.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,8 @@ import torch
 from agents.replay_buffer import ReplayBuffer
 from agents.sac import SACAgent, SACConfig
 from configs import ACTION_DIM
+from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_collection_state
+from train.loggers import TrainLogger
 
 
 DEFAULT_REPLAY_CAPACITY = 200_000
@@ -40,6 +43,11 @@ class SACTrainLoopConfig:
     seed: int = 0
     ram_budget_gib: float = 64.0
     eval_every_env_steps: int = 0  # 0 disables online eval inside the loop
+    eval_num_episodes: int = 5
+    eval_max_steps: int = 200
+    eval_settle_steps: int = 600
+    eval_seed: int | None = None
+    eval_backend: str = "fake"
 
 
 @dataclass
@@ -50,6 +58,8 @@ class SACTrainLoopReport:
     num_updates: int
     final_logs: dict[str, float] = field(default_factory=dict)
     log_history: list[dict[str, float]] = field(default_factory=list)
+    eval_history: list[dict[str, float]] = field(default_factory=list)
+    scheduler_state: dict[str, Any] = field(default_factory=dict)
 
 
 def _obs_num_envs(obs: dict[str, np.ndarray]) -> int:
@@ -107,6 +117,9 @@ def run_sac_train_loop(
     agent: SACAgent,
     *,
     loop_config: SACTrainLoopConfig | None = None,
+    logger: TrainLogger | None = None,
+    schedulers: Mapping[str, LearningRateScheduler] | None = None,
+    eval_env_factory: Callable[[], Any] | None = None,
 ) -> SACTrainLoopReport:
     """Drive an env -> replay -> SAC update loop until ``total_env_steps``.
 
@@ -132,7 +145,10 @@ def run_sac_train_loop(
     env_steps = 0
     update_count = 0
     log_history: list[dict[str, float]] = []
+    eval_history: list[dict[str, float]] = []
     final_logs: dict[str, float] = {}
+    next_eval_step = cfg.eval_every_env_steps if cfg.eval_every_env_steps > 0 else None
+    eval_count = 0
 
     while env_steps < cfg.total_env_steps:
         warming_up = env_steps < cfg.warmup_steps
@@ -161,18 +177,116 @@ def run_sac_train_loop(
             for _ in range(agent.config.utd_ratio):
                 batch = replay.sample(cfg.batch_size, device=agent.device)
                 final_logs = agent.update(batch)
+                _step_schedulers(schedulers, ("critic", "actor", "alpha"))
                 update_count += 1
-            final_logs = dict(final_logs)
-            final_logs["train/replay_size"] = float(replay.size)
-            final_logs["train/num_env_steps"] = float(env_steps)
-            log_history.append(final_logs)
+                final_logs = dict(final_logs)
+                final_logs["train/replay_size"] = float(replay.size)
+                final_logs["train/num_env_steps"] = float(env_steps)
+                final_logs.update(_sac_lr_logs(agent))
+                log_history.append(final_logs)
+                if logger is not None:
+                    logger.log_scalars(env_steps, final_logs)
+
+        while next_eval_step is not None and env_steps >= next_eval_step:
+            eval_logs = _run_sac_periodic_eval(
+                agent,
+                cfg=cfg,
+                env_steps=env_steps,
+                eval_count=eval_count,
+                eval_env_factory=eval_env_factory,
+            )
+            eval_history.append(eval_logs)
+            log_history.append(eval_logs)
+            if logger is not None:
+                logger.log_scalars(env_steps, eval_logs)
+            eval_count += 1
+            next_eval_step += cfg.eval_every_env_steps
 
     return SACTrainLoopReport(
         num_env_steps=env_steps,
         num_updates=update_count,
         final_logs=final_logs,
         log_history=log_history,
+        eval_history=eval_history,
+        scheduler_state=scheduler_collection_state(schedulers),
     )
+
+
+def _step_schedulers(
+    schedulers: Mapping[str, LearningRateScheduler] | None,
+    names: tuple[str, ...],
+) -> None:
+    if not schedulers:
+        return
+    for name in names:
+        scheduler = schedulers.get(name)
+        if scheduler is not None:
+            scheduler.step()
+
+
+def _sac_lr_logs(agent: SACAgent) -> dict[str, float]:
+    return {
+        "train/learning_rate_actor": optimizer_lr(agent.actor_optimizer),
+        "train/learning_rate_critic": optimizer_lr(agent.critic_optimizer),
+        "train/learning_rate_alpha": optimizer_lr(agent.alpha_optimizer),
+    }
+
+
+def _run_sac_periodic_eval(
+    agent: SACAgent,
+    *,
+    cfg: SACTrainLoopConfig,
+    env_steps: int,
+    eval_count: int,
+    eval_env_factory: Callable[[], Any] | None,
+) -> dict[str, float]:
+    if eval_env_factory is None:
+        raise ValueError("eval_env_factory is required when eval_every_env_steps > 0")
+
+    from eval.checkpoint_eval import evaluate_episodes
+    from scripts.collect_rollouts import collect_rollout_episodes
+    from train.eval_policy import AgentEvalPolicy
+
+    eval_seed_base = cfg.seed + 1000 if cfg.eval_seed is None else cfg.eval_seed
+    eval_seed = int(eval_seed_base + eval_count)
+    was_training = agent.training
+    agent.eval()
+    eval_env = eval_env_factory()
+    try:
+        policy = AgentEvalPolicy(agent, name="sac_train_eval")
+        episodes = collect_rollout_episodes(
+            eval_env,
+            policy,
+            num_episodes=cfg.eval_num_episodes,
+            max_steps=cfg.eval_max_steps,
+            seed=eval_seed,
+            env_backend=cfg.eval_backend,
+            show_progress=False,
+            settle_steps=cfg.eval_settle_steps,
+        )
+        metrics = evaluate_episodes(
+            episodes,
+            agent_type="sac",
+            checkpoint="<in-loop>",
+            num_env_steps=env_steps,
+            deterministic=True,
+            settle_steps=cfg.eval_settle_steps,
+            seed=eval_seed,
+            backend=cfg.eval_backend,
+        )
+        return {
+            "eval/mean_return": float(metrics.mean_return),
+            "eval/success_rate": float(metrics.success_rate),
+            "eval/mean_episode_length": float(metrics.mean_episode_length),
+            "eval/mean_action_jerk": float(metrics.mean_action_jerk),
+            "eval/episode_successes_count": float(sum(metrics.episode_successes.values())),
+        }
+    finally:
+        close = getattr(eval_env, "close", None)
+        if callable(close):
+            close()
+        if was_training:
+            agent.train()
 
 
 __all__ = [

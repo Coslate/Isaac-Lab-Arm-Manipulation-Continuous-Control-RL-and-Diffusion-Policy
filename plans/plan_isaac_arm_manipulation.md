@@ -81,10 +81,11 @@ This is the single source of truth for implementation status. Do not maintain a 
 | Demo PR - One-command data loop | Done | Dataset + metrics + GIF/MP4 + debug PNG artifacts in one command | `tests/test_demo_data_loop.py` -> `13 passed`; full pytest at demo completion -> `149 passed, 1 skipped` | Used for interview/demo vertical slice. |
 | Final live demo artifacts | Generated | `final_heuristic_demo` HDF5/JSON/GIF/MP4/debug PNGs | `logs/final_heuristic_demo_metrics.json`: 3 eps, mean return `27.3684`, success `2/3`, jerk `0.2926` | Random and replay comparison artifacts also exist. |
 | PR 3 - Shared backbone | Done | `ImageProprioBackbone` shared image-proprio encoder | `tests/test_nn_backbone.py` -> `8 passed`; full pytest after PR3 -> `157 passed, 1 skipped` | First research-model component is complete. |
-| PR 3.5 - Agent primitives | Pending | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, policy adapter | Planned test: `tests/test_agent_primitives.py` | Next PR. Needed before SAC/TD3 to avoid duplicate infrastructure. |
-| PR 6 - SAC train | Pending | `SACAgent`, online replay training, deterministic oracle mode, `scripts.train_sac_continuous` | Planned test: `tests/test_sac_continuous.py` | First off-policy training algorithm; unlocks SAC oracle. |
-| PR 7 - TD3 train | Pending | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous` | Planned test: `tests/test_td3_continuous.py` | Shares replay/twin-Q infrastructure with SAC. |
-| PR 11a - SAC/TD3 eval | Pending | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | Planned test: `tests/test_eval_sac_td3_checkpoints.py` | First trained-checkpoint eval path. |
+| PR 3.5 - Agent primitives | Done | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, fake-checkpoint factory, `CheckpointPolicy` adapter | `tests/test_agent_primitives.py` -> `21 passed` | Lays the off-policy + checkpoint infrastructure for PR6/PR7/PR11a/PR12a. |
+| PR 6 - SAC train | Done | `SACAgent`, online replay training, deterministic oracle mode (`tanh_mu`), `scripts.train_sac_continuous`, fake-env smoke + reward-probe | `tests/test_sac_continuous.py` -> `15 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
+| PR 7 - TD3 train | Done | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous`, shares replay format with SAC | `tests/test_td3_continuous.py` -> `17 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
+| PR 6.5 - Training logger + LR scheduler + periodic eval | Done | TensorBoard/wandb/JSONL logger contract from §8.3, in-loop scheduler hooks (step LR + warmup-cosine), separate-env `eval_every_env_steps` periodic eval that emits `eval/*` keys, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `9 passed`; full pytest -> `232 passed, 1 skipped` | Required before any multi-hour Isaac SAC/TD3 run; unblocks measured §10.1 results. |
+| PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
 | PR 8.5 - Diffusion sequence dataset | Pending | `(B,T_obs,3,224,224)`, `(B,T_obs,40)`, `(B,H,7)` sequence dataloader | Planned test: `tests/test_diffusion_sequence_dataset.py` | Bridge from HDF5 episodes to Diffusion training batches. |
@@ -836,7 +837,7 @@ Logging key contract:
 
 Use these exact keys in TensorBoard/CSV/JSON logs where applicable so comparison scripts do not need method-specific adapters.
 
-During PR6/PR7 training, eval rollouts should run on the `eval_every_env_steps=10000` cadence from §8.2, using deterministic actions and `eval_settle_steps=600` for final comparison logs. Smoke/debug runs may use fewer settle steps, but must not overwrite final-comparison metrics.
+After PR6.5, SAC/TD3 training rollouts should run eval on the `eval_every_env_steps=10000` cadence from §8.2, using deterministic actions, a separate eval env, and `eval_settle_steps=600` for final comparison logs. Smoke/debug runs may use fewer settle steps, but must not overwrite final-comparison metrics.
 
 ---
 
@@ -1638,6 +1639,124 @@ git commit -m "feat(rl): add continuous TD3 baseline"
 
 ---
 
+### PR 6.5 — Training Logger, LR Scheduler, And Periodic Eval
+
+**Goal / Why**
+
+PR6 and PR7 currently log only the final-step scalars to a JSON file. Long Isaac SAC/TD3 runs need:
+
+- live training-loss curves (critic, actor, alpha, q_mean, entropy, replay_size, learning rate),
+- periodic in-loop evaluation rollouts that emit `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`,
+- the §8.3 log-key contract actually wired to TensorBoard and/or wandb,
+- a learning-rate scheduler so the same code path can run a fixed-LR baseline and the recommended warmup + cosine annealing schedule.
+
+This PR closes that gap before §10.1 measured results are populated.
+
+**Inputs**
+- PR6 `SACAgent` and PR7 `TD3Agent`, including their `update()` log dicts.
+- PR3.5 `CheckpointPolicy` and PR11a `evaluate_episodes` for in-loop deterministic eval rollouts.
+- PR2.5 camera-enabled Isaac env wrapper.
+- §8.3 logging key contract.
+
+**Outputs**
+- New module `train/loggers.py` with:
+  - abstract `TrainLogger` interface (`log_scalars(step, metrics)`, `log_hparams(hparams)`, `close()`),
+  - `TensorBoardLogger` (PyTorch SummaryWriter under `--tb-log-dir`),
+  - `WandbLogger` (`--wandb-project`, `--wandb-run-name`, `--wandb-mode online|offline|disabled`),
+  - `JSONLinesLogger` always-on fallback that writes one JSON object per step to `logs/<run_name>_train.jsonl`,
+  - `CompositeLogger` that fan-outs to any subset of the above without method-specific glue.
+- New module `train/lr_scheduler.py` with:
+  - `make_scheduler(scheduler_type, optimizer, *, warmup_steps, total_update_steps, ...)`,
+  - `scheduler_type="constant"` (default for backwards compat),
+  - `scheduler_type="step"` — `torch.optim.lr_scheduler.StepLR` exposed via `--lr-step-size`, `--lr-gamma`,
+  - `scheduler_type="warmup_cosine"` — linear warmup over `--lr-warmup-updates` followed by cosine annealing to `--lr-min-lr` over the remaining update budget.
+- Integration into `run_sac_train_loop` and `run_td3_train_loop`:
+  - per-update logger calls,
+  - scheduler step hooks for each optimizer (actor, critic, alpha for SAC; actor, critic for TD3),
+  - periodic `eval/*` rollouts every `eval_every_env_steps` individual env transitions using a deterministic `CheckpointPolicy`-equivalent path on a separate eval env,
+  - `train/learning_rate_actor`, `train/learning_rate_critic`, `train/learning_rate_alpha` (when applicable) emitted every step.
+- CLI extensions in `scripts.train_sac_continuous` and `scripts.train_td3_continuous`:
+  - `--lr-scheduler {constant,step,warmup_cosine}` (default `constant`),
+  - `--lr-warmup-updates`, `--lr-step-size`, `--lr-gamma`, `--lr-min-lr`,
+  - `--total-update-steps` optional override for scheduler horizon,
+  - `--tb-log-dir`, `--wandb-project`, `--wandb-run-name`, `--wandb-mode`, `--jsonl-log` (default `logs/<run_name>_train.jsonl`),
+  - `--eval-every-env-steps` (default `10000` per §8.2), `--eval-num-episodes` (default `5`), `--eval-settle-steps` (default `600`), `--eval-seed` (default `args.seed + 1000`),
+  - `--eval-backend {same-as-train,fake,isaac}` and eval env args mirroring the training env args when a separate Isaac eval env is needed.
+
+**Implementation**
+- Keep all loggers optional: missing wandb / TensorBoard installs degrade to JSONL only, with a single warning at startup. TensorBoard event-file assertions in tests should skip when `torch.utils.tensorboard` is unavailable; JSONL logging remains mandatory.
+- Run `logger.log_scalars(env_steps, metrics)` after every `agent.update(...)` so `train/*` curves include warmup updates as soon as updates begin.
+- Eval cadence is measured in individual env transitions (matches §8.2 `eval_every_env_steps=10000`), not in update steps and not in raw vectorized `env.step()` calls. With `num_envs=64`, one vectorized step advances the cadence counter by up to 64.
+- Eval rollouts must use deterministic actions, the §3.5 `eval_settle_steps=600` default, a separate seed, and a separate eval env so they do not reset or advance the training env. Same-env eval is allowed only for CPU fake-env tests that explicitly construct a new fake env instance.
+- The eval rollouts call `evaluate_episodes` from PR11a; results write to `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`, `eval/episode_successes_count`.
+- Off-policy update semantics must be explicit: the existing PR6/PR7 loops perform `utd_ratio` gradient updates per vectorized environment step after warmup, while `env_steps` counts individual transitions. Derive the default scheduler horizon from the expected number of actual update calls:
+
+```text
+num_vector_steps_after_warmup = ceil(max(total_env_steps - warmup_steps, 0) / num_envs)
+total_update_steps = num_vector_steps_after_warmup * utd_ratio
+```
+
+  If a later PR changes UTD to mean updates per individual transition, update this formula and tests in the same PR.
+- Schedulers step when their paired optimizer actually steps. SAC actor, critic, and alpha schedulers step every SAC update. TD3 critic scheduler steps every critic update, but TD3 actor scheduler steps only on delayed actor updates; this prevents the actor LR from decaying on critic-only updates.
+- When `--lr-scheduler warmup_cosine` is selected without an explicit `--total-update-steps`, use the formula above and warn if the result is non-positive.
+- Persist scheduler state in checkpoints via a trainer-level checkpoint extension, e.g. `agent.save(..., extras_update={"scheduler_state": ...})`, or a dedicated trainer checkpoint writer that merges agent extras with scheduler extras. Resume must restore both optimizer and scheduler state before the next update.
+- Keep `extras["scheduler_state"]` optional for old PR6/PR7 checkpoints, but newly saved PR6.5 checkpoints should include it when a non-constant scheduler is configured.
+- Do not change SAC/TD3 loss formulas, replay format, or checkpoint metadata schema (other than the new optional `extras["scheduler_state"]` slot).
+
+**How To Test**
+- `tests/test_training_logger_and_scheduler.py` covers, on CPU + fake env:
+  - `TensorBoardLogger` writes events under `tb-log-dir` and contains `train/critic_loss` after one update,
+  - `JSONLinesLogger` writes one parseable JSON object per logged step,
+  - `WandbLogger` is exercised with `mode="disabled"` so no network call happens; verify the log calls were forwarded to its proxy run object,
+  - `CompositeLogger` fan-out to two backends does not duplicate events for a single backend,
+  - `make_scheduler("step", ...)` reduces the actor LR by `gamma` after `step_size` updates,
+  - `make_scheduler("warmup_cosine", ...)` LR rises linearly during warmup, then monotonically decays to `min_lr` near the end of the schedule (check three sample points: warmup tail, mid-schedule, last update),
+  - `make_scheduler("constant", ...)` keeps LR equal to the optimizer's initial LR,
+  - SAC and TD3 train loops emit `train/learning_rate_actor` matching the scheduler value at each logged step,
+  - vectorized fake env with `num_envs>1` triggers eval by individual transition count, not by raw `env.step()` count,
+  - TD3 actor scheduler advances only on delayed actor optimizer steps while the critic scheduler advances every critic update,
+  - periodic `eval_every_env_steps` actually runs at the configured cadence, uses a separate fake eval env instance, and writes `eval/mean_return` / `eval/success_rate` / `eval/mean_action_jerk`,
+  - missing wandb install (simulated by patching the import) downgrades cleanly to JSONL-only without raising,
+  - missing TensorBoard install downgrades cleanly to JSONL-only, while TensorBoard event assertions run only when the dependency is present,
+  - scheduler state round-trips via checkpoint save/load and resume continues from the correct LR for both SAC and TD3.
+
+**Acceptance Criteria**
+
+PR6.5 is complete when:
+
+```bash
+pytest tests/test_training_logger_and_scheduler.py -v
+```
+
+passes on CPU + fake env, and a smoke command of the form
+
+```bash
+python -m scripts.train_sac_continuous \
+  --backend fake --total-env-steps 64 --warmup-steps 8 --batch-size 4 \
+  --replay-capacity 64 --device cpu --ram-budget-gib 4 \
+  --reward-probe-steps 16 \
+  --lr-scheduler warmup_cosine --lr-warmup-updates 4 --lr-min-lr 1e-5 \
+  --tb-log-dir /tmp/sac_tb --jsonl-log /tmp/sac.jsonl \
+  --wandb-mode disabled \
+  --eval-every-env-steps 16 --eval-num-episodes 2 --eval-settle-steps 0
+```
+
+emits a JSONL log with `train/*` and at least one `eval/*` line, emits non-empty TensorBoard event files when TensorBoard is installed, and writes a checkpoint whose `extras["scheduler_state"]` round-trips.
+
+**Pytest**
+
+```bash
+pytest tests/test_training_logger_and_scheduler.py -v
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add TB/wandb logger, LR scheduler, periodic eval"
+```
+
+---
+
 ### PR 11a — SAC/TD3 Checkpoint Evaluation
 
 **Goal / Why**
@@ -2284,6 +2403,9 @@ PR 3.5 Agent Primitives
   |      +--> PR 7 TD3 train/checkpoints -------+
   |                                            |
   |                                            v
+  |                                      PR 6.5 training logs/schedulers/eval
+  |                                            |
+  |                                            v
   |                                      PR 11a SAC/TD3 eval
   |                                            |
   |                                            v
@@ -2374,6 +2496,7 @@ pytest tests/test_nn_backbone.py -v
 pytest tests/test_agent_primitives.py -v
 pytest tests/test_sac_continuous.py -v
 pytest tests/test_td3_continuous.py -v
+pytest tests/test_training_logger_and_scheduler.py -v
 pytest tests/test_eval_sac_td3_checkpoints.py -v
 pytest tests/test_visual_sac_td3_checkpoints.py -v
 pytest tests/test_sac_demo_collection.py -v
@@ -2406,10 +2529,14 @@ python -m scripts.train_sac_continuous \
   --polyak-tau 0.005 \
   --initial-alpha 0.2 \
   --target-entropy auto \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 1000 \
+  --lr-min-lr 1e-5 \
   --eval-every-env-steps 10000 \
   --eval-settle-steps 600 \
   --learning_rate 3e-4 \
-  --tb_log_dir ./logs/sac_franka \
+  --tb-log-dir ./logs/sac_franka \
+  --jsonl-log ./logs/sac_franka_train.jsonl \
   --checkpoint_dir ./checkpoints \
   --checkpoint_name sac_franka
 ```
@@ -2431,10 +2558,14 @@ python -m scripts.train_td3_continuous \
   --exploration-noise-sigma 0.1 \
   --target-noise-sigma 0.2 \
   --target-noise-clip 0.5 \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 1000 \
+  --lr-min-lr 1e-5 \
   --eval-every-env-steps 10000 \
   --eval-settle-steps 600 \
   --learning_rate 3e-4 \
-  --tb_log_dir ./logs/td3_franka \
+  --tb-log-dir ./logs/td3_franka \
+  --jsonl-log ./logs/td3_franka_train.jsonl \
   --checkpoint_dir ./checkpoints \
   --checkpoint_name td3_franka
 ```

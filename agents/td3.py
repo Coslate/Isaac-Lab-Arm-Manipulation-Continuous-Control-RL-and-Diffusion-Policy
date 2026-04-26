@@ -283,8 +283,15 @@ class TD3Agent(nn.Module):
         num_env_steps: int,
         seed: int = 0,
         env_id: str = ISAAC_FRANKA_IK_REL_ENV_ID,
+        extras_update: dict[str, Any] | None = None,
     ) -> Path:
         metadata = self.build_metadata(num_env_steps=num_env_steps, seed=seed, env_id=env_id)
+        extras = {
+            "global_update_step": self.global_update_step,
+            "actor_update_count": self._actor_update_count,
+        }
+        if extras_update:
+            extras.update(extras_update)
         payload = CheckpointPayload(
             metadata=metadata,
             model_state={
@@ -301,10 +308,7 @@ class TD3Agent(nn.Module):
                 "actor": self.actor_optimizer.state_dict(),
                 "critic": self.critic_optimizer.state_dict(),
             },
-            extras={
-                "global_update_step": self.global_update_step,
-                "actor_update_count": self._actor_update_count,
-            },
+            extras=extras,
         )
         return save_checkpoint(path, payload)
 
