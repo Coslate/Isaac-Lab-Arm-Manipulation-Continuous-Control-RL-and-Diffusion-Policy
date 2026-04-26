@@ -13,7 +13,7 @@ from agents.replay_buffer import ReplayBatch
 from agents.sac import SACAgent, SACConfig
 from agents.torch_image_aug import PadAndRandomCropTorch
 from configs import ACTION_DIM
-from scripts.train_sac_continuous import _build_fake_env, parse_args, run_with_env
+from scripts.train_sac_continuous import _build_fake_env, _validate_periodic_eval_args, parse_args, run_with_env
 from train.reward_probe import RewardProbeError, probe_reward_signal
 from train.sac_loop import SACTrainLoopConfig, run_sac_train_loop
 
@@ -387,3 +387,17 @@ def test_train_sac_continuous_fake_backend_smoke(tmp_path: Path):
     payload = load_checkpoint(checkpoint_path, expected_agent_type="sac")
     assert payload.metadata.num_env_steps == 32
     assert payload.metadata.deterministic_action_mode == DETERMINISTIC_MODE_SAC
+
+
+def test_train_sac_rejects_in_process_isaac_periodic_eval():
+    args = parse_args(
+        [
+            "--backend",
+            "isaac",
+            "--eval-every-env-steps",
+            "500",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="In-loop Isaac periodic eval is currently unsupported"):
+        _validate_periodic_eval_args(args, "isaac")

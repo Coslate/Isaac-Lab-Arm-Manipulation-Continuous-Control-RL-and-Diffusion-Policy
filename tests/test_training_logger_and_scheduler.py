@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from train.lr_scheduler import (
     load_scheduler_collection_state,
     make_scheduler,
 )
+from train.progress import TrainProgressReporter
 from train.sac_loop import SACTrainLoopConfig, run_sac_train_loop
 from train.td3_loop import TD3TrainLoopConfig, run_td3_train_loop
 
@@ -84,6 +86,18 @@ class _ProxyWandbRun:
         self.finished = True
 
 
+class _RecordingProgress:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, dict, bool]] = []
+        self.notes: list[tuple[int, str, dict]] = []
+
+    def update(self, step: int, metrics: dict | None = None, *, force: bool = False) -> None:
+        self.calls.append((step, dict(metrics or {}), force))
+
+    def note(self, step: int, kind: str, fields: dict | None = None) -> None:
+        self.notes.append((step, kind, dict(fields or {})))
+
+
 def test_jsonlines_logger_writes_parseable_objects(tmp_path: Path):
     path = tmp_path / "train.jsonl"
     logger = JSONLinesLogger(path)
@@ -128,6 +142,38 @@ def test_tensorboard_logger_optional_dependency(tmp_path: Path):
 
     if logger.enabled:
         assert any((tmp_path / "tb").glob("events.out.tfevents.*"))
+
+
+def test_train_progress_reporter_prints_losses_and_eval_metrics():
+    stream = io.StringIO()
+    progress = TrainProgressReporter(
+        total_env_steps=10,
+        log_every_env_steps=100,
+        log_every_train_steps=2,
+        enabled=True,
+        description="sac train",
+        use_tqdm=False,
+        stream=stream,
+    )
+
+    progress.update(4, {"train/update_step": 1, "train/critic_loss": 1.25, "train/replay_size": 4})
+    assert stream.getvalue() == ""
+    progress.note(4, "eval_start", {"eval_count": 1, "episodes": 2, "backend": "fake"})
+    progress.update(4, {"train/update_step": 2, "train/critic_loss": 1.0, "train/replay_size": 4})
+    progress.update(10, {"eval/mean_return": 2.5, "eval/success_rate": 0.5}, force=True)
+    progress.close()
+
+    output = stream.getvalue()
+    assert "sac train | eval_start | env_step=4/10" in output
+    assert "episodes=2" in output
+    assert "backend=fake" in output
+    assert "sac train | train | env_step=4/10" in output
+    assert "sac train | eval | env_step=10/10" in output
+    assert "update=2" in output
+    assert "critic=1.000" in output
+    assert "replay=4" in output
+    assert "eval_return=2.500" in output
+    assert "eval_success=0.500" in output
 
 
 def test_constant_and_step_schedulers():
@@ -220,6 +266,7 @@ def test_sac_train_loop_logs_lr_periodic_eval_and_checkpoint_scheduler_state(tmp
     }
     jsonl = tmp_path / "sac.jsonl"
     logger = JSONLinesLogger(jsonl)
+    progress = _RecordingProgress()
     cfg = SACTrainLoopConfig(
         replay_capacity=64,
         warmup_steps=8,
@@ -241,6 +288,7 @@ def test_sac_train_loop_logs_lr_periodic_eval_and_checkpoint_scheduler_state(tmp
         logger=logger,
         schedulers=schedulers,
         eval_env_factory=_eval_factory,
+        progress=progress,
     )
     logger.close()
 
@@ -248,7 +296,14 @@ def test_sac_train_loop_logs_lr_periodic_eval_and_checkpoint_scheduler_state(tmp
     assert eval_factory_calls["count"] == 3
     assert len(report.eval_history) == 3
     assert "train/learning_rate_actor" in report.final_logs
+    assert report.final_logs["train/update_step"] == pytest.approx(total_updates)
     assert "eval/mean_return" in report.eval_history[-1]
+    progress_steps = [step for step, _metrics, _force in progress.calls]
+    assert 4 in progress_steps
+    assert 8 in progress_steps
+    assert any("train/update_step" in metrics for _step, metrics, _force in progress.calls)
+    assert any(force and "eval/mean_return" in metrics for _step, metrics, force in progress.calls)
+    assert any(kind == "eval_start" for _step, kind, _fields in progress.notes)
     payloads = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
     assert any("train/critic_loss" in payload for payload in payloads)
     assert any("eval/success_rate" in payload for payload in payloads)

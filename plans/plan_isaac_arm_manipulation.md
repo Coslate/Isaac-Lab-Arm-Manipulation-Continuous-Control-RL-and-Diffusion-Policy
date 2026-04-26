@@ -84,7 +84,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 3.5 - Agent primitives | Done | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, fake-checkpoint factory, `CheckpointPolicy` adapter | `tests/test_agent_primitives.py` -> `21 passed` | Lays the off-policy + checkpoint infrastructure for PR6/PR7/PR11a/PR12a. |
 | PR 6 - SAC train | Done | `SACAgent`, online replay training, deterministic oracle mode (`tanh_mu`), `scripts.train_sac_continuous`, fake-env smoke + reward-probe | `tests/test_sac_continuous.py` -> `15 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
 | PR 7 - TD3 train | Done | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous`, shares replay format with SAC | `tests/test_td3_continuous.py` -> `17 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
-| PR 6.5 - Training logger + LR scheduler + periodic eval | Done | TensorBoard/wandb/JSONL logger contract from §8.3, in-loop scheduler hooks (step LR + warmup-cosine), separate-env `eval_every_env_steps` periodic eval that emits `eval/*` keys, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `9 passed`; full pytest -> `232 passed, 1 skipped` | Required before any multi-hour Isaac SAC/TD3 run; unblocks measured §10.1 results. |
+| PR 6.5 - Training logger + LR scheduler + periodic eval | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console tqdm/fallback progress for SAC/TD3 with env-step and train-update refresh cadence, in-loop scheduler hooks (step LR + warmup-cosine), fake-env `eval_every_env_steps` periodic eval that emits `eval/*` keys, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `10 passed`; full pytest -> `235 passed, 1 skipped` | Live Isaac in-loop eval is guarded off because a second Isaac env can close the simulator; use `--eval-every-env-steps 0` during live training and PR11a for checkpoint eval. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Pending | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs | Planned test: `tests/test_visual_sac_td3_checkpoints.py` | First trained-policy visual path, matching demo-data-loop artifact style. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -1646,6 +1646,7 @@ git commit -m "feat(rl): add continuous TD3 baseline"
 PR6 and PR7 currently log only the final-step scalars to a JSON file. Long Isaac SAC/TD3 runs need:
 
 - live training-loss curves (critic, actor, alpha, q_mean, entropy, replay_size, learning rate),
+- terminal-side training progress that shows env-step progress plus the latest train losses and eval metrics during long runs,
 - periodic in-loop evaluation rollouts that emit `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`,
 - the §8.3 log-key contract actually wired to TensorBoard and/or wandb,
 - a learning-rate scheduler so the same code path can run a fixed-LR baseline and the recommended warmup + cosine annealing schedule.
@@ -1665,6 +1666,7 @@ This PR closes that gap before §10.1 measured results are populated.
   - `WandbLogger` (`--wandb-project`, `--wandb-run-name`, `--wandb-mode online|offline|disabled`),
   - `JSONLinesLogger` always-on fallback that writes one JSON object per step to `logs/<run_name>_train.jsonl`,
   - `CompositeLogger` that fan-outs to any subset of the above without method-specific glue.
+- New module `train/progress.py` with `TrainProgressReporter`, a tqdm-backed console progress helper with plain-stderr fallback. It advances the bar on every vectorized env step, keeps moving during replay warmup, and prints separate one-line `train` / `eval` metric records instead of hiding losses in the tqdm postfix. Loss printing can be throttled by optimizer-update count, so long runs can show losses every N SAC/TD3 train updates even when env-step reporting is sparse.
 - New module `train/lr_scheduler.py` with:
   - `make_scheduler(scheduler_type, optimizer, *, warmup_steps, total_update_steps, ...)`,
   - `scheduler_type="constant"` (default for backwards compat),
@@ -1680,14 +1682,17 @@ This PR closes that gap before §10.1 measured results are populated.
   - `--lr-warmup-updates`, `--lr-step-size`, `--lr-gamma`, `--lr-min-lr`,
   - `--total-update-steps` optional override for scheduler horizon,
   - `--tb-log-dir`, `--wandb-project`, `--wandb-run-name`, `--wandb-mode`, `--jsonl-log` (default `logs/<run_name>_train.jsonl`),
+  - `--progress/--no-progress` (default auto-enabled only for interactive stderr), `--log-every-env-steps` (default `1000`), and `--log-every-train-steps` / `--log-every-updates` (default `100`) for terminal progress refresh cadence,
   - `--eval-every-env-steps` (default `10000` per §8.2), `--eval-num-episodes` (default `5`), `--eval-settle-steps` (default `600`), `--eval-seed` (default `args.seed + 1000`),
   - `--eval-backend {same-as-train,fake,isaac}` and eval env args mirroring the training env args when a separate Isaac eval env is needed.
 
 **Implementation**
 - Keep all loggers optional: missing wandb / TensorBoard installs degrade to JSONL only, with a single warning at startup. TensorBoard event-file assertions in tests should skip when `torch.utils.tensorboard` is unavailable; JSONL logging remains mandatory.
 - Run `logger.log_scalars(env_steps, metrics)` after every `agent.update(...)` so `train/*` curves include warmup updates as soon as updates begin.
+- Run `progress.update(env_steps, ...)` after every vectorized env step, after train update logs, and after periodic eval logs. Include `train/update_step` in train logs so `--log-every-train-steps N` means every N optimizer update calls, not every N env transitions. The progress reporter prints metric lines such as `sac train | train | env_step=... | update=... critic=...` and `sac train | eval | env_step=... | eval_return=...`; it must not duplicate TensorBoard/wandb/JSONL records, and `--no-progress` must silence it for batch jobs.
 - Eval cadence is measured in individual env transitions (matches §8.2 `eval_every_env_steps=10000`), not in update steps and not in raw vectorized `env.step()` calls. With `num_envs=64`, one vectorized step advances the cadence counter by up to 64.
 - Eval rollouts must use deterministic actions, the §3.5 `eval_settle_steps=600` default, a separate seed, and a separate eval env so they do not reset or advance the training env. Same-env eval is allowed only for CPU fake-env tests that explicitly construct a new fake env instance.
+- Live Isaac train-time periodic eval is **not** currently supported in-process: constructing a second `IsaacArmEnv` while the training env is alive can cause Isaac Sim to close the app with exit code 0 before training resumes. For live Isaac SAC/TD3 runs, set `--eval-every-env-steps 0` and run PR11a `scripts.eval_checkpoint_continuous` after saving a checkpoint. `--eval-backend fake` is acceptable only for logger/progress smoke tests, not for real task metrics.
 - The eval rollouts call `evaluate_episodes` from PR11a; results write to `eval/mean_return`, `eval/success_rate`, `eval/mean_episode_length`, `eval/mean_action_jerk`, `eval/episode_successes_count`.
 - Off-policy update semantics must be explicit: the existing PR6/PR7 loops perform `utd_ratio` gradient updates per vectorized environment step after warmup, while `env_steps` counts individual transitions. Derive the default scheduler horizon from the expected number of actual update calls:
 
@@ -1709,6 +1714,7 @@ total_update_steps = num_vector_steps_after_warmup * utd_ratio
   - `JSONLinesLogger` writes one parseable JSON object per logged step,
   - `WandbLogger` is exercised with `mode="disabled"` so no network call happens; verify the log calls were forwarded to its proxy run object,
   - `CompositeLogger` fan-out to two backends does not duplicate events for a single backend,
+  - `TrainProgressReporter` prints latest train losses every configured train-update interval and eval metrics immediately in its fallback mode, while loop-level progress hooks advance during replay warmup before losses exist,
   - `make_scheduler("step", ...)` reduces the actor LR by `gamma` after `step_size` updates,
   - `make_scheduler("warmup_cosine", ...)` LR rises linearly during warmup, then monotonically decays to `min_lr` near the end of the schedule (check three sample points: warmup tail, mid-schedule, last update),
   - `make_scheduler("constant", ...)` keeps LR equal to the optimizer's initial LR,
@@ -1738,6 +1744,7 @@ python -m scripts.train_sac_continuous \
   --lr-scheduler warmup_cosine --lr-warmup-updates 4 --lr-min-lr 1e-5 \
   --tb-log-dir /tmp/sac_tb --jsonl-log /tmp/sac.jsonl \
   --wandb-mode disabled \
+  --progress --log-every-env-steps 16 --log-every-train-steps 4 \
   --eval-every-env-steps 16 --eval-num-episodes 2 --eval-settle-steps 0
 ```
 
@@ -1752,7 +1759,7 @@ pytest tests/test_training_logger_and_scheduler.py -v
 **Suggested Commit**
 
 ```bash
-git commit -m "feat(train): add TB/wandb logger, LR scheduler, periodic eval"
+git commit -m "feat(train): add console progress for SAC and TD3"
 ```
 
 ---

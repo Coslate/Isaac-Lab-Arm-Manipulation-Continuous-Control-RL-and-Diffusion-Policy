@@ -1,0 +1,71 @@
+{
+  "config": {
+    "batch_size": 16,
+    "eval_backend": "isaac",
+    "eval_every_env_steps": 0,
+    "eval_max_steps": 50,
+    "eval_num_episodes": 1,
+    "eval_seed": 1000,
+    "eval_settle_steps": 20,
+    "ram_budget_gib": 4.0,
+    "replay_capacity": 5000,
+    "seed": 0,
+    "total_env_steps": 2024,
+    "warmup_steps": 128
+  },
+  "eval_history": [],
+  "final_logs": {
+    "train/actor_loss": -3.5422799587249756,
+    "train/alpha": 0.17348100244998932,
+    "train/alpha_loss": -20.44963836669922,
+    "train/critic_loss": 0.0032793916761875153,
+    "train/entropy": 4.676253318786621,
+    "train/learning_rate_actor": 0.0003,
+    "train/learning_rate_alpha": 0.0003,
+    "train/learning_rate_critic": 0.0003,
+    "train/num_env_steps": 2024.0,
+    "train/q_mean": 2.707820415496826,
+    "train/replay_size": 2024.0,
+    "train/update_step": 474.0
+  },
+  "num_env_steps": 2024,
+  "num_updates": 474,
+  "scheduler_state": {
+    "actor": {
+      "gamma": 0.5,
+      "initial_lrs": [
+        0.0003
+      ],
+      "min_lr": 0.0,
+      "scheduler_type": "constant",
+      "step_count": 474,
+      "step_size": 1000,
+      "total_update_steps": null,
+      "warmup_steps": 0
+    },
+    "alpha": {
+      "gamma": 0.5,
+      "initial_lrs": [
+        0.0003
+      ],
+      "min_lr": 0.0,
+      "scheduler_type": "constant",
+      "step_count": 474,
+      "step_size": 1000,
+      "total_update_steps": null,
+      "warmup_steps": 0
+    },
+    "critic": {
+      "gamma": 0.5,
+      "initial_lrs": [
+        0.0003
+      ],
+      "min_lr": 0.0,
+      "scheduler_type": "constant",
+      "step_count": 474,
+      "step_size": 1000,
+      "total_update_steps": null,
+      "warmup_steps": 0
+    }
+  }
+}

@@ -33,6 +33,7 @@ from train.lr_scheduler import (
     estimate_total_update_steps,
     make_scheduler,
 )
+from train.progress import TrainProgressReporter
 from train.reward_probe import probe_reward_signal
 from train.sac_loop import SACTrainLoopConfig, run_sac_train_loop
 
@@ -65,6 +66,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", dest="wandb_run_name")
     parser.add_argument("--wandb-mode", dest="wandb_mode", choices=["online", "offline", "disabled"], default="disabled")
     parser.add_argument("--jsonl-log", dest="jsonl_log")
+    parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--log-every-env-steps", dest="log_every_env_steps", type=int, default=1_000)
+    parser.add_argument("--log-every-train-steps", "--log-every-updates", dest="log_every_train_steps", type=int, default=100)
     parser.add_argument("--eval-every-env-steps", dest="eval_every_env_steps", type=int, default=10_000)
     parser.add_argument("--eval-num-episodes", dest="eval_num_episodes", type=int, default=5)
     parser.add_argument("--eval-max-steps", dest="eval_max_steps", type=int, default=200)
@@ -116,6 +120,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
     agent.to(args.device)
     eval_seed = args.seed + 1000 if args.eval_seed is None else args.eval_seed
     resolved_eval_backend = args.backend if args.eval_backend == "same-as-train" else args.eval_backend
+    _validate_periodic_eval_args(args, resolved_eval_backend)
     loop_cfg = SACTrainLoopConfig(
         replay_capacity=args.replay_capacity,
         warmup_steps=args.warmup_steps,
@@ -131,6 +136,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
         eval_backend=resolved_eval_backend,
     )
     logger = _build_logger(args)
+    progress = _build_progress(args, description="sac train")
     schedulers = _build_schedulers(args, agent)
     eval_env_factory = (
         _build_eval_env_factory(args, resolved_eval_backend, eval_seed)
@@ -145,6 +151,11 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
                 "loop_config": asdict(loop_cfg),
                 "agent_config": agent.config.hparam_dict(),
                 "lr_scheduler": args.lr_scheduler,
+                "console_progress": {
+                    "enabled": progress.enabled if progress is not None else False,
+                    "log_every_env_steps": args.log_every_env_steps,
+                    "log_every_train_steps": args.log_every_train_steps,
+                },
             }
         )
         report = run_sac_train_loop(
@@ -154,9 +165,12 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
             logger=logger,
             schedulers=schedulers,
             eval_env_factory=eval_env_factory,
+            progress=progress,
         )
     finally:
         logger.close()
+        if progress is not None:
+            progress.close()
 
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +223,29 @@ def _build_logger(args: argparse.Namespace) -> TrainLogger:
             )
         )
     return CompositeLogger(loggers)
+
+
+def _validate_periodic_eval_args(args: argparse.Namespace, resolved_eval_backend: str) -> None:
+    if args.eval_every_env_steps <= 0:
+        return
+    if args.backend == "isaac" and resolved_eval_backend == "isaac":
+        raise RuntimeError(
+            "In-loop Isaac periodic eval is currently unsupported: creating a second IsaacArmEnv "
+            "inside the same Isaac Sim app can close the simulator before training resumes. "
+            "Use --eval-every-env-steps 0 for live Isaac training and run "
+            "scripts.eval_checkpoint_continuous after the checkpoint is saved. "
+            "For logger smoke tests only, use --eval-backend fake."
+        )
+
+
+def _build_progress(args: argparse.Namespace, *, description: str) -> TrainProgressReporter | None:
+    return TrainProgressReporter(
+        total_env_steps=args.total_env_steps,
+        log_every_env_steps=args.log_every_env_steps,
+        log_every_train_steps=args.log_every_train_steps,
+        enabled=args.progress,
+        description=description,
+    )
 
 
 def _build_schedulers(

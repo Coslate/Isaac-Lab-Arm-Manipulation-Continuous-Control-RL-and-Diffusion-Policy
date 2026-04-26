@@ -19,7 +19,7 @@ from agents.td3 import TD3Agent, TD3Config
 from agents.torch_image_aug import PadAndRandomCropTorch
 from configs import ACTION_DIM
 from scripts.train_sac_continuous import _build_fake_env
-from scripts.train_td3_continuous import parse_args, run_with_env
+from scripts.train_td3_continuous import _validate_periodic_eval_args, parse_args, run_with_env
 from train.reward_probe import RewardProbeError, probe_reward_signal
 from train.td3_loop import TD3TrainLoopConfig, run_td3_train_loop
 
@@ -428,3 +428,17 @@ def test_train_td3_continuous_fake_backend_smoke(tmp_path: Path):
     payload = load_checkpoint(checkpoint_path, expected_agent_type="td3")
     assert payload.metadata.num_env_steps == 32
     assert payload.metadata.deterministic_action_mode == DETERMINISTIC_MODE_TD3
+
+
+def test_train_td3_rejects_in_process_isaac_periodic_eval():
+    args = parse_args(
+        [
+            "--backend",
+            "isaac",
+            "--eval-every-env-steps",
+            "500",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="In-loop Isaac periodic eval is currently unsupported"):
+        _validate_periodic_eval_args(args, "isaac")

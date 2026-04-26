@@ -25,6 +25,7 @@ from .lr_scheduler import (
     optimizer_lr,
     scheduler_collection_state,
 )
+from .progress import TrainProgressReporter
 from .sac_loop import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_REPLAY_CAPACITY,
@@ -59,6 +60,7 @@ __all__ = [
     "TD3TrainLoopReport",
     "TensorBoardLogger",
     "TrainLogger",
+    "TrainProgressReporter",
     "WandbLogger",
     "estimate_total_update_steps",
     "load_scheduler_collection_state",

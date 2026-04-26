@@ -120,6 +120,7 @@ def run_sac_train_loop(
     logger: TrainLogger | None = None,
     schedulers: Mapping[str, LearningRateScheduler] | None = None,
     eval_env_factory: Callable[[], Any] | None = None,
+    progress: Any | None = None,
 ) -> SACTrainLoopReport:
     """Drive an env -> replay -> SAC update loop until ``total_env_steps``.
 
@@ -172,6 +173,11 @@ def run_sac_train_loop(
         )
         env_steps += num_envs
         images, proprios = next_images, next_proprios
+        _update_progress(
+            progress,
+            env_steps,
+            {"train/replay_size": float(replay.size), "train/num_env_steps": float(env_steps)},
+        )
 
         if not warming_up and replay.size >= cfg.batch_size:
             for _ in range(agent.config.utd_ratio):
@@ -180,14 +186,28 @@ def run_sac_train_loop(
                 _step_schedulers(schedulers, ("critic", "actor", "alpha"))
                 update_count += 1
                 final_logs = dict(final_logs)
+                final_logs["train/update_step"] = float(update_count)
                 final_logs["train/replay_size"] = float(replay.size)
                 final_logs["train/num_env_steps"] = float(env_steps)
                 final_logs.update(_sac_lr_logs(agent))
                 log_history.append(final_logs)
                 if logger is not None:
                     logger.log_scalars(env_steps, final_logs)
+                _update_progress(progress, env_steps, final_logs)
 
         while next_eval_step is not None and env_steps >= next_eval_step:
+            _note_progress(
+                progress,
+                env_steps,
+                "eval_start",
+                {
+                    "eval_count": eval_count + 1,
+                    "episodes": cfg.eval_num_episodes,
+                    "max_steps": cfg.eval_max_steps,
+                    "settle_steps": cfg.eval_settle_steps,
+                    "backend": cfg.eval_backend,
+                },
+            )
             eval_logs = _run_sac_periodic_eval(
                 agent,
                 cfg=cfg,
@@ -199,9 +219,21 @@ def run_sac_train_loop(
             log_history.append(eval_logs)
             if logger is not None:
                 logger.log_scalars(env_steps, eval_logs)
+            _update_progress(progress, env_steps, eval_logs, force=True)
             eval_count += 1
             next_eval_step += cfg.eval_every_env_steps
 
+    _update_progress(
+        progress,
+        env_steps,
+        final_logs
+        or {
+            "train/update_step": float(update_count),
+            "train/replay_size": float(replay.size),
+            "train/num_env_steps": float(env_steps),
+        },
+        force=True,
+    )
     return SACTrainLoopReport(
         num_env_steps=env_steps,
         num_updates=update_count,
@@ -230,6 +262,31 @@ def _sac_lr_logs(agent: SACAgent) -> dict[str, float]:
         "train/learning_rate_critic": optimizer_lr(agent.critic_optimizer),
         "train/learning_rate_alpha": optimizer_lr(agent.alpha_optimizer),
     }
+
+
+def _update_progress(
+    progress: Any | None,
+    step: int,
+    metrics: dict[str, float] | None = None,
+    *,
+    force: bool = False,
+) -> None:
+    if progress is None:
+        return
+    progress.update(step, metrics, force=force)
+
+
+def _note_progress(
+    progress: Any | None,
+    step: int,
+    kind: str,
+    fields: dict[str, Any] | None = None,
+) -> None:
+    if progress is None:
+        return
+    note = getattr(progress, "note", None)
+    if callable(note):
+        note(step, kind, fields)
 
 
 def _run_sac_periodic_eval(
