@@ -515,6 +515,56 @@ def test_sac_train_loop_settles_with_zero_actions_before_replay_collection():
     assert not torch.allclose(env.step_actions[3], torch.zeros((2, ACTION_DIM)))
 
 
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_train_loop_reports_settle_and_warmup_progress(agent, config, runner):
+    torch.manual_seed(0)
+    env = _ActionRecordingFakeEnv(num_envs=2, seed=0, terminal_step=3)
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=2,
+        batch_size=4,
+        total_env_steps=8,
+        seed=0,
+        ram_budget_gib=4.0,
+        settle_steps=3,
+        per_lane_settle_steps=2,
+    )
+
+    runner(env, agent(), loop_config=cfg, progress=progress)
+
+    note_kinds = [kind for _step, kind, _fields in progress.notes]
+    assert "initial_settle_start" in note_kinds
+    assert "initial_settle" in note_kinds
+    assert "initial_settle_done" in note_kinds
+    assert "warmup_start" in note_kinds
+    assert "warmup" in note_kinds
+    assert "warmup_done" in note_kinds
+    assert "per_lane_settle" in note_kinds
+    assert any(
+        fields.get("current_steps") == 3 and fields.get("total_steps") == 3
+        for _step, kind, fields in progress.notes
+        if kind == "initial_settle"
+    )
+    assert any(
+        fields.get("settling_train_lanes") == 2
+        for _step, kind, fields in progress.notes
+        if kind == "per_lane_settle"
+    )
+    assert any(
+        fields.get("current_steps", 0) > 0 and fields.get("total_steps") == 2
+        for _step, kind, fields in progress.notes
+        if kind == "warmup"
+    )
+    assert any("train/warmup_remaining" in metrics for _step, metrics, _force in progress.calls)
+
+
 def test_sac_per_lane_settle_masks_replay_and_uses_zero_actions_after_done():
     torch.manual_seed(0)
     env = _ActionRecordingFakeEnv(num_envs=2, seed=0, terminal_step=3)
@@ -540,6 +590,33 @@ def test_sac_per_lane_settle_masks_replay_and_uses_zero_actions_after_done():
         assert torch.allclose(action, torch.zeros((2, ACTION_DIM)))
     assert any(logs.get("train_rollout/mean_episode_length") == pytest.approx(3.0) for logs in report.log_history)
     assert any(logs.get("train_rollout/mean_episode_length") == pytest.approx(2.0) for logs in report.log_history)
+
+
+def test_sac_per_lane_settle_does_not_restart_when_cooldown_episode_times_out():
+    torch.manual_seed(0)
+    env = _ActionRecordingFakeEnv(num_envs=1, seed=0, terminal_step=2)
+    agent = SACAgent(_tiny_sac_config())
+    progress = _RecordingProgress()
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=0,
+        batch_size=16,
+        total_env_steps=3,
+        seed=0,
+        ram_budget_gib=4.0,
+        per_lane_settle_steps=5,
+    )
+
+    report = run_sac_train_loop(env, agent, loop_config=cfg, progress=progress)
+
+    assert report.num_env_steps == 3
+    settle_remaining = [
+        fields["max_settle_remaining"]
+        for _step, kind, fields in progress.notes
+        if kind == "per_lane_settle"
+    ]
+    assert settle_remaining == sorted(settle_remaining, reverse=True)
+    assert settle_remaining[:2] == [5, 4]
 
 
 def test_sac_same_env_eval_start_waits_for_per_lane_settle_completion():

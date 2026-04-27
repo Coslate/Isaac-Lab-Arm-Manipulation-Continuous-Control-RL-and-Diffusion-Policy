@@ -114,15 +114,34 @@ def _sample_action(
     return agent.learner_action_to_env_np(learner_action.detach().cpu().numpy().astype(np.float32))
 
 
-def _reset_and_settle(env: Any, *, seed: int, settle_steps: int) -> dict[str, np.ndarray]:
+def _reset_and_settle(
+    env: Any,
+    *,
+    seed: int,
+    settle_steps: int,
+    progress: Any | None = None,
+) -> dict[str, np.ndarray]:
     if settle_steps < 0:
         raise ValueError("settle_steps must be non-negative")
     obs = env.reset(seed=seed)
+    if settle_steps > 0:
+        _note_progress(progress, 0, "initial_settle_start", {"settle_steps": settle_steps})
+    settle_note_interval = _settle_note_interval(settle_steps)
     for _ in range(settle_steps):
         num_envs = _obs_num_envs(obs)
         actions = np.zeros((num_envs, ACTION_DIM), dtype=np.float32)
         backend_action = actions[0] if num_envs == 1 else actions
         obs, _reward, _terminated, _truncated, _info = env.step(backend_action)
+        settle_step = _ + 1
+        if settle_step == settle_steps or settle_step % settle_note_interval == 0:
+            _note_progress(
+                progress,
+                0,
+                "initial_settle",
+                {"current_steps": settle_step, "total_steps": settle_steps},
+            )
+    if settle_steps > 0:
+        _note_progress(progress, 0, "initial_settle_done", {"settle_steps": settle_steps})
     return obs
 
 
@@ -158,7 +177,7 @@ def run_td3_train_loop(
         raise ValueError("per_lane_settle_steps must be non-negative")
     rng = np.random.default_rng(cfg.seed)
 
-    obs = _reset_and_settle(env, seed=cfg.seed, settle_steps=cfg.settle_steps)
+    obs = _reset_and_settle(env, seed=cfg.seed, settle_steps=cfg.settle_steps, progress=progress)
     num_envs = _obs_num_envs(obs)
     train_indices, same_env_eval_indices = split_train_eval_lanes(num_envs, cfg.same_env_eval_lanes)
     num_train_lanes = int(train_indices.shape[0])
@@ -199,12 +218,36 @@ def run_td3_train_loop(
     )
     same_env_eval_pending_clean_start = np.zeros((int(same_env_eval_indices.shape[0]),), dtype=bool)
     per_lane_settle_remaining = np.zeros((num_envs,), dtype=np.int64)
+    vector_step_count = 0
+    last_per_lane_settle_note_vector_step = -_settle_note_interval(cfg.per_lane_settle_steps)
+    warmup_done_reported = cfg.warmup_steps <= 0
+    last_warmup_note_step = -_progress_note_interval(cfg.warmup_steps)
+    if cfg.warmup_steps > 0:
+        _note_progress(progress, env_steps, "warmup_start", {"warmup_steps": cfg.warmup_steps})
 
     while env_steps < cfg.total_env_steps:
         warming_up = env_steps < cfg.warmup_steps
         settling_before = per_lane_settle_remaining > 0
         active_train_indices = train_indices[~settling_before[train_indices]]
         active_eval_indices = same_env_eval_indices[~settling_before[same_env_eval_indices]]
+        settling_train_lanes = int(np.count_nonzero(settling_before[train_indices]))
+        settling_eval_lanes = int(np.count_nonzero(settling_before[same_env_eval_indices]))
+        if settling_train_lanes > 0 or settling_eval_lanes > 0:
+            note_interval = _settle_note_interval(cfg.per_lane_settle_steps)
+            if vector_step_count - last_per_lane_settle_note_vector_step >= note_interval:
+                _note_progress(
+                    progress,
+                    env_steps,
+                    "per_lane_settle",
+                    {
+                        "active_train_lanes": int(active_train_indices.size),
+                        "settling_train_lanes": settling_train_lanes,
+                        "settling_eval_lanes": settling_eval_lanes,
+                        "max_settle_remaining": int(per_lane_settle_remaining.max(initial=0)),
+                        "per_lane_settle_steps": cfg.per_lane_settle_steps,
+                    },
+                )
+                last_per_lane_settle_note_vector_step = vector_step_count
         actions = np.zeros((num_envs, ACTION_DIM), dtype=np.float32)
         if active_train_indices.size > 0:
             actions[active_train_indices] = _sample_action(
@@ -226,6 +269,7 @@ def run_td3_train_loop(
             )
         backend_action = actions[0] if num_envs == 1 else actions
         next_obs, reward, terminated, truncated, _info = env.step(backend_action)
+        vector_step_count += 1
         next_images, next_proprios = _split_per_env(next_obs, num_envs)
         rewards = _broadcast_per_env(reward, num_envs, np.float32, "reward")
         dones = _broadcast_per_env(terminated, num_envs, bool, "terminated")
@@ -246,7 +290,34 @@ def run_td3_train_loop(
                 terminated=dones[active_train_indices],
                 truncated=truncs[active_train_indices],
             )
+        previous_env_steps = env_steps
         env_steps += int(active_train_indices.size)
+        if cfg.warmup_steps > 0 and previous_env_steps < cfg.warmup_steps:
+            warmup_note_interval = _progress_note_interval(cfg.warmup_steps)
+            warmup_progress_step = min(env_steps, cfg.warmup_steps)
+            if (
+                warmup_progress_step - last_warmup_note_step >= warmup_note_interval
+                or warmup_progress_step >= cfg.warmup_steps
+            ):
+                _note_progress(
+                    progress,
+                    env_steps,
+                    "warmup",
+                    {
+                        "current_steps": warmup_progress_step,
+                        "total_steps": cfg.warmup_steps,
+                        "replay": replay.size,
+                    },
+                )
+                last_warmup_note_step = warmup_progress_step
+        if not warmup_done_reported and env_steps >= cfg.warmup_steps:
+            _note_progress(
+                progress,
+                env_steps,
+                "warmup_done",
+                {"current_steps": env_steps, "total_steps": cfg.warmup_steps, "replay": replay.size},
+            )
+            warmup_done_reported = True
         successes = infer_successes(_info, num_envs=num_envs, proprios=next_proprios)
         _log_loop_metrics(
             logger,
@@ -281,7 +352,7 @@ def run_td3_train_loop(
             )
         per_lane_settle_remaining = _advance_per_lane_settle(
             per_lane_settle_remaining,
-            dones | truncs,
+            (dones | truncs) & ~settling_before,
             cfg.per_lane_settle_steps,
         )
         if same_env_eval_tracker is not None:
@@ -295,7 +366,14 @@ def run_td3_train_loop(
                 same_env_eval_active |= same_env_eval_ready
                 same_env_eval_pending_clean_start[same_env_eval_ready] = False
         images, proprios = next_images, next_proprios
-        env_logs = {"train/replay_size": float(replay.size), "train/num_env_steps": float(env_steps)}
+        env_logs = {
+            "train/replay_size": float(replay.size),
+            "train/num_env_steps": float(env_steps),
+            "train/warmup_remaining": float(max(cfg.warmup_steps - env_steps, 0)),
+            "train/active_train_lanes": float(active_train_indices.size),
+            "train/settling_train_lanes": float(settling_train_lanes),
+            "train/settling_eval_lanes": float(settling_eval_lanes),
+        }
         env_logs.update(agent.normalizer_logs())
         _update_progress(progress, env_steps, env_logs)
 
@@ -422,6 +500,16 @@ def _note_progress(
     note = getattr(progress, "note", None)
     if callable(note):
         note(step, kind, fields)
+
+
+def _settle_note_interval(settle_steps: int) -> int:
+    return _progress_note_interval(settle_steps)
+
+
+def _progress_note_interval(total_steps: int) -> int:
+    if total_steps <= 0:
+        return 1
+    return max(1, int(total_steps) // 10)
 
 
 def _run_td3_periodic_eval(

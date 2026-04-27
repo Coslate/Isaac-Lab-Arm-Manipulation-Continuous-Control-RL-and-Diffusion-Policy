@@ -1768,7 +1768,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --num_episodes 3 \
   --max-steps 100 \
   --gif-max-steps 100 \
-  --settle-steps 600 \
+  --settle-steps 550 \
   --target-overlay text-reticle \
   --table-cleanup none \
   --min-clean-env-spacing 5.0 \
@@ -1880,7 +1880,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --num_episodes 3 \
   --max-steps 100 \
   --gif-max-steps 100 \
-  --settle-steps 600 \
+  --settle-steps 550 \
   --target-overlay text-reticle \
   --table-cleanup none \
   --min-clean-env-spacing 5.0 \
@@ -1903,7 +1903,7 @@ timeout 360s env OMNI_KIT_ACCEPT_EULA=YES PRIVACY_CONSENT=Y DISPLAY="$DISPLAY" X
   --num_episodes 3 \
   --max-steps 100 \
   --gif-max-steps 100 \
-  --settle-steps 600 \
+  --settle-steps 550 \
   --target-overlay text-reticle \
   --table-cleanup none \
   --min-clean-env-spacing 5.0 \

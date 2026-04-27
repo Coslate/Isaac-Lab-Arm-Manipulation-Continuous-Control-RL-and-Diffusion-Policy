@@ -30,3 +30,114 @@ python -m scripts.train_sac_continuous \
   --wandb-project isaac-arm \
   --wandb-run-name sac_smoke_test10 \
   --wandb-mode online
+
+
+# Inspecting the needed value to set --per-lane-settle-steps
+# See ./logs/auto_reset_visuals/*.png, seeing after which steps after done/truncated the artificat would gone, 
+# then, set --per-lane-settle-steps to that step value.
+python -m scripts.inspect_auto_reset_visuals \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 4 \
+  --capture-lane 0 \
+  --max-steps 1000 \
+  --after-reset-steps 0,1,5,10,20,50,100 \
+  --action-mode random \
+  --save-dir ./logs/auto_reset_visuals \
+  --device cuda:0
+
+# Formal Training
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 10000 \
+  --lr-min-lr 1e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 10000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0 \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0 \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_initsett550_perlnsett20 \
+  --wandb-mode online
+
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 1e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 10000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0 \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0 \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_initsett550_perlnsett20_lrwp3000 \
+  --wandb-mode online
+
+# Visualize Evaluation Learned Policy
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_500k_seed0_final.pt \
+  --save-gif ./logs/sac_franka_500k_seed0_final.gif \
+  --save-mp4 ./logs/sac_franka_500k_seed0_final.mp4 \
+  --save-metrics ./logs/sac_franka_500k_seed0_final_visual_metrics.json \
+  --save-debug-frames-dir ./logs/sac_franka_500k_seed0_final_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless  

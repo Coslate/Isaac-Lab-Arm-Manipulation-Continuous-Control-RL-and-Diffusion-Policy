@@ -2,16 +2,16 @@
   "closest_target_approach_by_episode": {
     "episode_000": {
       "closest_cube_position_base_m": [
-        0.42072203755378723,
-        0.20258066058158875,
-        0.020999900996685028
+        0.41403210163116455,
+        0.1846616119146347,
+        0.020999725908041
       ],
-      "closest_distance_m": 0.40576034784317017,
-      "closest_step": 0,
+      "closest_distance_m": 0.3976125419139862,
+      "closest_step": 99,
       "cube_to_target_base_m_at_closest_step": [
-        0.05717518925666809,
-        -0.21420498192310333,
-        0.3398362696170807
+        0.06386512517929077,
+        -0.1962859332561493,
+        0.339836448431015
       ],
       "success": false,
       "success_source": "proprio_cube_to_target_norm",
@@ -25,10 +25,10 @@
       "closest_cube_position_base_m": [
         0.5210877656936646,
         -0.12855306267738342,
-        0.020999953150749207
+        0.020999975502490997
       ],
       "closest_distance_m": 0.32859867811203003,
-      "closest_step": 0,
+      "closest_step": 17,
       "cube_to_target_base_m_at_closest_step": [
         -0.04484763741493225,
         -0.03191894292831421,
@@ -44,16 +44,16 @@
     },
     "episode_002": {
       "closest_cube_position_base_m": [
-        0.5482774972915649,
-        0.14369553327560425,
-        0.33194059133529663
+        0.4759308099746704,
+        0.0006546139484271407,
+        0.02100002020597458
       ],
-      "closest_distance_m": 0.2119167447090149,
-      "closest_step": 49,
+      "closest_distance_m": 0.46224460005760193,
+      "closest_step": 1,
       "cube_to_target_base_m_at_closest_step": [
-        0.0021973848342895508,
-        -0.15442299842834473,
-        0.14511173963546753
+        0.07454407215118408,
+        -0.011382078751921654,
+        0.456052303314209
       ],
       "success": false,
       "success_source": "proprio_cube_to_target_norm",
@@ -71,9 +71,9 @@
     "episode_001": false,
     "episode_002": false
   },
-  "mean_action_jerk": 0.0636318102478981,
+  "mean_action_jerk": 0.7688920497894287,
   "mean_episode_length": 100.0,
-  "mean_return": 9.484975496927897,
+  "mean_return": 0.22548015778496242,
   "num_episodes": 3,
   "policy_name": "replay",
   "success_distance_metric": "euclidean_3d_cube_to_target_base_m",

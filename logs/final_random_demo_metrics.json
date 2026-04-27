@@ -3,14 +3,14 @@
     "episode_000": {
       "closest_cube_position_base_m": [
         0.42072203755378723,
-        0.20258066058158875,
-        0.020999900996685028
+        0.20258067548274994,
+        0.02099989727139473
       ],
       "closest_distance_m": 0.40576034784317017,
-      "closest_step": 0,
+      "closest_step": 6,
       "cube_to_target_base_m_at_closest_step": [
         0.05717518925666809,
-        -0.21420498192310333,
+        -0.21420499682426453,
         0.3398362696170807
       ],
       "success": false,
@@ -25,10 +25,10 @@
       "closest_cube_position_base_m": [
         0.5210877656936646,
         -0.12855306267738342,
-        0.020999953150749207
+        0.020999975502490997
       ],
       "closest_distance_m": 0.32859867811203003,
-      "closest_step": 0,
+      "closest_step": 17,
       "cube_to_target_base_m_at_closest_step": [
         -0.04484763741493225,
         -0.03191894292831421,
@@ -44,15 +44,15 @@
     },
     "episode_002": {
       "closest_cube_position_base_m": [
-        0.475930780172348,
-        0.0006546109216287732,
-        0.021000012755393982
+        0.4759308099746704,
+        0.0006546139484271407,
+        0.02100002020597458
       ],
       "closest_distance_m": 0.46224460005760193,
       "closest_step": 1,
       "cube_to_target_base_m_at_closest_step": [
-        0.07454410195350647,
-        -0.01138207595795393,
+        0.07454407215118408,
+        -0.011382078751921654,
         0.456052303314209
       ],
       "success": false,
@@ -73,7 +73,7 @@
   },
   "mean_action_jerk": 2.078887144724528,
   "mean_episode_length": 100.0,
-  "mean_return": -0.002898104217213889,
+  "mean_return": -0.002898105866430948,
   "num_episodes": 3,
   "policy_name": "random",
   "success_distance_metric": "euclidean_3d_cube_to_target_base_m",

@@ -2,16 +2,16 @@
   "closest_target_approach_by_episode": {
     "episode_000": {
       "closest_cube_position_base_m": [
-        0.41341468691825867,
-        0.18665391206741333,
-        0.020999744534492493
+        0.41403210163116455,
+        0.1846616119146347,
+        0.020999725908041
       ],
-      "closest_distance_m": 0.39869919419288635,
-      "closest_step": 98,
+      "closest_distance_m": 0.3976125419139862,
+      "closest_step": 99,
       "cube_to_target_base_m_at_closest_step": [
-        0.06448253989219666,
-        -0.19827823340892792,
-        0.3398364186286926
+        0.06386512517929077,
+        -0.1962859332561493,
+        0.339836448431015
       ],
       "success": false,
       "success_source": "proprio_cube_to_target_norm",
@@ -23,16 +23,16 @@
     },
     "episode_001": {
       "closest_cube_position_base_m": [
-        0.4818294048309326,
-        -0.16000235080718994,
-        0.34283727407455444
+        0.48182913661003113,
+        -0.1600024253129959,
+        0.3428368866443634
       ],
-      "closest_distance_m": 0.005995495710521936,
+      "closest_distance_m": 0.005995376966893673,
       "closest_step": 82,
       "cube_to_target_base_m_at_closest_step": [
-        -0.005589276552200317,
-        -0.00046965479850769043,
-        0.0021178722381591797
+        -0.005589008331298828,
+        -0.0004695802927017212,
+        0.0021182596683502197
       ],
       "success": true,
       "success_source": "proprio_cube_to_target_norm",
@@ -44,16 +44,16 @@
     },
     "episode_002": {
       "closest_cube_position_base_m": [
-        0.5459640026092529,
-        -0.0168610792607069,
-        0.47714799642562866
+        0.5460231304168701,
+        -0.016784150153398514,
+        0.477169007062912
       ],
-      "closest_distance_m": 0.007614355534315109,
+      "closest_distance_m": 0.007517654914408922,
       "closest_step": 64,
       "cube_to_target_base_m_at_closest_step": [
-        0.0045108795166015625,
-        0.006133614107966423,
-        -9.566545486450195e-05
+        0.004451751708984375,
+        0.006056685000658035,
+        -0.00011667609214782715
       ],
       "success": true,
       "success_source": "proprio_cube_to_target_norm",
@@ -71,9 +71,9 @@
     "episode_001": true,
     "episode_002": true
   },
-  "mean_action_jerk": 0.2925691430767377,
+  "mean_action_jerk": 0.2925671574970086,
   "mean_episode_length": 100.0,
-  "mean_return": 27.368399739265442,
+  "mean_return": 27.37810746828715,
   "num_episodes": 3,
   "policy_name": "heuristic",
   "success_distance_metric": "euclidean_3d_cube_to_target_base_m",
