@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -129,6 +130,22 @@ def test_sac_alpha_moves_toward_target_entropy():
         agent.update(batch)
     final_alpha = float(agent.alpha.item())
     assert final_alpha != pytest.approx(initial_alpha), "alpha did not change after updates"
+
+
+def test_sac_alpha_min_clamps_entropy_temperature(tmp_path: Path):
+    torch.manual_seed(0)
+    agent = SACAgent(_tiny_config(initial_alpha=0.01, alpha_min=0.05))
+    assert float(agent.alpha.item()) == pytest.approx(0.05)
+
+    with torch.no_grad():
+        agent.log_alpha.fill_(math.log(1e-4))
+    agent.update(_make_batch())
+
+    assert float(agent.alpha.item()) >= 0.05 - 1e-6
+    checkpoint = tmp_path / "sac_alpha_min.pt"
+    agent.save(checkpoint, num_env_steps=1)
+    payload = load_checkpoint(checkpoint, expected_agent_type="sac")
+    assert payload.metadata.algorithm_hparams["alpha_min"] == pytest.approx(0.05)
 
 
 # ---------------------------------------------------------------------------

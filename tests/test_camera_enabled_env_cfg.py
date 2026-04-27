@@ -152,6 +152,11 @@ def _fake_env_cfg() -> SimpleNamespace:
         ),
         observations=SimpleNamespace(policy=policy),
         commands=SimpleNamespace(object_pose=SimpleNamespace(debug_vis=True)),
+        curriculum=SimpleNamespace(
+            action_rate=SimpleNamespace(weight=-1e-1),
+            joint_vel=SimpleNamespace(weight=-1e-1),
+            other_term=SimpleNamespace(weight=1.0),
+        ),
     )
 
 
@@ -234,6 +239,22 @@ def test_camera_enabled_cfg_adds_wrist_policy_camera_debug_camera_and_named_term
     assert env_cfg.project_clean_demo_scene is False
     assert env_cfg.project_table_cleanup == TABLE_CLEANUP_NONE
     assert env_cfg.project_min_clean_env_spacing == MIN_CLEAN_ENV_SPACING
+    assert env_cfg.project_disable_reward_curriculum is False
+
+
+def test_camera_enabled_cfg_can_disable_reward_curriculum(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_isaac_modules(monkeypatch)
+    env_cfg = _fake_env_cfg()
+
+    result = make_camera_enabled_franka_lift_cfg(
+        disable_reward_curriculum=True,
+        parse_env_cfg_fn=lambda *_args, **_kwargs: env_cfg,
+    )
+
+    assert result.curriculum.action_rate is None
+    assert result.curriculum.joint_vel is None
+    assert result.curriculum.other_term is not None
+    assert result.project_disable_reward_curriculum is True
 
 
 def test_camera_enabled_cfg_can_opt_into_clean_demo_scene(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -364,6 +385,8 @@ def test_camera_enabled_cfg_validates_project_contract() -> None:
         make_camera_enabled_franka_lift_cfg(table_cleanup="shiny")
     with pytest.raises(ValueError, match="min_clean_env_spacing"):
         make_camera_enabled_franka_lift_cfg(min_clean_env_spacing=0)
+    with pytest.raises(ValueError, match="disable_reward_curriculum"):
+        make_camera_enabled_franka_lift_cfg(disable_reward_curriculum="yes")  # type: ignore[arg-type]
 
 
 def test_camera_enabled_cfg_respects_larger_existing_env_spacing(monkeypatch: pytest.MonkeyPatch) -> None:

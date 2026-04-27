@@ -108,12 +108,14 @@ def record_with_env(env: Any, policy: CheckpointPolicy, args: argparse.Namespace
 
     def visual_metrics_payload() -> dict[str, Any]:
         if "payload" not in visual_metrics_cache:
+            episode = metrics_env.to_episode()
             metrics = _evaluate_visual_episode(
-                metrics_env.to_episode(),
+                episode,
                 args=args,
                 eval_fields=eval_fields,
             )
             payload = metrics.as_dict()
+            payload.update(_visual_reward_trace_payload(episode))
             payload.update(
                 target_projection_payload(
                     payload,
@@ -506,6 +508,12 @@ def _final_metrics_payload(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     payload = dict(visual_payload if external_metrics is None else external_metrics)
+    reward_trace_payload = {
+        key: value
+        for key, value in visual_payload.items()
+        if key.startswith("visual_rollout_reward_")
+    }
+    payload.update(reward_trace_payload)
     if external_metrics is not None:
         payload["visual_rollout_metrics"] = dict(visual_payload)
         payload["overlay_metrics_source"] = str(Path(args.metrics_payload).resolve())
@@ -525,6 +533,26 @@ def _final_metrics_payload(
         }
     )
     return payload
+
+
+def _visual_reward_trace_payload(episode: EpisodeData) -> dict[str, Any]:
+    rewards = np.asarray(episode.rewards, dtype=np.float32).reshape(-1)
+    if rewards.size == 0:
+        return {
+            "visual_rollout_reward_trace": [],
+            "visual_rollout_reward_num_steps": 0,
+            "visual_rollout_reward_sum": 0.0,
+        }
+    return {
+        "visual_rollout_reward_trace": rewards.astype(float).tolist(),
+        "visual_rollout_reward_num_steps": int(rewards.size),
+        "visual_rollout_reward_sum": float(np.sum(rewards)),
+        "visual_rollout_reward_mean": float(np.mean(rewards)),
+        "visual_rollout_reward_min": float(np.min(rewards)),
+        "visual_rollout_reward_max": float(np.max(rewards)),
+        "visual_rollout_reward_first": float(rewards[0]),
+        "visual_rollout_reward_last": float(rewards[-1]),
+    }
 
 
 def _metrics_overlay(

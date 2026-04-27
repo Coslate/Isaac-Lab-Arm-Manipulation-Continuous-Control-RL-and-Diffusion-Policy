@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-04-26. The repository has completed the interview/demo vertical slice from
+Updated 2026-04-27. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -73,7 +73,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 0 - Project scaffold | Done | Package layout, project config, output dirs, seed utilities | `tests/test_project_scaffold.py` -> `6 passed` | Foundation for all later packages. |
 | PR 1 - Task/action contract | Done | `Isaac-Lift-Cube-Franka-IK-Rel-v0`, normalized 7D action order, clipping, gripper convention | `tests/test_task_contract.py` -> `9 passed` | Public action contract stays `dx, dy, dz, droll, dpitch, dyaw, gripper`. |
 | PR 2 - Formal observation wrapper | Done | `IsaacArmEnv`, wrist image + 40D proprio contract, strict stock-35D rejection | `tests/test_observation_wrapper.py` -> `18 passed` | Formal policy obs is `obs["image"]` `(N,3,224,224)` and `obs["proprio"]` `(N,40)`. |
-| PR 2.5 - Camera-enabled Franka cfg | Done | Customized Isaac cfg with `wrist_cam`, optional `table_cam`, named proprio terms, debug/policy camera separation | `tests/test_camera_enabled_env_cfg.py` -> `12 passed`; live camera smoke image `(1,3,224,224)`, proprio `(1,40)` | Stock `--enable_cameras` alone is not enough; use customized cfg. |
+| PR 2.5 - Camera-enabled Franka cfg | Done | Customized Isaac cfg with `wrist_cam`, optional `table_cam`, named proprio terms, debug/policy camera separation | `tests/test_camera_enabled_env_cfg.py` -> `13 passed`; live camera smoke image `(1,3,224,224)`, proprio `(1,40)` | Stock `--enable_cameras` alone is not enough; use customized cfg. |
 | Image augmentation utilities | Done | `PadAndRandomCrop`, `CenterBiasedResizedCrop`, `IdentityAug` | `tests/test_image_aug.py` -> `24 passed` | Training-only augmentation; env wrapper remains deterministic. |
 | PR 8-pre - Demo policies | Done | `BasePolicy`, random, heuristic, HDF5 replay policy interface | `tests/test_demo_policies.py` -> `10 passed` | All policies expose `act(obs) -> 7D action`. |
 | PR 8-lite - Rollout dataset | Done | Episode-safe HDF5 schema, collector, inspector, benchmark helper | `tests/test_demo_dataset.py`, `tests/test_rollout_benchmark.py` | Stores wrist `images`, `proprios`, actions, rewards, done/truncated, optional raw/debug images, lane/reset metadata. |
@@ -83,10 +83,11 @@ This is the single source of truth for implementation status. Do not maintain a 
 | Final live demo artifacts | Generated | `final_heuristic_demo` HDF5/JSON/GIF/MP4/debug PNGs | `logs/final_heuristic_demo_metrics.json`: 3 eps, mean return `27.3684`, success `2/3`, jerk `0.2926` | Random and replay comparison artifacts also exist. |
 | PR 3 - Shared backbone | Done | `ImageProprioBackbone` shared image-proprio encoder | `tests/test_nn_backbone.py` -> `8 passed`; full pytest after PR3 -> `157 passed, 1 skipped` | First research-model component is complete. |
 | PR 3.5 - Agent primitives | Done | Shared distributions, actor/critic heads, replay/rollout batches, checkpoint helpers, fake-checkpoint factory, `CheckpointPolicy` adapter | `tests/test_agent_primitives.py` -> `21 passed` | Lays the off-policy + checkpoint infrastructure for PR6/PR7/PR11a/PR12a. |
-| PR 6 - SAC train | Done | `SACAgent`, online replay training, deterministic oracle mode (`tanh_mu`), `scripts.train_sac_continuous`, fake-env smoke + reward-probe | `tests/test_sac_continuous.py` -> `15 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
+| PR 6 - SAC train | Done | `SACAgent`, online replay training, deterministic oracle mode (`tanh_mu`), `scripts.train_sac_continuous`, fake-env smoke + reward-probe | `tests/test_sac_continuous.py` -> `18 passed` | Logger-less base training loop; long-run diagnostics now live in PR6.5/PR6.7. |
 | PR 7 - TD3 train | Done | `TD3Agent`, deterministic actor, target smoothing, delayed actor updates, `scripts.train_td3_continuous`, shares replay format with SAC | `tests/test_td3_continuous.py` -> `17 passed` | Logger-less; long-run TB/wandb logs land in PR6.5. |
-| PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `19 passed`; full pytest at PR6.5 commit -> `244 passed, 1 skipped` (superseded by PR6.6 row below for current full-suite count) | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
+| PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `28 passed`; full pytest at PR6.5 commit -> `244 passed, 1 skipped` (superseded by PR6.7 row below for current full-suite count) | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
 | PR 6.6 - Running obs/action normalization | Done | `agents.normalization` running per-dimension proprio mean/std, optional channel-wise image running mean/std (`--image-normalization none|per_channel_running_mean_std`, default off), explicit `bidirectional_env_learner_affine` action normalizer, checkpointed `normalizer_state`, SAC/TD3 train/eval/checkpoint policy consistency, optional angle sin/cos primitive only for true wrap-around angle features | `tests/test_normalization.py` + SAC/TD3 checks -> `47 passed`; full pytest -> `259 passed, 1 skipped` | Serious SAC/TD3 training can now use normalized proprio inputs, optional train-lane-only image channel stats, and stable learner-action/env-action conversion; replay still stores raw env observations/actions. |
+| PR 6.7 - Training diagnostics + checkpoint controls | Done | Per-step visual reward trace in `record_gif_continuous` metrics, SAC/TD3 reward component logging under `reward/train/*` and `reward/eval_rollout/*`, periodic/best checkpoint manager, `--disable-reward-curriculum`, SAC `--alpha-min` floor | Targeted PR6.7 slice -> `70 passed`; full pytest -> `283 passed, 1 skipped` | Use this before the next serious SAC/TD3 run so failed runs leave reward traces, stock reward breakdown, intermediate checkpoints, and best-by-eval checkpoints for debugging. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -898,6 +899,10 @@ Logging key contract:
 - `eval_rollout/success_rate`
 - `eval_rollout/mean_episode_length`
 - `eval_rollout/episode_count`
+- `reward/train/native_total`
+- `reward/train/<stock_reward_term>` such as `reward/train/reaching_object`, `reward/train/lifting_object`, `reward/train/object_goal_tracking`, `reward/train/object_goal_tracking_fine_grained`, `reward/train/action_rate`, `reward/train/joint_vel`
+- `reward/eval_rollout/native_total`
+- `reward/eval_rollout/<stock_reward_term>` with the same term names for same-env deterministic eval lanes
 - `eval/mean_return`
 - `eval/success_rate`
 - `eval/mean_episode_length`
@@ -1971,6 +1976,145 @@ git commit -m "feat(train): add running observation and action normalization"
 
 ---
 
+### PR 6.7 — Training Diagnostics And Checkpoint Controls
+
+**Goal / Why**
+
+The first 500k SAC run reached `success_rate=0` and the final video showed the policy barely interacting with the cube. Before changing reward design or algorithm logic, add diagnostics that make the next run explainable: reward traces in visual rollouts, stock reward-term breakdown during training, intermediate checkpoints, an option to disable the stock reward-penalty curriculum, and a SAC entropy-temperature floor.
+
+**Inputs**
+- PR6/PR7 SAC and TD3 train loops.
+- PR6.5 logger/progress/wandb/JSONL path.
+- PR6.6 checkpoint extras and normalizer state.
+- PR12a `scripts.record_gif_continuous` same-rollout metrics path.
+- Isaac Lab `RewardManager._step_reward` / `active_terms` for manager-based reward terms.
+
+**Outputs**
+- `record_gif_continuous` metrics JSON includes:
+  - `visual_rollout_reward_trace`: per-step reward list for the exact recorded episode,
+  - `visual_rollout_reward_num_steps`, `visual_rollout_reward_sum`, `visual_rollout_reward_mean`, `visual_rollout_reward_min`, `visual_rollout_reward_max`, `visual_rollout_reward_first`, `visual_rollout_reward_last`.
+- SAC/TD3 training logs include stock reward component means:
+  - `reward/train/native_total` for active replay-writing train lanes,
+  - `reward/train/<term>` for stock terms such as `reaching_object`, `lifting_object`, `object_goal_tracking`, `object_goal_tracking_fine_grained`, `action_rate`, `joint_vel`,
+  - `reward/eval_rollout/native_total` and `reward/eval_rollout/<term>` for same-env deterministic eval lanes.
+- New checkpoint controls for both SAC and TD3:
+  - `--checkpoint-every-env-steps N`: save periodic checkpoints at the first loop step that reaches each N-env-step boundary,
+  - `--keep-last-checkpoints K`: keep only the last K periodic checkpoints; final and best checkpoints are not pruned,
+  - `--save-best-by KEY`: overwrite `{checkpoint_name}_best.pt` whenever metric `KEY` improves, typically `eval_rollout/mean_return`.
+- New Isaac cfg switch:
+  - `--disable-reward-curriculum`: removes the stock `action_rate` and `joint_vel` reward-weight curriculum terms while keeping the base reward terms unchanged.
+- New SAC option:
+  - `--alpha-min 0.05`: clamps learned SAC entropy temperature `alpha` to a lower bound so exploration pressure cannot collapse to near-zero during long runs.
+
+**Implementation Notes**
+- Reward component logs should prefer Isaac Lab `RewardManager._step_reward` when available and multiply by `step_dt` so component values are in the same scale as the env reward. Fake tests may provide `info["reward_components"]`.
+- Reward components are diagnostics only; they must not change the reward stored in replay or the reward used by SAC/TD3 updates.
+- Same-env eval lane component logs are live-trend monitors, not final benchmark metrics. Final comparable evaluation still comes from PR11a checkpoint eval.
+- `--disable-reward-curriculum` is a training-control switch, not reward shaping. It keeps the stock reward terms but prevents the later curriculum jump that makes `action_rate` and `joint_vel` penalties much stronger.
+- `--alpha-min` affects SAC only. TD3 has no entropy temperature.
+
+**How To Use**
+
+Recommended next SAC diagnostic run:
+
+```bash
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.05 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 1e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 10000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --disable-reward-curriculum \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by eval_rollout/mean_return \
+  --reward-probe-steps 200 \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_seed0_diag \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_seed0_diag_train.jsonl \
+  --progress-log ./logs/sac_franka_seed0_diag_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_seed0_diag \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_seed0_diag \
+  --wandb-mode online
+```
+
+Record the final or best checkpoint with a reward trace:
+
+```bash
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_seed0_diag_best.pt \
+  --save-gif ./logs/sac_franka_seed0_diag_best.gif \
+  --save-mp4 ./logs/sac_franka_seed0_diag_best.mp4 \
+  --save-metrics ./logs/sac_franka_seed0_diag_best_visual_metrics.json \
+  --save-debug-frames-dir ./logs/sac_franka_seed0_diag_best_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+```
+
+**How To Test**
+- `tests/test_visual_sac_td3_checkpoints.py` verifies `record_gif_continuous` writes the per-step reward trace and keeps it even when an external PR11a metrics payload is used for overlay.
+- `tests/test_training_logger_and_scheduler.py` verifies SAC and TD3 log `reward/train/*`, `reward/eval_rollout/*`, parser support for checkpoint/curriculum switches, and periodic/best checkpoint save-prune behavior.
+- `tests/test_camera_enabled_env_cfg.py` verifies `--disable-reward-curriculum` removes only the stock `action_rate` and `joint_vel` curriculum terms.
+- `tests/test_sac_continuous.py` verifies `alpha_min` clamps SAC entropy temperature and is checkpointed in algorithm hparams.
+
+Current targeted verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_sac_continuous.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_visual_sac_td3_checkpoints.py \
+  tests/test_camera_enabled_env_cfg.py
+# 70 passed
+```
+
+Full verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+# 283 passed, 1 skipped
+```
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add reward diagnostics and checkpoint controls"
+```
+
+---
+
 ### PR 11a — SAC/TD3 Checkpoint Evaluation
 
 **Goal / Why**
@@ -2149,7 +2293,7 @@ For final comparisons, use the same `--settle-steps` value as PR11a evaluation. 
 - Policy actions are computed only from wrist RGB plus 40D proprio.
 - Overlay text may show policy, return, success, jerk, step, seed, and target reticle/pixel when projection is available.
 - The script should not write fixed-debug-camera frames into the policy `images` stream.
-- By default, metrics are computed from the exact rollout being recorded, so `--save_metrics` and overlay text refer to the same episode. If an external PR11a metrics payload is supplied, the JSON keeps those final-comparison metrics at top level and stores the recorded single-episode metrics under `visual_rollout_metrics`.
+- By default, metrics are computed from the exact rollout being recorded, so `--save_metrics` and overlay text refer to the same episode. The saved JSON also includes `visual_rollout_reward_trace` and reward summary fields for per-step debugging. If an external PR11a metrics payload is supplied, the JSON keeps those final-comparison metrics at top level and stores the recorded single-episode metrics under `visual_rollout_metrics`.
 
 **Implementation**
 - Load SAC or TD3 checkpoint and roll out deterministic actions.
@@ -2157,12 +2301,13 @@ For final comparisons, use the same `--settle-steps` value as PR11a evaluation. 
 - Record visual frames from the fixed debug camera only.
 - Reuse PR12-lite recorder plus shared `eval.visual_helpers` for settle reset, target text/reticle, and target pixel projection diagnostics.
 - Support `--settle-steps`, `--target-overlay`, `--gif-max-steps`, `--save-gif`, `--save-mp4`, and `--save-debug-frames-dir`.
-- Compute return/success/jerk inline during the visual rollout by wrapping the env and buffering the selected lane's policy images, proprio, actions, rewards, done/truncated, and optional success flags. External PR11a metrics payloads are accepted only after contract validation.
+- Compute return/success/jerk inline during the visual rollout by wrapping the env and buffering the selected lane's policy images, proprio, actions, per-step rewards, done/truncated, and optional success flags. External PR11a metrics payloads are accepted only after contract validation.
 - Do not implement side-by-side grids or PPO/GRPO/Diffusion visualization in this PR.
 
 **How To Test**
 - `tests/test_visual_sac_td3_checkpoints.py` verifies fake SAC/TD3 checkpoints create GIF, MP4, sampled PNGs, and metrics JSON.
 - It checks debug frames come from the fixed debug camera rather than `obs["image"]`, output directories are created automatically, target reticle overlays draw when projection is available, and projection absence falls back cleanly.
+- It checks the metrics JSON contains the per-step reward trace and keeps it available even when top-level overlay metrics come from an external PR11a payload.
 - It checks missing checkpoint and unknown agent types fail readably.
 - It checks external PR11a metrics payloads can drive overlay/top-level saved metrics and rejects mismatched seed/checkpoint/settle/agent contracts before recording.
 
@@ -2755,6 +2900,7 @@ python -m scripts.train_sac_continuous \
   --utd-ratio 1 \
   --polyak-tau 0.005 \
   --initial-alpha 0.2 \
+  --alpha-min 0.05 \
   --target-entropy auto \
   --lr-scheduler warmup_cosine \
   --lr-warmup-updates 1000 \
@@ -2765,6 +2911,10 @@ python -m scripts.train_sac_continuous \
   --eval-settle-steps 600 \
   --settle-steps 600 \
   --per-lane-settle-steps 20 \
+  --disable-reward-curriculum \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by eval_rollout/mean_return \
   --learning_rate 3e-4 \
   --tb-log-dir ./logs/sac_franka \
   --jsonl-log ./logs/sac_franka_train.jsonl \
@@ -2803,6 +2953,10 @@ python -m scripts.train_td3_continuous \
   --eval-settle-steps 600 \
   --settle-steps 600 \
   --per-lane-settle-steps 20 \
+  --disable-reward-curriculum \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by eval_rollout/mean_return \
   --learning_rate 3e-4 \
   --tb-log-dir ./logs/td3_franka \
   --jsonl-log ./logs/td3_franka_train.jsonl \

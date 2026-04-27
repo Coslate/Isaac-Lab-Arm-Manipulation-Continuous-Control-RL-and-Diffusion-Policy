@@ -52,6 +52,7 @@ class IsaacArmEnvConfig:
     clean_demo_scene: bool = False
     table_cleanup: str = TABLE_CLEANUP_NONE
     min_clean_env_spacing: float | None = MIN_CLEAN_ENV_SPACING
+    disable_reward_curriculum: bool = False
     gym_kwargs: dict[str, Any] = field(default_factory=dict)
     proprio_feature_groups: tuple[str, ...] = PROPRIO_FEATURE_GROUPS
 
@@ -79,6 +80,8 @@ class IsaacArmEnvConfig:
         resolve_table_cleanup(self.table_cleanup, clean_demo_scene=self.clean_demo_scene)
         if self.min_clean_env_spacing is not None and self.min_clean_env_spacing <= 0:
             raise ValueError("min_clean_env_spacing must be positive or None")
+        if not isinstance(self.disable_reward_curriculum, bool):
+            raise ValueError("disable_reward_curriculum must be a bool")
 
     @property
     def resolved_table_cleanup(self) -> str:
@@ -123,6 +126,7 @@ class IsaacArmEnv:
             kwargs.setdefault("clean_demo_scene", self.config.clean_demo_scene)
             kwargs.setdefault("table_cleanup", self.config.table_cleanup)
             kwargs.setdefault("min_clean_env_spacing", self.config.min_clean_env_spacing)
+            kwargs.setdefault("disable_reward_curriculum", self.config.disable_reward_curriculum)
         self._env = make(self.config.env_id, **kwargs)
         self._last_info: dict[str, Any] = {}
         self._last_native_obs: Any | None = None
@@ -600,6 +604,7 @@ class IsaacArmEnv:
             clean_demo_scene = kwargs.pop("clean_demo_scene", False)
             table_cleanup = kwargs.pop("table_cleanup", TABLE_CLEANUP_NONE)
             min_clean_env_spacing = kwargs.pop("min_clean_env_spacing", MIN_CLEAN_ENV_SPACING)
+            disable_reward_curriculum = kwargs.pop("disable_reward_curriculum", False)
             num_envs = kwargs.get("num_envs", 1)
             if enable_cameras:
                 env_cfg = make_camera_enabled_franka_lift_cfg(
@@ -613,10 +618,15 @@ class IsaacArmEnv:
                     clean_demo_scene=clean_demo_scene,
                     table_cleanup=table_cleanup,
                     min_clean_env_spacing=min_clean_env_spacing,
+                    disable_reward_curriculum=disable_reward_curriculum,
                     parse_env_cfg_fn=parse_env_cfg,
                 )
             else:
                 env_cfg = parse_env_cfg(env_id, device=device, num_envs=num_envs)
+                if disable_reward_curriculum:
+                    from env.franka_lift_camera_cfg import disable_reward_curriculum_terms
+
+                    disable_reward_curriculum_terms(env_cfg)
             kwargs.setdefault("cfg", env_cfg)
             return gym.make(env_id, **kwargs)
 

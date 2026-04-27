@@ -27,6 +27,7 @@ from agents.checkpointing import REPLAY_STORAGE_CPU_UINT8
 from agents.normalization import SUPPORTED_IMAGE_NORMALIZATION
 from agents.sac import SACAgent, SACConfig
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
+from train.checkpoint_manager import TrainingCheckpointManager
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
 from train.lr_scheduler import (
     SUPPORTED_SCHEDULERS,
@@ -54,6 +55,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--polyak-tau", dest="polyak_tau", type=float, default=0.005)
     parser.add_argument("--utd-ratio", dest="utd_ratio", type=int, default=1)
     parser.add_argument("--initial-alpha", dest="initial_alpha", type=float, default=0.2)
+    parser.add_argument("--alpha-min", dest="alpha_min", type=float, default=0.0)
     parser.add_argument("--target-entropy", dest="target_entropy", default="auto")
     parser.add_argument("--replay-storage", dest="replay_storage", choices=["cpu", REPLAY_STORAGE_CPU_UINT8], default="cpu")
     parser.add_argument("--lr-scheduler", dest="lr_scheduler", choices=SUPPORTED_SCHEDULERS, default="constant")
@@ -84,6 +86,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--per-lane-settle-steps", dest="per_lane_settle_steps", type=int, default=0)
     parser.add_argument("--checkpoint-dir", "--checkpoint_dir", dest="checkpoint_dir", default="checkpoints")
     parser.add_argument("--checkpoint-name", "--checkpoint_name", dest="checkpoint_name", default="sac_franka")
+    parser.add_argument("--checkpoint-every-env-steps", dest="checkpoint_every_env_steps", type=int, default=0)
+    parser.add_argument("--keep-last-checkpoints", dest="keep_last_checkpoints", type=int, default=0)
+    parser.add_argument("--save-best-by", dest="save_best_by")
     parser.add_argument("--logs-dir", dest="logs_dir", default="logs")
     parser.add_argument("--ram-budget-gib", dest="ram_budget_gib", type=float, default=64.0)
     parser.add_argument("--skip-reward-probe", action="store_true")
@@ -96,6 +101,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="none",
     )
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--disable-reward-curriculum", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -107,6 +113,7 @@ def build_agent(args: argparse.Namespace) -> SACAgent:
         polyak_tau=args.polyak_tau,
         utd_ratio=args.utd_ratio,
         initial_alpha=args.initial_alpha,
+        alpha_min=args.alpha_min,
         target_entropy=_parse_target_entropy(args.target_entropy),
         apply_image_aug=args.apply_image_aug,
         image_normalization=args.image_normalization,
@@ -124,6 +131,9 @@ def _parse_target_entropy(value: str | float | int | None) -> float | None:
 
 def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[str, Any]:
     _validate_same_env_eval_args(args)
+    _validate_checkpoint_args(args)
+    if args.alpha_min < 0.0:
+        raise ValueError("--alpha-min must be non-negative")
     if not args.skip_reward_probe:
         probe_reward_signal(
             env,
@@ -158,6 +168,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
     logger = _build_logger(args)
     progress = _build_progress(args, description="sac train")
     schedulers = _build_schedulers(args, agent)
+    checkpoint_manager = _build_checkpoint_manager(args)
     eval_env_factory = (
         _build_eval_env_factory(args, resolved_eval_backend, eval_seed)
         if args.eval_every_env_steps > 0
@@ -172,6 +183,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
                 "agent_config": agent.config.hparam_dict(),
                 "normalizer_config": agent.normalizers.config_dict(),
                 "lr_scheduler": args.lr_scheduler,
+                "checkpointing": checkpoint_manager.config_dict() if checkpoint_manager is not None else None,
                 "console_progress": {
                     "enabled": progress.enabled if progress is not None else False,
                     "log_every_env_steps": args.log_every_env_steps,
@@ -193,6 +205,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
             schedulers=schedulers,
             eval_env_factory=eval_env_factory,
             progress=progress,
+            checkpoint_saver=checkpoint_manager,
         )
     finally:
         logger.close()
@@ -215,6 +228,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
                 "num_updates": report.num_updates,
                 "final_logs": report.final_logs,
                 "eval_history": report.eval_history,
+                "checkpoint_history": [] if checkpoint_manager is None else checkpoint_manager.history,
                 "scheduler_state": report.scheduler_state,
                 "config": asdict(loop_cfg),
             },
@@ -233,6 +247,7 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
         "num_updates": report.num_updates,
         "final_logs": report.final_logs,
         "num_eval_runs": len(report.eval_history),
+        "checkpoint_history": [] if checkpoint_manager is None else checkpoint_manager.history,
     }
 
 
@@ -278,6 +293,29 @@ def _validate_same_env_eval_args(args: argparse.Namespace) -> None:
         raise ValueError("--settle-steps must be non-negative")
     if args.per_lane_settle_steps < 0:
         raise ValueError("--per-lane-settle-steps must be non-negative")
+
+
+def _validate_checkpoint_args(args: argparse.Namespace) -> None:
+    if args.checkpoint_every_env_steps < 0:
+        raise ValueError("--checkpoint-every-env-steps must be non-negative")
+    if args.keep_last_checkpoints < 0:
+        raise ValueError("--keep-last-checkpoints must be non-negative")
+    if args.save_best_by is not None and not args.save_best_by.strip():
+        raise ValueError("--save-best-by must be non-empty")
+
+
+def _build_checkpoint_manager(args: argparse.Namespace) -> TrainingCheckpointManager | None:
+    if args.checkpoint_every_env_steps <= 0 and args.save_best_by is None:
+        return None
+    return TrainingCheckpointManager(
+        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_name=args.checkpoint_name,
+        checkpoint_every_env_steps=args.checkpoint_every_env_steps,
+        keep_last_checkpoints=args.keep_last_checkpoints,
+        save_best_by=args.save_best_by,
+        seed=args.seed,
+        env_id=args.env_id,
+    )
 
 
 def _build_progress(args: argparse.Namespace, *, description: str) -> TrainProgressReporter | None:
@@ -364,6 +402,7 @@ def _build_eval_env_factory(
                     seed=eval_seed,
                     device=args.device,
                     enable_cameras=True,
+                    disable_reward_curriculum=args.disable_reward_curriculum,
                 )
             )
 
@@ -395,6 +434,7 @@ def run_isaac_backend(args: argparse.Namespace) -> dict[str, Any]:
                 seed=args.seed,
                 device=args.device,
                 enable_cameras=True,
+                disable_reward_curriculum=args.disable_reward_curriculum,
             )
         )
         agent = build_agent(args)
@@ -449,15 +489,21 @@ class _FakeSACEnv:
         if action_array.shape != (self.num_envs, 7):
             raise ValueError(f"action shape must be ({self.num_envs}, 7); got {action_array.shape}")
         self._step += 1
+        action_penalty = -np.linalg.norm(action_array, axis=-1).astype(np.float32)
+        reach = 0.1 * np.sin(self._step.astype(np.float32) * 0.1)
         # Dense reward = -||action||^2 + small step reward; varies with action and step.
-        reward = -np.linalg.norm(action_array, axis=-1).astype(np.float32) + 0.1 * np.sin(
-            self._step.astype(np.float32) * 0.1
-        )
+        reward = action_penalty + reach
         terminated = self._step >= self.terminal_step
         truncated = np.zeros(self.num_envs, dtype=bool)
         if terminated.any():
             self._step[terminated] = 0
-        info: dict[str, Any] = {"success": terminated.copy()}
+        info: dict[str, Any] = {
+            "success": terminated.copy(),
+            "reward_components": {
+                "reaching_object": reach.astype(np.float32),
+                "action_rate": action_penalty.astype(np.float32),
+            },
+        }
         return self._obs(), reward.astype(np.float32), terminated, truncated, info
 
     def _obs(self) -> dict[str, np.ndarray]:

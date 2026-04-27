@@ -23,6 +23,7 @@ from agents.normalization import SUPPORTED_IMAGE_NORMALIZATION
 from agents.td3 import TD3Agent, TD3Config
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 from scripts.train_sac_continuous import _build_fake_env  # reuse the shared fake env
+from train.checkpoint_manager import TrainingCheckpointManager
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
 from train.lr_scheduler import (
     SUPPORTED_SCHEDULERS,
@@ -82,6 +83,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--per-lane-settle-steps", dest="per_lane_settle_steps", type=int, default=0)
     parser.add_argument("--checkpoint-dir", "--checkpoint_dir", dest="checkpoint_dir", default="checkpoints")
     parser.add_argument("--checkpoint-name", "--checkpoint_name", dest="checkpoint_name", default="td3_franka")
+    parser.add_argument("--checkpoint-every-env-steps", dest="checkpoint_every_env_steps", type=int, default=0)
+    parser.add_argument("--keep-last-checkpoints", dest="keep_last_checkpoints", type=int, default=0)
+    parser.add_argument("--save-best-by", dest="save_best_by")
     parser.add_argument("--logs-dir", dest="logs_dir", default="logs")
     parser.add_argument("--ram-budget-gib", dest="ram_budget_gib", type=float, default=64.0)
     parser.add_argument("--skip-reward-probe", action="store_true")
@@ -94,6 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="none",
     )
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--disable-reward-curriculum", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -115,6 +120,7 @@ def build_agent(args: argparse.Namespace) -> TD3Agent:
 
 def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[str, Any]:
     _validate_same_env_eval_args(args)
+    _validate_checkpoint_args(args)
     if not args.skip_reward_probe:
         probe_reward_signal(
             env,
@@ -149,6 +155,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
     logger = _build_logger(args)
     progress = _build_progress(args, description="td3 train")
     schedulers = _build_schedulers(args, agent)
+    checkpoint_manager = _build_checkpoint_manager(args)
     eval_env_factory = (
         _build_eval_env_factory(args, resolved_eval_backend, eval_seed)
         if args.eval_every_env_steps > 0
@@ -163,6 +170,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
                 "agent_config": agent.config.hparam_dict(),
                 "normalizer_config": agent.normalizers.config_dict(),
                 "lr_scheduler": args.lr_scheduler,
+                "checkpointing": checkpoint_manager.config_dict() if checkpoint_manager is not None else None,
                 "console_progress": {
                     "enabled": progress.enabled if progress is not None else False,
                     "log_every_env_steps": args.log_every_env_steps,
@@ -184,6 +192,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
             schedulers=schedulers,
             eval_env_factory=eval_env_factory,
             progress=progress,
+            checkpoint_saver=checkpoint_manager,
         )
     finally:
         logger.close()
@@ -206,6 +215,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
                 "num_updates": report.num_updates,
                 "final_logs": report.final_logs,
                 "eval_history": report.eval_history,
+                "checkpoint_history": [] if checkpoint_manager is None else checkpoint_manager.history,
                 "scheduler_state": report.scheduler_state,
                 "config": asdict(loop_cfg),
             },
@@ -224,6 +234,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         "num_updates": report.num_updates,
         "final_logs": report.final_logs,
         "num_eval_runs": len(report.eval_history),
+        "checkpoint_history": [] if checkpoint_manager is None else checkpoint_manager.history,
     }
 
 
@@ -269,6 +280,29 @@ def _validate_same_env_eval_args(args: argparse.Namespace) -> None:
         raise ValueError("--settle-steps must be non-negative")
     if args.per_lane_settle_steps < 0:
         raise ValueError("--per-lane-settle-steps must be non-negative")
+
+
+def _validate_checkpoint_args(args: argparse.Namespace) -> None:
+    if args.checkpoint_every_env_steps < 0:
+        raise ValueError("--checkpoint-every-env-steps must be non-negative")
+    if args.keep_last_checkpoints < 0:
+        raise ValueError("--keep-last-checkpoints must be non-negative")
+    if args.save_best_by is not None and not args.save_best_by.strip():
+        raise ValueError("--save-best-by must be non-empty")
+
+
+def _build_checkpoint_manager(args: argparse.Namespace) -> TrainingCheckpointManager | None:
+    if args.checkpoint_every_env_steps <= 0 and args.save_best_by is None:
+        return None
+    return TrainingCheckpointManager(
+        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_name=args.checkpoint_name,
+        checkpoint_every_env_steps=args.checkpoint_every_env_steps,
+        keep_last_checkpoints=args.keep_last_checkpoints,
+        save_best_by=args.save_best_by,
+        seed=args.seed,
+        env_id=args.env_id,
+    )
 
 
 def _build_progress(args: argparse.Namespace, *, description: str) -> TrainProgressReporter | None:
@@ -351,6 +385,7 @@ def _build_eval_env_factory(
                     seed=eval_seed,
                     device=args.device,
                     enable_cameras=True,
+                    disable_reward_curriculum=args.disable_reward_curriculum,
                 )
             )
 
@@ -382,6 +417,7 @@ def run_isaac_backend(args: argparse.Namespace) -> dict[str, Any]:
                 seed=args.seed,
                 device=args.device,
                 enable_cameras=True,
+                disable_reward_curriculum=args.disable_reward_curriculum,
             )
         )
         agent = build_agent(args)

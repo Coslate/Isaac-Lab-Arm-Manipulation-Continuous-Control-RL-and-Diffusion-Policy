@@ -88,6 +88,9 @@ def test_record_checkpoint_visuals_create_gif_png_and_metrics(tmp_path, agent_ty
     assert payload["target_debug_pixel_source"] == "debug_camera_projection"
     assert payload["target_debug_pixel_by_episode"] == {"episode_000": [100, 32]}
     assert {"mean_return", "success_rate", "mean_action_jerk"} <= set(payload)
+    assert len(payload["visual_rollout_reward_trace"]) == payload["visual_rollout_reward_num_steps"] == 5
+    assert payload["visual_rollout_reward_sum"] == pytest.approx(payload["mean_return"])
+    assert payload["visual_rollout_reward_min"] <= payload["visual_rollout_reward_mean"] <= payload["visual_rollout_reward_max"]
 
     with Image.open(result["save_gif"]) as gif:
         assert gif.n_frames == result["gif_num_frames"]
@@ -235,5 +238,7 @@ def test_metrics_payload_can_drive_overlay_and_saved_top_level_metrics(tmp_path)
     assert payload["success_rate"] == 0.5
     assert payload["mean_action_jerk"] == 0.25
     assert payload["overlay_metrics_source"] == str(metrics_path.resolve())
+    assert len(payload["visual_rollout_reward_trace"]) == 5
     assert payload["visual_rollout_metrics"]["agent_type"] == "td3"
     assert payload["visual_rollout_metrics"]["num_eval_episodes"] == 1
+    assert len(payload["visual_rollout_metrics"]["visual_rollout_reward_trace"]) == 5

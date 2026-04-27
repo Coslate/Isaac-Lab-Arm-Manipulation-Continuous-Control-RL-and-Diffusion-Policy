@@ -15,7 +15,9 @@ from agents.normalization import ActionNormalizer
 from agents.sac import SACAgent, SACConfig
 from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
-from scripts.train_sac_continuous import _FakeSACEnv, _build_fake_env
+from scripts.train_sac_continuous import _FakeSACEnv, _build_fake_env, parse_args as parse_sac_args
+from scripts.train_td3_continuous import parse_args as parse_td3_args
+from train.checkpoint_manager import TrainingCheckpointManager
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
 from train.lr_scheduler import (
     estimate_total_update_steps,
@@ -429,6 +431,77 @@ def test_sac_train_loop_logs_lr_periodic_eval_and_checkpoint_scheduler_state(tmp
     assert reloaded_schedulers["actor"].step_count == schedulers["actor"].step_count
 
 
+def test_training_checkpoint_manager_saves_periodic_prunes_and_best(tmp_path: Path):
+    torch.manual_seed(0)
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_ckpt",
+        checkpoint_every_env_steps=4,
+        keep_last_checkpoints=2,
+        save_best_by="eval_rollout/mean_return",
+        seed=7,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(agent, 4, {"train/num_env_steps": 4.0}, {"actor": {"step_count": 1}})
+    manager(agent, 8, {"eval_rollout/mean_return": 1.0}, {"actor": {"step_count": 2}})
+    manager(agent, 12, {"eval_rollout/mean_return": 0.5}, {"actor": {"step_count": 3}})
+    manager(agent, 14, {"eval_rollout/mean_return": 2.0}, {"actor": {"step_count": 4}})
+
+    assert not (tmp_path / "sac_ckpt_step_000000004.pt").exists()
+    assert (tmp_path / "sac_ckpt_step_000000008.pt").exists()
+    assert (tmp_path / "sac_ckpt_step_000000012.pt").exists()
+    best = tmp_path / "sac_ckpt_best.pt"
+    assert best.exists()
+    best_payload = load_checkpoint(best, expected_agent_type="sac")
+    assert best_payload.metadata.num_env_steps == 14
+    assert best_payload.extras["scheduler_state"]["actor"]["step_count"] == 4
+    assert manager.best_metric_value == pytest.approx(2.0)
+    assert any(event["kind"] == "pruned" for event in manager.history)
+
+
+def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
+    sac_args = parse_sac_args(
+        [
+            "--backend",
+            "fake",
+            "--alpha-min",
+            "0.05",
+            "--checkpoint-every-env-steps",
+            "50000",
+            "--keep-last-checkpoints",
+            "5",
+            "--save-best-by",
+            "eval_rollout/mean_return",
+            "--disable-reward-curriculum",
+        ]
+    )
+    td3_args = parse_td3_args(
+        [
+            "--backend",
+            "fake",
+            "--checkpoint-every-env-steps",
+            "50000",
+            "--keep-last-checkpoints",
+            "5",
+            "--save-best-by",
+            "eval_rollout/mean_return",
+            "--disable-reward-curriculum",
+        ]
+    )
+
+    assert sac_args.alpha_min == pytest.approx(0.05)
+    assert sac_args.checkpoint_every_env_steps == 50000
+    assert sac_args.keep_last_checkpoints == 5
+    assert sac_args.save_best_by == "eval_rollout/mean_return"
+    assert sac_args.disable_reward_curriculum is True
+    assert td3_args.checkpoint_every_env_steps == 50000
+    assert td3_args.keep_last_checkpoints == 5
+    assert td3_args.save_best_by == "eval_rollout/mean_return"
+    assert td3_args.disable_reward_curriculum is True
+
+
 def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
     torch.manual_seed(0)
     env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
@@ -458,6 +531,39 @@ def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
     assert any("eval_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
     assert any("train_rollout/mean_return" in metrics for _step, metrics, _force in progress.calls)
     assert any("eval_rollout/mean_return" in metrics for _step, metrics, _force in progress.calls)
+
+
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_train_loop_logs_stock_reward_component_breakdown(agent, config, runner):
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    logger = _CountingLogger()
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=6,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+    )
+
+    report = runner(env, agent(), loop_config=cfg, logger=logger, progress=progress)
+
+    assert any("reward/train/native_total" in logs for logs in report.log_history)
+    assert any("reward/train/reaching_object" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/reaching_object" in logs for logs in report.log_history)
+    assert any("reward/train/action_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/eval_rollout/action_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/train/native_total" in metrics for _step, metrics, _force in progress.calls)
 
 
 def test_sac_same_env_eval_waits_for_clean_episode_after_start_threshold():

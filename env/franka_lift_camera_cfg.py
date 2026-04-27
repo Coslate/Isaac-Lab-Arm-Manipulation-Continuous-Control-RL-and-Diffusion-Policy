@@ -86,6 +86,7 @@ def make_camera_enabled_franka_lift_cfg(
     clean_demo_scene: bool = False,
     table_cleanup: str = TABLE_CLEANUP_NONE,
     min_clean_env_spacing: float | None = MIN_CLEAN_ENV_SPACING,
+    disable_reward_curriculum: bool = False,
     parse_env_cfg_fn: ParseEnvCfg | None = None,
 ) -> Any:
     """Build a Franka lift env cfg with wrist RGB and named 40D proprio terms."""
@@ -105,6 +106,8 @@ def make_camera_enabled_franka_lift_cfg(
     resolved_table_cleanup = resolve_table_cleanup(table_cleanup, clean_demo_scene=clean_demo_scene)
     if min_clean_env_spacing is not None and min_clean_env_spacing <= 0:
         raise ValueError("min_clean_env_spacing must be positive or None")
+    if not isinstance(disable_reward_curriculum, bool):
+        raise ValueError("disable_reward_curriculum must be a bool")
 
     import isaaclab.sim as sim_utils
     from isaaclab.assets import AssetBaseCfg
@@ -126,6 +129,8 @@ def make_camera_enabled_franka_lift_cfg(
         _make_table_surface_matte(env_cfg, sim_utils)
     if resolved_table_cleanup in {TABLE_CLEANUP_OVERLAY, TABLE_CLEANUP_MATTE_OVERLAY}:
         _add_demo_tabletop_overlay(env_cfg, AssetBaseCfg, sim_utils)
+    if disable_reward_curriculum:
+        disable_reward_curriculum_terms(env_cfg)
     _add_wrist_camera(env_cfg, CameraCfg, sim_utils, policy_camera_name, image_height, image_width)
     if debug_camera_name is not None and debug_image_obs_key is not None:
         _add_debug_camera(env_cfg, CameraCfg, sim_utils, debug_camera_name, debug_image_height, debug_image_width)
@@ -198,6 +203,7 @@ def make_camera_enabled_franka_lift_cfg(
     env_cfg.project_clean_demo_scene = resolved_table_cleanup != TABLE_CLEANUP_NONE
     env_cfg.project_table_cleanup = resolved_table_cleanup
     env_cfg.project_min_clean_env_spacing = min_clean_env_spacing
+    env_cfg.project_disable_reward_curriculum = bool(disable_reward_curriculum)
     return env_cfg
 
 
@@ -209,6 +215,19 @@ def resolve_table_cleanup(table_cleanup: str, *, clean_demo_scene: bool = False)
     if clean_demo_scene and table_cleanup == TABLE_CLEANUP_NONE:
         return TABLE_CLEANUP_MATTE_OVERLAY
     return table_cleanup
+
+
+def disable_reward_curriculum_terms(env_cfg: Any) -> None:
+    """Disable stock reward-weight curriculum terms while keeping stock rewards."""
+
+    curriculum = getattr(env_cfg, "curriculum", None)
+    if curriculum is None:
+        env_cfg.project_disable_reward_curriculum = True
+        return
+    for name in ("action_rate", "joint_vel"):
+        if hasattr(curriculum, name):
+            setattr(curriculum, name, None)
+    env_cfg.project_disable_reward_curriculum = True
 
 
 def _prepare_clean_camera_demo_scene(env_cfg: Any, *, min_clean_env_spacing: float | None) -> None:

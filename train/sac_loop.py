@@ -25,6 +25,7 @@ from agents.sac import SACAgent, SACConfig
 from configs import ACTION_DIM
 from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_collection_state
 from train.loggers import TrainLogger
+from train.reward_components import extract_reward_components, reward_component_logs
 from train.rollout_metrics import LaneEpisodeMetricTracker, infer_successes, split_train_eval_lanes
 
 
@@ -173,6 +174,7 @@ def run_sac_train_loop(
     schedulers: Mapping[str, LearningRateScheduler] | None = None,
     eval_env_factory: Callable[[], Any] | None = None,
     progress: Any | None = None,
+    checkpoint_saver: Callable[[SACAgent, int, dict[str, float], dict[str, Any]], None] | None = None,
 ) -> SACTrainLoopReport:
     """Drive an env -> replay -> SAC update loop until ``total_env_steps``.
 
@@ -285,6 +287,7 @@ def run_sac_train_loop(
         rewards = _broadcast_per_env(reward, num_envs, np.float32, "reward")
         dones = _broadcast_per_env(terminated, num_envs, bool, "terminated")
         truncs = _broadcast_per_env(truncated, num_envs, bool, "truncated")
+        reward_components = extract_reward_components(_info, env, num_envs=num_envs, rewards=rewards)
 
         if active_train_indices.size > 0:
             agent.update_observation_normalizer(
@@ -330,37 +333,41 @@ def run_sac_train_loop(
             )
             warmup_done_reported = True
         successes = infer_successes(_info, num_envs=num_envs, proprios=next_proprios)
+        train_rollout_logs = train_rollout_tracker.step(
+            rewards=rewards[train_indices],
+            terminated=dones[train_indices],
+            truncated=truncs[train_indices],
+            successes=successes[train_indices],
+            active_mask=~settling_before[train_indices],
+        )
         _log_loop_metrics(
             logger,
             progress,
             env_steps,
-            train_rollout_tracker.step(
-                rewards=rewards[train_indices],
-                terminated=dones[train_indices],
-                truncated=truncs[train_indices],
-                successes=successes[train_indices],
-                active_mask=~settling_before[train_indices],
-            ),
+            train_rollout_logs,
             log_history,
             force=True,
         )
+        _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, train_rollout_logs, schedulers)
         if same_env_eval_tracker is not None:
             same_env_eval_active_before = same_env_eval_active.copy()
             same_env_eval_metric_mask = same_env_eval_active_before & ~settling_before[same_env_eval_indices]
+            eval_rollout_logs = same_env_eval_tracker.step(
+                rewards=rewards[same_env_eval_indices],
+                terminated=dones[same_env_eval_indices],
+                truncated=truncs[same_env_eval_indices],
+                successes=successes[same_env_eval_indices],
+                active_mask=same_env_eval_metric_mask,
+            )
             _log_loop_metrics(
                 logger,
                 progress,
                 env_steps,
-                same_env_eval_tracker.step(
-                    rewards=rewards[same_env_eval_indices],
-                    terminated=dones[same_env_eval_indices],
-                    truncated=truncs[same_env_eval_indices],
-                    successes=successes[same_env_eval_indices],
-                    active_mask=same_env_eval_metric_mask,
-                ),
+                eval_rollout_logs,
                 log_history,
                 force=True,
             )
+            _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_rollout_logs, schedulers)
         per_lane_settle_remaining = _advance_per_lane_settle(
             per_lane_settle_remaining,
             (dones | truncs) & ~settling_before,
@@ -385,8 +392,30 @@ def run_sac_train_loop(
             "train/settling_train_lanes": float(settling_train_lanes),
             "train/settling_eval_lanes": float(settling_eval_lanes),
         }
+        reward_logs = reward_component_logs(
+            reward_components,
+            prefix="reward/train",
+            lane_indices=train_indices,
+            active_mask=~settling_before[train_indices],
+        )
+        if same_env_eval_tracker is not None:
+            reward_logs.update(
+                reward_component_logs(
+                    reward_components,
+                    prefix="reward/eval_rollout",
+                    lane_indices=same_env_eval_indices,
+                    active_mask=same_env_eval_metric_mask,
+                )
+            )
+        if reward_logs:
+            env_logs.update(reward_logs)
         env_logs.update(agent.normalizer_logs())
+        if reward_logs:
+            log_history.append(reward_logs)
+            if logger is not None:
+                logger.log_scalars(env_steps, reward_logs)
         _update_progress(progress, env_steps, env_logs)
+        _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, env_logs, schedulers)
 
         if active_train_indices.size > 0 and not warming_up and replay.size >= cfg.batch_size:
             for _ in range(agent.config.utd_ratio):
@@ -404,6 +433,7 @@ def run_sac_train_loop(
                 if logger is not None:
                     logger.log_scalars(env_steps, final_logs)
                 _update_progress(progress, env_steps, final_logs)
+                _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, final_logs, schedulers)
 
         while next_eval_step is not None and env_steps >= next_eval_step:
             _note_progress(
@@ -430,6 +460,7 @@ def run_sac_train_loop(
             if logger is not None:
                 logger.log_scalars(env_steps, eval_logs)
             _update_progress(progress, env_steps, eval_logs, force=True)
+            _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_logs, schedulers)
             eval_count += 1
             next_eval_step += cfg.eval_every_env_steps
 
@@ -441,6 +472,7 @@ def run_sac_train_loop(
         }
     final_logs.update(agent.normalizer_logs())
     _update_progress(progress, env_steps, final_logs, force=True)
+    _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, final_logs, schedulers)
     return SACTrainLoopReport(
         num_env_steps=env_steps,
         num_updates=update_count,
@@ -478,6 +510,18 @@ def _log_loop_metrics(
     if logger is not None:
         logger.log_scalars(step, metrics)
     _update_progress(progress, step, metrics, force=force)
+
+
+def _maybe_save_checkpoint(
+    checkpoint_saver: Callable[[SACAgent, int, dict[str, float], dict[str, Any]], None] | None,
+    agent: SACAgent,
+    env_steps: int,
+    metrics: dict[str, float],
+    schedulers: Mapping[str, LearningRateScheduler] | None,
+) -> None:
+    if checkpoint_saver is None or not metrics:
+        return
+    checkpoint_saver(agent, env_steps, metrics, scheduler_collection_state(schedulers))
 
 
 def _sac_lr_logs(agent: SACAgent) -> dict[str, float]:

@@ -1,6 +1,6 @@
 """Formal Isaac Lab environment wrapper for manipulation experiments."""
 
-from .franka_lift_camera_cfg import make_camera_enabled_franka_lift_cfg
+from .franka_lift_camera_cfg import disable_reward_curriculum_terms, make_camera_enabled_franka_lift_cfg
 from .isaac_env import IsaacArmEnv, IsaacArmEnvConfig, POLICY_IMAGE_SHAPE, PROPRIO_FEATURE_GROUPS
 
 
@@ -15,6 +15,7 @@ __all__ = [
     "IsaacArmEnvConfig",
     "POLICY_IMAGE_SHAPE",
     "PROPRIO_FEATURE_GROUPS",
+    "disable_reward_curriculum_terms",
     "make_camera_enabled_franka_lift_cfg",
     "make_env",
 ]

@@ -20,6 +20,7 @@ Design notes
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ class SACConfig:
     critic_lr: float = 3e-4
     alpha_lr: float = 3e-4
     initial_alpha: float = 0.2
+    alpha_min: float = 0.0
     target_entropy: float | None = None  # default: -action_dim
     utd_ratio: int = 1
     image_aug_pad: int = 8
@@ -134,6 +136,10 @@ class SACAgent(nn.Module):
         super().__init__()
         self.config = config or SACConfig()
         cfg = self.config
+        if cfg.initial_alpha <= 0.0:
+            raise ValueError("initial_alpha must be positive")
+        if cfg.alpha_min < 0.0:
+            raise ValueError("alpha_min must be non-negative")
 
         self.actor = _SACActor(cfg)
         self.critic1 = _SACCritic(cfg)
@@ -145,7 +151,8 @@ class SACAgent(nn.Module):
         for param in self.target_critic2.parameters():
             param.requires_grad = False
 
-        initial_log_alpha = torch.log(torch.tensor(float(cfg.initial_alpha)))
+        initial_alpha = max(float(cfg.initial_alpha), float(cfg.alpha_min))
+        initial_log_alpha = torch.log(torch.tensor(initial_alpha))
         self.log_alpha = nn.Parameter(initial_log_alpha)
         self.target_entropy = cfg.resolved_target_entropy()
 
@@ -274,6 +281,7 @@ class SACAgent(nn.Module):
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
+        self._clamp_alpha_min()
 
         # ---- soft target update -------------------------------------------
         self._soft_update_targets()
@@ -297,6 +305,12 @@ class SACAgent(nn.Module):
             ):
                 for online_param, target_param in zip(online.parameters(), target.parameters()):
                     target_param.data.mul_(1.0 - tau).add_(online_param.data, alpha=tau)
+
+    def _clamp_alpha_min(self) -> None:
+        if self.config.alpha_min <= 0.0:
+            return
+        with torch.no_grad():
+            self.log_alpha.clamp_(min=math.log(float(self.config.alpha_min)))
 
     # ------------------------------------------------------------------ checkpoint
 
@@ -380,6 +394,7 @@ class SACAgent(nn.Module):
         if log_alpha_state is not None:
             with torch.no_grad():
                 agent.log_alpha.copy_(log_alpha_state)
+            agent._clamp_alpha_min()
         if payload.optimizer_state:
             if "actor" in payload.optimizer_state:
                 agent.actor_optimizer.load_state_dict(payload.optimizer_state["actor"])
