@@ -27,6 +27,9 @@ POLICY_IMAGE_SHAPE: tuple[int, int, int] = (3, 224, 224)
 DEFAULT_PROPRIO_DIM = 40
 DEFAULT_ACTION_DIM = 7
 DEFAULT_RAM_BUDGET_GIB = 32.0
+DEFAULT_PRIORITY_SCORE_WEIGHTS: tuple[float, float, float, float] = (0.40, 0.25, 0.20, 0.15)
+DEFAULT_PROTECTED_SCORE_WEIGHTS: tuple[float, float, float] = (0.60, 0.25, 0.15)
+PROGRESS_BUCKETS: tuple[str, ...] = ("normal", "reach", "grip", "lift", "goal")
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,7 @@ class ReplayBatch:
     terminated: torch.Tensor      # bool (B,)
     truncated: torch.Tensor       # bool (B,)
     bootstrap_mask: torch.Tensor  # float32 (B,) -- 0 at terminal, 1 otherwise
+    indices: torch.Tensor | None = None  # int64 (B,) -- replay indices for priority updates
 
 
 class ReplayBuffer:
@@ -123,6 +127,14 @@ class ReplayBuffer:
         ram_budget_gib: float = DEFAULT_RAM_BUDGET_GIB,
         bootstrap_through_truncation: bool = False,
         seed: int | None = None,
+        prioritize_replay: bool = False,
+        priority_replay_ratio: float = 0.0,
+        priority_score_weights: tuple[float, float, float, float] = DEFAULT_PRIORITY_SCORE_WEIGHTS,
+        priority_rarity_power: float = 0.5,
+        priority_rarity_eps: float = 1.0,
+        protect_rare_transitions: bool = False,
+        protected_replay_fraction: float = 0.2,
+        protected_score_weights: tuple[float, float, float] = DEFAULT_PROTECTED_SCORE_WEIGHTS,
     ) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
@@ -130,6 +142,26 @@ class ReplayBuffer:
             raise ValueError("proprio_dim and action_dim must be positive")
         if ram_budget_gib <= 0:
             raise ValueError("ram_budget_gib must be positive")
+        if not 0.0 <= priority_replay_ratio <= 1.0:
+            raise ValueError("priority_replay_ratio must be in [0, 1]")
+        if len(priority_score_weights) != 4:
+            raise ValueError("priority_score_weights must contain four weights")
+        if any(float(weight) < 0.0 for weight in priority_score_weights):
+            raise ValueError("priority_score_weights must be non-negative")
+        if sum(float(weight) for weight in priority_score_weights) <= 0.0:
+            raise ValueError("priority_score_weights must contain at least one positive weight")
+        if priority_rarity_power < 0.0:
+            raise ValueError("priority_rarity_power must be non-negative")
+        if priority_rarity_eps <= 0.0:
+            raise ValueError("priority_rarity_eps must be positive")
+        if not 0.0 <= protected_replay_fraction <= 1.0:
+            raise ValueError("protected_replay_fraction must be in [0, 1]")
+        if len(protected_score_weights) != 3:
+            raise ValueError("protected_score_weights must contain three weights")
+        if any(float(weight) < 0.0 for weight in protected_score_weights):
+            raise ValueError("protected_score_weights must be non-negative")
+        if sum(float(weight) for weight in protected_score_weights) <= 0.0:
+            raise ValueError("protected_score_weights must contain at least one positive weight")
 
         estimate = estimate_replay_memory(
             capacity,
@@ -151,6 +183,16 @@ class ReplayBuffer:
         self.action_dim = int(action_dim)
         self.bootstrap_through_truncation = bool(bootstrap_through_truncation)
         self._estimate = estimate
+        self.prioritize_replay = bool(prioritize_replay)
+        self.priority_replay_ratio = float(priority_replay_ratio if prioritize_replay else 0.0)
+        weight_array = np.asarray(priority_score_weights, dtype=np.float32)
+        self.priority_score_weights = tuple((weight_array / weight_array.sum()).tolist())
+        self.priority_rarity_power = float(priority_rarity_power)
+        self.priority_rarity_eps = float(priority_rarity_eps)
+        self.protect_rare_transitions = bool(protect_rare_transitions)
+        self.protected_replay_fraction = float(protected_replay_fraction)
+        protected_weight_array = np.asarray(protected_score_weights, dtype=np.float32)
+        self.protected_score_weights = tuple((protected_weight_array / protected_weight_array.sum()).tolist())
 
         self._images = np.zeros((capacity, *image_shape), dtype=np.uint8)
         self._next_images = np.zeros((capacity, *image_shape), dtype=np.uint8)
@@ -161,10 +203,21 @@ class ReplayBuffer:
         self._terminated = np.zeros((capacity,), dtype=bool)
         self._truncated = np.zeros((capacity,), dtype=bool)
         self._bootstrap_mask = np.zeros((capacity,), dtype=np.float32)
+        self._bucket_labels = np.zeros((capacity, len(PROGRESS_BUCKETS)), dtype=bool)
+        self._episode_returns = np.zeros((capacity,), dtype=np.float32)
+        self._td_errors = np.ones((capacity,), dtype=np.float32)
+        self._priority_scores = np.ones((capacity,), dtype=np.float32)
+        self._protected_scores = np.zeros((capacity,), dtype=np.float32)
+        self._protected = np.zeros((capacity,), dtype=bool)
+        self._bucket_counts_cache = np.zeros((len(PROGRESS_BUCKETS),), dtype=np.int64)
+        self._last_mean_priority_score = 1.0
+        self._protected_count = 0
 
         self._size = 0
         self._cursor = 0
         self._rng = np.random.default_rng(seed)
+        self._last_sample_uniform_count = 0
+        self._last_sample_priority_count = 0
 
     @property
     def size(self) -> int:
@@ -188,6 +241,8 @@ class ReplayBuffer:
         next_proprio: np.ndarray,
         terminated: bool,
         truncated: bool,
+        bucket_labels: np.ndarray | None = None,
+        episode_return: float = 0.0,
     ) -> None:
         """Append a single transition. Validates dtype and shape strictly."""
 
@@ -203,7 +258,10 @@ class ReplayBuffer:
         truncated_bool = bool(truncated)
         bootstrap = self._compute_bootstrap_mask(terminated_bool, truncated_bool)
 
-        idx = self._cursor
+        labels = self._normalize_bucket_labels(bucket_labels)
+        idx = self._select_write_index()
+        if idx < self._size:
+            self._bucket_counts_cache -= self._bucket_labels[idx].astype(np.int64)
         self._images[idx] = image
         self._next_images[idx] = next_image
         self._proprios[idx] = proprio
@@ -213,8 +271,14 @@ class ReplayBuffer:
         self._terminated[idx] = terminated_bool
         self._truncated[idx] = truncated_bool
         self._bootstrap_mask[idx] = bootstrap
+        self._bucket_labels[idx] = labels
+        self._episode_returns[idx] = float(episode_return) if np.isfinite(float(episode_return)) else 0.0
+        self._td_errors[idx] = 1.0
+        self._priority_scores[idx] = 1.0
+        self._protected_scores[idx] = 0.0
+        self._protected[idx] = False
+        self._bucket_counts_cache += labels.astype(np.int64)
 
-        self._cursor = (self._cursor + 1) % self.capacity
         self._size = min(self._size + 1, self.capacity)
 
     def push_batch(
@@ -228,6 +292,8 @@ class ReplayBuffer:
         next_proprios: np.ndarray,
         terminated: np.ndarray,
         truncated: np.ndarray,
+        bucket_labels: np.ndarray | None = None,
+        episode_returns: np.ndarray | None = None,
     ) -> None:
         """Append a per-lane batch of transitions from one vectorized env step."""
 
@@ -243,6 +309,14 @@ class ReplayBuffer:
         ):
             if arr.shape[0] != batch_size:
                 raise ValueError(f"{name} batch size {arr.shape[0]} != images {batch_size}")
+        if bucket_labels is not None and bucket_labels.shape[0] != batch_size:
+            raise ValueError(f"bucket_labels batch size {bucket_labels.shape[0]} != images {batch_size}")
+        if episode_returns is None:
+            episode_return_array = np.zeros((batch_size,), dtype=np.float32)
+        else:
+            episode_return_array = np.asarray(episode_returns, dtype=np.float32).reshape(-1)
+            if episode_return_array.shape != (batch_size,):
+                raise ValueError(f"episode_returns must have shape ({batch_size},); got {episode_return_array.shape}")
         for i in range(batch_size):
             self.push(
                 image=images[i],
@@ -253,6 +327,8 @@ class ReplayBuffer:
                 next_proprio=next_proprios[i],
                 terminated=bool(terminated[i]),
                 truncated=bool(truncated[i]),
+                bucket_labels=None if bucket_labels is None else bucket_labels[i],
+                episode_return=float(episode_return_array[i]),
             )
 
     def sample(self, batch_size: int, *, device: torch.device | str = "cpu") -> ReplayBatch:
@@ -262,7 +338,7 @@ class ReplayBuffer:
             raise ValueError("batch_size must be positive")
         if self._size == 0:
             raise RuntimeError("cannot sample from an empty replay buffer")
-        indices = self._rng.integers(low=0, high=self._size, size=batch_size)
+        indices = self._sample_indices(batch_size)
         torch_device = torch.device(device)
         return ReplayBatch(
             images=torch.from_numpy(self._images[indices]).to(torch_device),
@@ -274,7 +350,53 @@ class ReplayBuffer:
             terminated=torch.from_numpy(self._terminated[indices]).to(torch_device),
             truncated=torch.from_numpy(self._truncated[indices]).to(torch_device),
             bootstrap_mask=torch.from_numpy(self._bootstrap_mask[indices]).to(torch_device),
+            indices=torch.from_numpy(indices.astype(np.int64)).to(torch_device),
         )
+
+    def update_td_errors(self, indices: np.ndarray | torch.Tensor, td_errors: np.ndarray | torch.Tensor) -> None:
+        """Update per-transition TD-error metadata after a critic update."""
+
+        if hasattr(indices, "detach"):
+            indices = indices.detach().cpu().numpy()
+        if hasattr(td_errors, "detach"):
+            td_errors = td_errors.detach().cpu().numpy()
+        index_array = np.asarray(indices, dtype=np.int64).reshape(-1)
+        error_array = np.asarray(td_errors, dtype=np.float32).reshape(-1)
+        if index_array.shape != error_array.shape:
+            raise ValueError(f"indices and td_errors must have the same shape; got {index_array.shape} vs {error_array.shape}")
+        valid = (0 <= index_array) & (index_array < self._size) & np.isfinite(error_array)
+        if not np.any(valid):
+            return
+        self._td_errors[index_array[valid]] = np.maximum(np.abs(error_array[valid]), 0.0).astype(np.float32)
+        if self.prioritize_replay:
+            self._refresh_priority_scores()
+
+    def priority_logs(self) -> dict[str, float]:
+        """Return replay-priority diagnostics for progress/W&B/JSONL logs."""
+
+        if self._size == 0:
+            return {}
+        counts = self.bucket_counts()
+        rarities = self.bucket_rarities(counts)
+        logs = {
+            "priority_replay/batch_uniform": float(self._last_sample_uniform_count),
+            "priority_replay/batch_priority": float(self._last_sample_priority_count),
+            "priority_replay/mean_priority_score": float(self._last_mean_priority_score),
+            "priority_replay/protected_count": float(self._protected_count),
+        }
+        for index, name in enumerate(PROGRESS_BUCKETS):
+            logs[f"priority_replay/bucket_count/{name}"] = float(counts[index])
+            logs[f"priority_replay/bucket_rarity/{name}"] = float(rarities[index])
+        return logs
+
+    def bucket_counts(self) -> np.ndarray:
+        if self._size == 0:
+            return np.zeros((len(PROGRESS_BUCKETS),), dtype=np.int64)
+        return self._bucket_counts_cache.copy()
+
+    def bucket_rarities(self, counts: np.ndarray | None = None) -> np.ndarray:
+        count_array = self.bucket_counts() if counts is None else np.asarray(counts, dtype=np.float32)
+        return (1.0 / np.power(count_array.astype(np.float32) + self.priority_rarity_eps, self.priority_rarity_power)).astype(np.float32)
 
     def _compute_bootstrap_mask(self, terminated: bool, truncated: bool) -> float:
         if terminated:
@@ -282,6 +404,126 @@ class ReplayBuffer:
         if truncated and not self.bootstrap_through_truncation:
             return 0.0
         return 1.0
+
+    def _sample_indices(self, batch_size: int) -> np.ndarray:
+        if not self.prioritize_replay or self.priority_replay_ratio <= 0.0:
+            self._last_sample_uniform_count = int(batch_size)
+            self._last_sample_priority_count = 0
+            return self._rng.integers(low=0, high=self._size, size=batch_size, dtype=np.int64)
+
+        priority_count = int(round(batch_size * self.priority_replay_ratio))
+        priority_count = min(max(priority_count, 0), batch_size)
+        uniform_count = batch_size - priority_count
+        uniform_indices = (
+            self._rng.integers(low=0, high=self._size, size=uniform_count, dtype=np.int64)
+            if uniform_count > 0
+            else np.empty((0,), dtype=np.int64)
+        )
+        self._refresh_priority_scores()
+        scores = np.asarray(self._priority_scores[: self._size], dtype=np.float64)
+        if priority_count > 0 and np.isfinite(scores).all() and float(scores.sum()) > 0.0:
+            probs = scores / scores.sum()
+            priority_indices = self._rng.choice(self._size, size=priority_count, replace=True, p=probs).astype(np.int64)
+        else:
+            priority_indices = (
+                self._rng.integers(low=0, high=self._size, size=priority_count, dtype=np.int64)
+                if priority_count > 0
+                else np.empty((0,), dtype=np.int64)
+            )
+        indices = np.concatenate([uniform_indices, priority_indices])
+        self._rng.shuffle(indices)
+        self._last_sample_uniform_count = int(uniform_count)
+        self._last_sample_priority_count = int(priority_count)
+        return indices
+
+    def _select_write_index(self) -> int:
+        if self._size < self.capacity:
+            idx = self._cursor
+            self._cursor = (self._cursor + 1) % self.capacity
+            return idx
+        if not self.protect_rare_transitions:
+            idx = self._cursor
+            self._cursor = (self._cursor + 1) % self.capacity
+            return idx
+
+        for _ in range(self.capacity):
+            idx = self._cursor
+            self._cursor = (self._cursor + 1) % self.capacity
+            if not self._protected[idx]:
+                return idx
+
+        idx = int(np.argmin(self._protected_scores[: self._size]))
+        self._cursor = (idx + 1) % self.capacity
+        return idx
+
+    def _normalize_bucket_labels(self, labels: np.ndarray | None) -> np.ndarray:
+        if labels is None:
+            out = np.zeros((len(PROGRESS_BUCKETS),), dtype=bool)
+            out[0] = True
+            return out
+        array = np.asarray(labels, dtype=bool).reshape(-1)
+        if array.shape != (len(PROGRESS_BUCKETS),):
+            raise ValueError(f"bucket_labels must have shape ({len(PROGRESS_BUCKETS)},); got {array.shape}")
+        if not np.any(array):
+            array = array.copy()
+            array[0] = True
+        if np.any(array[1:]):
+            array = array.copy()
+            array[0] = False
+        return array.astype(bool, copy=False)
+
+    def _refresh_priority_scores(self) -> None:
+        if self._size == 0:
+            return
+        counts = self.bucket_counts()
+        rarities = self.bucket_rarities(counts)
+        transition_rarity = np.max(self._bucket_labels[: self._size].astype(np.float32) * rarities[None, :], axis=1)
+        reward_score = _unit_scores(self._rewards[: self._size])
+        return_score = _unit_scores(self._episode_returns[: self._size])
+        td_score = _unit_scores(self._td_errors[: self._size])
+        rarity_score = _unit_scores(transition_rarity)
+        w_rarity, w_reward, w_return, w_td = self.priority_score_weights
+        scores = (
+            w_rarity * rarity_score
+            + w_reward * reward_score
+            + w_return * return_score
+            + w_td * td_score
+        )
+        self._priority_scores[: self._size] = np.maximum(scores, 1e-6).astype(np.float32)
+        self._last_mean_priority_score = float(np.mean(self._priority_scores[: self._size]))
+        w_protected_rarity, w_protected_reward, w_protected_return = self.protected_score_weights
+        protected_scores = (
+            w_protected_rarity * rarity_score
+            + w_protected_reward * reward_score
+            + w_protected_return * return_score
+        )
+        self._protected_scores[: self._size] = protected_scores.astype(np.float32)
+        self._refresh_protected_flags()
+
+    def _refresh_protected_flags(self) -> None:
+        if not self.protect_rare_transitions or self.protected_replay_fraction <= 0.0 or self._size == 0:
+            self._protected[: self._size] = False
+            self._protected_count = 0
+            return
+        max_protected = int(np.floor(self.capacity * self.protected_replay_fraction))
+        if max_protected <= 0:
+            self._protected[: self._size] = False
+            self._protected_count = 0
+            return
+        max_protected = min(max_protected, self._size)
+        scores = self._protected_scores[: self._size]
+        if not np.isfinite(scores).all():
+            self._protected[: self._size] = False
+            self._protected_count = 0
+            return
+        threshold = np.partition(scores, -max_protected)[-max_protected]
+        self._protected[: self._size] = scores >= threshold
+        if np.count_nonzero(self._protected[: self._size]) > max_protected:
+            keep = np.argsort(scores)[-max_protected:]
+            mask = np.zeros((self._size,), dtype=bool)
+            mask[keep] = True
+            self._protected[: self._size] = mask
+        self._protected_count = int(np.count_nonzero(self._protected[: self._size]))
 
     def _validate_image(self, name: str, image: np.ndarray) -> None:
         if not isinstance(image, np.ndarray):
@@ -334,11 +576,32 @@ def make_dummy_transition(
     }
 
 
+def _unit_scores(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float32).reshape(-1)
+    if array.size == 0:
+        return array
+    finite = np.isfinite(array)
+    if not np.any(finite):
+        return np.zeros_like(array, dtype=np.float32)
+    out = np.zeros_like(array, dtype=np.float32)
+    valid = array[finite]
+    lo = float(np.min(valid))
+    hi = float(np.max(valid))
+    if hi <= lo:
+        out[finite] = 1.0
+    else:
+        out[finite] = (valid - lo) / (hi - lo)
+    return out.astype(np.float32)
+
+
 __all__ = [
     "DEFAULT_ACTION_DIM",
+    "DEFAULT_PROTECTED_SCORE_WEIGHTS",
     "DEFAULT_PROPRIO_DIM",
+    "DEFAULT_PRIORITY_SCORE_WEIGHTS",
     "DEFAULT_RAM_BUDGET_GIB",
     "POLICY_IMAGE_SHAPE",
+    "PROGRESS_BUCKETS",
     "ReplayBatch",
     "ReplayBuffer",
     "ReplayMemoryEstimate",

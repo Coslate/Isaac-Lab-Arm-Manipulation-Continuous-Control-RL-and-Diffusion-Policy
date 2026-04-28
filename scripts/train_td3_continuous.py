@@ -20,6 +20,7 @@ from typing import Any
 
 from agents.checkpointing import REPLAY_STORAGE_CPU_UINT8
 from agents.normalization import SUPPORTED_IMAGE_NORMALIZATION
+from agents.replay_buffer import DEFAULT_PRIORITY_SCORE_WEIGHTS, DEFAULT_PROTECTED_SCORE_WEIGHTS
 from agents.td3 import TD3Agent, TD3Config
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 from scripts.train_sac_continuous import _build_fake_env  # reuse the shared fake env
@@ -32,6 +33,7 @@ from train.lr_scheduler import (
     make_scheduler,
 )
 from train.progress import TrainProgressReporter
+from train.reward_curriculum import SUPPORTED_REWARD_CURRICULA, parse_stage_fracs
 from train.reward_probe import probe_reward_signal
 from train.td3_loop import TD3TrainLoopConfig, run_td3_train_loop
 
@@ -99,6 +101,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--disable-reward-curriculum", action="store_true")
+    parser.add_argument("--reward-curriculum", choices=SUPPORTED_REWARD_CURRICULA, default="none")
+    parser.add_argument("--curriculum-stage-fracs", dest="curriculum_stage_fracs", default="0.2,0.5,0.8")
+    parser.add_argument("--grip-proxy-scale", dest="grip_proxy_scale", type=float, default=1.0)
+    parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
+    parser.add_argument("--prioritize-replay", action="store_true")
+    parser.add_argument("--priority-replay-ratio", dest="priority_replay_ratio", type=float, default=0.5)
+    parser.add_argument(
+        "--priority-score-weights",
+        dest="priority_score_weights",
+        default="0.40,0.25,0.20,0.15",
+    )
+    parser.add_argument("--priority-rarity-power", dest="priority_rarity_power", type=float, default=0.5)
+    parser.add_argument("--priority-rarity-eps", dest="priority_rarity_eps", type=float, default=1.0)
+    parser.add_argument("--protect-rare-transitions", action="store_true")
+    parser.add_argument("--protected-replay-fraction", dest="protected_replay_fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--protected-score-weights",
+        dest="protected_score_weights",
+        default="0.60,0.25,0.15",
+    )
     return parser.parse_args(argv)
 
 
@@ -121,6 +143,7 @@ def build_agent(args: argparse.Namespace) -> TD3Agent:
 def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[str, Any]:
     _validate_same_env_eval_args(args)
     _validate_checkpoint_args(args)
+    _validate_pr68_args(args)
     if not args.skip_reward_probe:
         probe_reward_signal(
             env,
@@ -151,6 +174,18 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         rollout_metrics_window=args.rollout_metrics_window,
         settle_steps=args.settle_steps,
         per_lane_settle_steps=args.per_lane_settle_steps,
+        reward_curriculum=args.reward_curriculum,
+        curriculum_stage_fracs=parse_stage_fracs(args.curriculum_stage_fracs),
+        grip_proxy_scale=args.grip_proxy_scale,
+        grip_proxy_sigma_m=args.grip_proxy_sigma_m,
+        prioritize_replay=args.prioritize_replay,
+        priority_replay_ratio=args.priority_replay_ratio if args.prioritize_replay else 0.0,
+        priority_score_weights=_parse_priority_score_weights(args.priority_score_weights),
+        priority_rarity_power=args.priority_rarity_power,
+        priority_rarity_eps=args.priority_rarity_eps,
+        protect_rare_transitions=args.protect_rare_transitions,
+        protected_replay_fraction=args.protected_replay_fraction,
+        protected_score_weights=_parse_protected_score_weights(args.protected_score_weights),
     )
     logger = _build_logger(args)
     progress = _build_progress(args, description="td3 train")
@@ -289,6 +324,52 @@ def _validate_checkpoint_args(args: argparse.Namespace) -> None:
         raise ValueError("--keep-last-checkpoints must be non-negative")
     if args.save_best_by is not None and not args.save_best_by.strip():
         raise ValueError("--save-best-by must be non-empty")
+
+
+def _validate_pr68_args(args: argparse.Namespace) -> None:
+    parse_stage_fracs(args.curriculum_stage_fracs)
+    _parse_priority_score_weights(args.priority_score_weights)
+    _parse_protected_score_weights(args.protected_score_weights)
+    if args.grip_proxy_scale < 0.0:
+        raise ValueError("--grip-proxy-scale must be non-negative")
+    if args.grip_proxy_sigma_m <= 0.0:
+        raise ValueError("--grip-proxy-sigma-m must be positive")
+    if not 0.0 <= args.priority_replay_ratio <= 1.0:
+        raise ValueError("--priority-replay-ratio must be in [0, 1]")
+    if args.priority_rarity_power < 0.0:
+        raise ValueError("--priority-rarity-power must be non-negative")
+    if args.priority_rarity_eps <= 0.0:
+        raise ValueError("--priority-rarity-eps must be positive")
+    if not 0.0 <= args.protected_replay_fraction <= 1.0:
+        raise ValueError("--protected-replay-fraction must be in [0, 1]")
+
+
+def _parse_priority_score_weights(value: str) -> tuple[float, float, float, float]:
+    if value is None:
+        return DEFAULT_PRIORITY_SCORE_WEIGHTS
+    parts = [part.strip() for part in str(value).split(",") if part.strip()]
+    if len(parts) != 4:
+        raise ValueError("--priority-score-weights must contain four comma-separated values")
+    weights = tuple(float(part) for part in parts)
+    if any(weight < 0.0 for weight in weights):
+        raise ValueError("--priority-score-weights must be non-negative")
+    if sum(weights) <= 0.0:
+        raise ValueError("--priority-score-weights must contain at least one positive value")
+    return weights  # type: ignore[return-value]
+
+
+def _parse_protected_score_weights(value: str) -> tuple[float, float, float]:
+    if value is None:
+        return DEFAULT_PROTECTED_SCORE_WEIGHTS
+    parts = [part.strip() for part in str(value).split(",") if part.strip()]
+    if len(parts) != 3:
+        raise ValueError("--protected-score-weights must contain three comma-separated values")
+    weights = tuple(float(part) for part in parts)
+    if any(weight < 0.0 for weight in weights):
+        raise ValueError("--protected-score-weights must be non-negative")
+    if sum(weights) <= 0.0:
+        raise ValueError("--protected-score-weights must contain at least one positive value")
+    return weights  # type: ignore[return-value]
 
 
 def _build_checkpoint_manager(args: argparse.Namespace) -> TrainingCheckpointManager | None:

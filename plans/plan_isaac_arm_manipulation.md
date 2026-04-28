@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-04-27. The repository has completed the interview/demo vertical slice from
+Updated 2026-04-28. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -57,8 +57,10 @@ policy rollout -> episode-safe dataset -> metrics -> GIF/MP4/debug PNGs
 
 The current code base proves the robot-learning data and evaluation loop against the live
 Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, and live-monitor scaffolding.
-The remaining research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion
-Policy BC, and DAgger.
+The latest SAC diagnostic runs still have `success_rate=0` and do not reliably enter the
+lift/goal reward region, so the next SAC-focused implementation PR is PR6.8: opt-in
+curriculum reward plus bucket-rarity prioritized replay. The remaining research-training
+stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
 
 Runtime requirement for live Isaac commands:
 - On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
@@ -88,6 +90,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `28 passed`; full pytest at PR6.5 commit -> `244 passed, 1 skipped` (superseded by PR6.7 row below for current full-suite count) | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
 | PR 6.6 - Running obs/action normalization | Done | `agents.normalization` running per-dimension proprio mean/std, optional channel-wise image running mean/std (`--image-normalization none|per_channel_running_mean_std`, default off), explicit `bidirectional_env_learner_affine` action normalizer, checkpointed `normalizer_state`, SAC/TD3 train/eval/checkpoint policy consistency, optional angle sin/cos primitive only for true wrap-around angle features | `tests/test_normalization.py` + SAC/TD3 checks -> `47 passed`; full pytest -> `259 passed, 1 skipped` | Serious SAC/TD3 training can now use normalized proprio inputs, optional train-lane-only image channel stats, and stable learner-action/env-action conversion; replay still stores raw env observations/actions. |
 | PR 6.7 - Training diagnostics + checkpoint controls | Done | Per-step visual reward trace in `record_gif_continuous` metrics, SAC/TD3 reward component logging under `reward/train/*` and `reward/eval_rollout/*`, periodic/best checkpoint manager, `--disable-reward-curriculum`, SAC `--alpha-min` floor | Targeted PR6.7 slice -> `70 passed`; full pytest -> `283 passed, 1 skipped` | Use this before the next serious SAC/TD3 run so failed runs leave reward traces, stock reward breakdown, intermediate checkpoints, and best-by-eval checkpoints for debugging. |
+| PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -903,6 +906,15 @@ Logging key contract:
 - `reward/train/<stock_reward_term>` such as `reward/train/reaching_object`, `reward/train/lifting_object`, `reward/train/object_goal_tracking`, `reward/train/object_goal_tracking_fine_grained`, `reward/train/action_rate`, `reward/train/joint_vel`
 - `reward/eval_rollout/native_total`
 - `reward/eval_rollout/<stock_reward_term>` with the same term names for same-env deterministic eval lanes
+- `reward/eval_rollout/eval_shaped` as a PR6.8 diagnostic only; it does not feed `eval_rollout/mean_return`
+- `reward/eval_rollout/grip_proxy` as a PR6.8 deterministic eval diagnostic
+- `curriculum/stage_index` and `curriculum/stage/<stage_name>` when PR6.8 reward curriculum is enabled
+- `curriculum/stage_progress` when PR6.8 reward curriculum is enabled
+- `reward/train_shaped` when PR6.8 reward curriculum changes the reward stored in replay
+- `reward/train/grip_proxy` when PR6.8 grip proxy is enabled
+- `train/td_error_mean` when PR6.8 TD-error priority feedback is enabled through SAC/TD3 updates
+- `priority_replay/batch_uniform`, `priority_replay/batch_priority`, `priority_replay/mean_priority_score`, and `priority_replay/protected_count` when PR6.8 prioritized replay is enabled
+- `priority_replay/bucket_count/<bucket>` and `priority_replay/bucket_rarity/<bucket>` for `normal`, `reach`, `grip`, `lift`, and `goal` when PR6.8 bucket-rarity replay is enabled
 - `eval/mean_return`
 - `eval/success_rate`
 - `eval/mean_episode_length`
@@ -1026,7 +1038,7 @@ Roadmap layers:
 |---|---|---|
 | Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
 | Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
-| Research model layer | In progress | PR3 shared backbone is done; the immediate path is PR3.5 -> PR6 SAC -> PR7 TD3 -> PR11a SAC/TD3 eval -> PR12a SAC/TD3 GIF/MP4, then PR8-full SAC demos and Diffusion/DAgger. |
+| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.7 training instrumentation, PR11a eval, and PR12a visuals are done. The next SAC-focused PR is PR6.8 curriculum reward + bucket-rarity replay before deciding whether SAC is strong enough for PR8-full expert demos. |
 
 Current priority path:
 
@@ -1034,6 +1046,8 @@ Current priority path:
 PR3 done
   -> PR3.5 Agent Primitives
   -> PR6 SAC train
+  -> PR6.5/PR6.6/PR6.7 Training instrumentation, normalization, diagnostics
+  -> PR6.8 Curriculum reward + bucket-rarity replay
   -> PR7 TD3 train
   -> PR11a SAC/TD3 checkpoint eval
   -> PR12a SAC/TD3 checkpoint visual rollout
@@ -2111,6 +2125,417 @@ timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python
 
 ```bash
 git commit -m "feat(train): add reward diagnostics and checkpoint controls"
+```
+
+---
+
+### PR 6.8 — Curriculum Reward And Bucket-Rarity Replay
+
+**Goal / Why**
+
+Two 500k SAC diagnostic runs reached `success_rate=0`. PR6.7 reward breakdowns showed
+that deterministic eval rollouts rarely get meaningful `reaching_object` reward and never
+reliably enter the `lifting_object` or `object_goal_tracking` regions. The next opt-in
+SAC/TD3 training improvement should make sparse manipulation progress easier to learn
+without demonstrations, behavior cloning, expert actions, or heuristic labels.
+
+PR6.8 adds:
+- staged training reward curriculum for reach -> grip -> lift -> goal,
+- a small grip-proxy bridge reward because the stock reward has reach and lift terms but
+  no immediate "close the gripper near the cube" bridge,
+- bucket-rarity prioritized replay so rare task-progress transitions found by the agent
+  are sampled more often and retained longer.
+
+This PR is **not vanilla SAC/TD3**. It should be reported as:
+
+```text
+SAC/TD3 with task-aware reward curriculum and bucket-rarity prioritized replay.
+```
+
+Final comparison still uses PR11a/PR12a stock-env evaluation with deterministic actions.
+
+**Inputs**
+- PR6/PR7 SAC and TD3 train loops.
+- PR6.5 logger/progress/W&B/JSONL path.
+- PR6.7 stock reward component extraction and checkpoint manager.
+- Replay buffer transition storage in `agents.replay_buffer`.
+- Formal 40D proprio contract:
+  - `proprio[:, 14:16]`: gripper finger positions,
+  - `proprio[:, 21:24]`: cube position in robot base frame,
+  - `proprio[:, 27:30]`: `ee_to_cube`,
+  - `proprio[:, 30:33]`: `cube_to_target`,
+  - `action[:, 6]`: gripper command, where negative closes the gripper.
+
+**Outputs**
+- New reward curriculum module, recommended file: `train/reward_curriculum.py`.
+- New prioritized replay metadata/sampling path, either in `agents.replay_buffer` or a
+  helper such as `agents.prioritized_replay.py`.
+- SAC/TD3 train CLI flags:
+  - `--reward-curriculum none|reach_grip_lift_goal`, default `none`.
+  - `--curriculum-stage-fracs 0.2,0.5,0.8`, interpreted as fractions of
+    `total_env_steps`, not absolute env-step numbers.
+  - `--grip-proxy-scale FLOAT`, default `1.0`.
+  - `--grip-proxy-sigma-m FLOAT`, default `0.05`.
+  - `--prioritize-replay`, default off.
+  - `--priority-replay-ratio FLOAT`, default `0.5` when enabled.
+  - `--priority-score-weights rarity,reward,return,td_error`, default
+    `0.40,0.25,0.20,0.15`.
+  - `--priority-rarity-power FLOAT`, default `0.5`, implementing
+    `rarity = 1 / (count + eps) ** power`.
+  - `--priority-rarity-eps FLOAT`, default `1.0`.
+  - `--protect-rare-transitions`, default off.
+  - `--protected-replay-fraction FLOAT`, default `0.2`.
+  - `--protected-score-weights rarity,reward,return`, default
+    `0.60,0.25,0.15`.
+- New logs:
+  - `curriculum/stage_index`, `curriculum/stage_progress`, and
+    `curriculum/stage/<stage_name>` numeric mirrors for logger backends.
+  - `reward/train_shaped`, the exact reward stored in replay when curriculum is enabled.
+  - `reward/train/grip_proxy`.
+  - `reward/eval_rollout/eval_shaped` and `reward/eval_rollout/grip_proxy` as same-env deterministic eval diagnostics; `eval_rollout/mean_return` remains stock reward.
+  - `train/td_error_mean` from SAC/TD3 critic updates.
+  - `priority_replay/batch_uniform`, `priority_replay/batch_priority`,
+    `priority_replay/mean_priority_score`, `priority_replay/protected_count`.
+  - `priority_replay/bucket_count/<bucket>` and `priority_replay/bucket_rarity/<bucket>`
+    for `normal`, `reach`, `grip`, `lift`, and `goal`.
+
+**Reward Curriculum Design**
+
+Do not fork Isaac Lab's task cfg for this PR. Keep the env reward untouched. In the train
+loop, convert the stock env reward/components into an opt-in training reward before
+pushing the transition into replay:
+
+```text
+env.step(action)
+  -> stock_reward, stock reward components, obs/proprio/action
+  -> shaped_train_reward = curriculum_shaper(...)
+  -> replay.push(reward=shaped_train_reward)
+```
+
+When `--reward-curriculum none`, `shaped_train_reward == stock_reward`.
+
+`--disable-reward-curriculum` and `--reward-curriculum` are separate switches:
+`--disable-reward-curriculum` disables Isaac Lab's stock penalty-weight curriculum for
+`action_rate` and `joint_vel`, while `--reward-curriculum` enables this project's
+training-reward shaping before replay insertion.
+
+When `--reward-curriculum reach_grip_lift_goal`, compute:
+
+```text
+train_reward =
+  w_reach(stage)  * reaching_object
++ w_grip(stage)   * grip_proxy
++ w_lift(stage)   * lifting_object
++ w_goal(stage)   * object_goal_tracking
++ w_fine(stage)   * object_goal_tracking_fine_grained
++ w_action(stage) * action_rate
++ w_joint(stage)  * joint_vel
+```
+
+`action_rate` and `joint_vel` are already negative stock penalties, so multiplying them
+by values below `1.0` weakens the penalty during early exploration; it does not turn them
+into rewards.
+
+Stage boundaries are fractions of `total_env_steps`:
+
+| Stage | Fraction range | Intent |
+|---|---:|---|
+| 1 | `0.00 <= progress < 0.20` | Make reaching the cube common. |
+| 2 | `0.20 <= progress < 0.50` | Bridge reach into near-cube gripper closing. |
+| 3 | `0.50 <= progress < 0.80` | Emphasize lift and start goal tracking. |
+| 4 | `0.80 <= progress <= 1.00` | Return toward stock-like task reward. |
+
+Default multipliers:
+
+| Stage | `w_reach` | `w_grip` | `w_lift` | `w_goal` | `w_fine` | `w_action` | `w_joint` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 reach | `3.0` | `0.5` | `0.25` | `0.0` | `0.0` | `0.25` | `0.25` |
+| 2 grip/pre-lift | `1.5` | `2.0` | `1.0` | `0.25` | `0.0` | `0.5` | `0.5` |
+| 3 lift | `0.75` | `1.0` | `2.0` | `1.0` | `0.5` | `0.75` | `0.75` |
+| 4 stock-like | `1.0` | `0.0` | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` |
+
+Grip proxy:
+
+```text
+ee_to_cube = proprio[:, 27:30]
+near_cube = exp(-norm(ee_to_cube) / grip_proxy_sigma_m)
+close_cmd = clip(-action[:, 6], 0, 1)
+grip_proxy = grip_proxy_scale * near_cube * close_cmd
+```
+
+This is intentionally gated by `near_cube`: closing the gripper far from the cube should
+not receive meaningful reward. The proxy is a bridge between reach and lift, not a final
+success metric, and it fades out in the stock-like final stage by default.
+
+**Bucket-Rarity Replay Design**
+
+Every transition can receive zero or more progress labels. There is no manual bucket
+importance ordering. The sampler only uses bucket frequency.
+
+| Label | Definition |
+|---|---|
+| `reach` | `norm(ee_to_cube) <= reach_threshold_m` or the stock `reaching_object` component is positive. |
+| `grip` | `norm(ee_to_cube) <= grip_threshold_m` and either `action[:, 6] < close_command_threshold` or the gripper finger gap is below `closed_finger_gap_threshold_m`. |
+| `lift` | stock `lifting_object > 0` or cube height is above the lane's reset-time cube height by at least `lift_delta_m`. |
+| `goal` | stock `object_goal_tracking > 0`, stock `object_goal_tracking_fine_grained > 0`, or `norm(cube_to_target) <= goal_threshold_m`. |
+| `normal` | No progress labels apply. |
+
+Recommended defaults:
+
+```text
+reach_threshold_m = 0.08
+grip_threshold_m = 0.05
+close_command_threshold = -0.25
+closed_finger_gap_threshold_m = 0.035
+lift_delta_m = 0.04
+goal_threshold_m = 0.08
+```
+
+Because transitions are multi-label, a transition may be both `reach` and `grip`, or
+`reach`, `grip`, and `lift`. Compute each bucket count from labels:
+
+```text
+bucket_count[label] = number of valid replay transitions currently carrying label
+bucket_rarity[label] = 1 / (bucket_count[label] + eps) ** priority_rarity_power
+```
+
+For a multi-label transition, use:
+
+```text
+transition_rarity = max(bucket_rarity[label] for label in transition_labels)
+```
+
+The `max` rule is not a task-progress ranking. It only means that if a transition contains
+one very rare label, that rarity should not be diluted by also carrying a common label. If
+a transition has no progress labels, it carries only `normal`.
+
+Priority score:
+
+```text
+priority_score =
+  0.40 * transition_rarity_percentile
++ 0.25 * step_reward_percentile
++ 0.20 * episode_return_percentile
++ 0.15 * td_error_percentile
+```
+
+Notes:
+- `step_reward_percentile` uses the reward actually stored in replay: stock reward when
+  curriculum is off, shaped training reward when curriculum is on.
+- `episode_return_percentile` is filled in when a vectorized lane episode ends; until then
+  the transition can use the current partial return or a neutral default.
+- `td_error_percentile` is updated after SAC/TD3 critic updates. New transitions should
+  start with a neutral or optimistic default so they are not starved before their first
+  TD-error measurement.
+
+Mixed sampling:
+
+```text
+priority_count = round(batch_size * priority_replay_ratio)
+uniform_count = batch_size - priority_count
+```
+
+With `batch_size=256` and `--priority-replay-ratio 0.5`, each update samples:
+
+```text
+128 uniform transitions from all valid replay entries
+128 priority transitions with probability proportional to priority_score
+```
+
+Then concatenate and shuffle those 256 transitions before passing them to the SAC/TD3
+update. If priority replay is disabled or has no valid scores yet, the entire batch falls
+back to uniform sampling.
+
+**Rare Transition Protection**
+
+Protection prevents the circular replay cursor from immediately overwriting the rarest
+high-value transitions. It should be off by default and capped.
+
+Define:
+
+```text
+protected_score =
+  0.60 * transition_rarity_percentile
++ 0.25 * step_reward_percentile
++ 0.15 * episode_return_percentile
+```
+
+The three protected-score weights are configurable through
+`--protected-score-weights rarity,reward,return`. They are normalized internally,
+so `0.60,0.25,0.15` and `60,25,15` are equivalent. Keep TD-error out of
+`protected_score`: TD-error is useful for sampling priority, but it changes every
+critic update and would make the protected set churn too aggressively.
+
+A transition is eligible for protection when its `protected_score` is in the current top
+decile among valid replay transitions. Protected entries must still obey:
+
+```text
+protected_count <= protected_replay_fraction * replay_capacity
+```
+
+When the protected pool is full, demote the protected transition with the lowest
+`protected_score` before protecting a newer higher-score transition. Never protect settle
+transitions, same-env eval-lane transitions, or invalid transitions that do not enter
+replay.
+
+This defines "rare" from observed replay frequency and rewards, not from a hard-coded
+statement that one progress bucket is more important than another.
+
+**How To Use**
+
+Recommended SAC v3 run after implementing PR6.8:
+
+```bash
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.05 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-stage-fracs 0.2,0.5,0.8 \
+  --grip-proxy-scale 1.0 \
+  --grip-proxy-sigma-m 0.05 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-replay-fraction 0.2 \
+  --protected-score-weights 0.60,0.25,0.15 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by eval_rollout/mean_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v3_curriculum_priority \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v3_curriculum_priority_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v3_curriculum_priority_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v3_curriculum_priority \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v3_curriculum_priority \
+  --wandb-mode online
+```
+
+Recommended ablations:
+
+```text
+A. SAC v2 diagnostic baseline:
+   no PR6.8 flags
+
+B. Curriculum only:
+   --reward-curriculum reach_grip_lift_goal
+   --curriculum-stage-fracs 0.2,0.5,0.8
+
+C. Prioritized replay only:
+   --prioritize-replay
+   --priority-replay-ratio 0.5
+   --protect-rare-transitions
+
+D. Curriculum + prioritized replay:
+   all PR6.8 flags above
+```
+
+Primary signals to watch:
+- `reward/train_shaped` versus `reward/train/native_total` so shaping cannot hide stock
+  reward regressions.
+- `curriculum/stage_index` and `curriculum/stage/<stage_name>` to confirm stage transitions occur at the intended fractions.
+- `priority_replay/bucket_count/lift` and `priority_replay/bucket_count/goal`; if these
+  remain zero, prioritized replay cannot invent progress that exploration never finds.
+- `eval_rollout/success_rate`, `eval_rollout/mean_return`, and final PR11a metrics.
+- `reward/eval_rollout/eval_shaped` and `reward/eval_rollout/grip_proxy` to debug whether the deterministic eval policy is improving under the same curriculum objective, without replacing stock eval return.
+
+**How To Test**
+
+Add focused tests before live Isaac runs:
+
+- `tests/test_reward_curriculum.py`
+  - parses stage fractions as proportions of `total_env_steps`,
+  - returns stock reward unchanged when curriculum is `none`,
+  - applies the default stage multiplier table exactly,
+  - computes `grip_proxy = scale * exp(-||ee_to_cube|| / sigma) * clip(-gripper_action, 0, 1)`,
+  - gives near-zero grip proxy when the end effector is far from the cube,
+  - assigns multi-label progress buckets without bucket importance ordering,
+  - assigns `normal` only when no progress label applies,
+  - logs `curriculum/*`, `reward/train_shaped`, and `reward/train/grip_proxy`.
+- `tests/test_prioritized_replay.py`
+  - stores multi-label bucket metadata and bucket counts,
+  - computes bucket rarity from observed counts with `1 / (count + eps) ** power`,
+  - uses `max` rarity for multi-label transitions,
+  - samples the requested uniform/priority split for a deterministic seed,
+  - tracks replay sample indices and updates TD-error priority scores after critic updates,
+  - enforces `protected_replay_fraction`,
+  - validates and applies configurable `protected_score_weights`,
+  - keeps protected rare transitions from being overwritten while unprotected slots exist.
+- SAC/TD3 loop/logger tests, likely in `tests/test_training_logger_and_scheduler.py`
+  - verify same-env eval lanes and settle cooldown transitions do not enter replay,
+  - verify curriculum reward, not stock reward, is stored when curriculum is enabled,
+  - verify stock reward and stock reward components are still logged,
+  - verify same-env eval logs include `reward/eval_rollout/native_total`, `reward/eval_rollout/eval_shaped`, `reward/eval_rollout/grip_proxy`, and the stock component terms,
+  - verify JSONL/progress/W&B logger shims emit curriculum and priority-replay metrics.
+
+Targeted verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_prioritized_replay.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py \
+  tests/test_training_logger_and_scheduler.py
+```
+
+Full verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Acceptance Criteria**
+
+PR6.8 is complete when:
+- all new flags default to off and reproduce PR6.7 behavior,
+- `--reward-curriculum reach_grip_lift_goal` changes only the training reward stored in
+  replay and never changes PR11a/PR12a stock-env eval,
+- bucket-rarity replay uses bucket frequencies, not a hand-coded bucket importance order,
+- mixed sampling produces the configured uniform/priority batch split,
+- rare-transition protection obeys `protected_replay_fraction`,
+- rare-transition protection uses configurable normalized `protected_score_weights`,
+- logs make shaped reward, stock reward, bucket counts, rarity, and protected counts
+  visible in console progress, JSONL, and W&B,
+- targeted tests and full pytest pass in the `isaac_arm` environment.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add curriculum reward and bucket-rarity replay"
 ```
 
 ---

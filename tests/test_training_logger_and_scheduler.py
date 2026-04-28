@@ -475,6 +475,22 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "--save-best-by",
             "eval_rollout/mean_return",
             "--disable-reward-curriculum",
+            "--reward-curriculum",
+            "reach_grip_lift_goal",
+            "--curriculum-stage-fracs",
+            "0.2,0.5,0.8",
+            "--grip-proxy-scale",
+            "1.25",
+            "--prioritize-replay",
+            "--priority-replay-ratio",
+            "0.5",
+            "--priority-score-weights",
+            "0.4,0.25,0.2,0.15",
+            "--protect-rare-transitions",
+            "--protected-replay-fraction",
+            "0.2",
+            "--protected-score-weights",
+            "0.6,0.3,0.1",
         ]
     )
     td3_args = parse_td3_args(
@@ -488,6 +504,14 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "--save-best-by",
             "eval_rollout/mean_return",
             "--disable-reward-curriculum",
+            "--reward-curriculum",
+            "reach_grip_lift_goal",
+            "--prioritize-replay",
+            "--priority-replay-ratio",
+            "0.5",
+            "--protect-rare-transitions",
+            "--protected-score-weights",
+            "0.7,0.2,0.1",
         ]
     )
 
@@ -496,10 +520,24 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.keep_last_checkpoints == 5
     assert sac_args.save_best_by == "eval_rollout/mean_return"
     assert sac_args.disable_reward_curriculum is True
+    assert sac_args.reward_curriculum == "reach_grip_lift_goal"
+    assert sac_args.curriculum_stage_fracs == "0.2,0.5,0.8"
+    assert sac_args.grip_proxy_scale == pytest.approx(1.25)
+    assert sac_args.prioritize_replay is True
+    assert sac_args.priority_replay_ratio == pytest.approx(0.5)
+    assert sac_args.priority_score_weights == "0.4,0.25,0.2,0.15"
+    assert sac_args.protect_rare_transitions is True
+    assert sac_args.protected_replay_fraction == pytest.approx(0.2)
+    assert sac_args.protected_score_weights == "0.6,0.3,0.1"
     assert td3_args.checkpoint_every_env_steps == 50000
     assert td3_args.keep_last_checkpoints == 5
     assert td3_args.save_best_by == "eval_rollout/mean_return"
     assert td3_args.disable_reward_curriculum is True
+    assert td3_args.reward_curriculum == "reach_grip_lift_goal"
+    assert td3_args.prioritize_replay is True
+    assert td3_args.priority_replay_ratio == pytest.approx(0.5)
+    assert td3_args.protect_rare_transitions is True
+    assert td3_args.protected_score_weights == "0.7,0.2,0.1"
 
 
 def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
@@ -564,6 +602,88 @@ def test_train_loop_logs_stock_reward_component_breakdown(agent, config, runner)
     assert any("reward/train/action_rate" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/eval_rollout/action_rate" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/train/native_total" in metrics for _step, metrics, _force in progress.calls)
+
+
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_train_loop_logs_reward_curriculum_and_prioritized_replay(agent, config, runner):
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    logger = _CountingLogger()
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=4,
+        batch_size=4,
+        total_env_steps=16,
+        seed=0,
+        ram_budget_gib=4.0,
+        reward_curriculum="reach_grip_lift_goal",
+        prioritize_replay=True,
+        priority_replay_ratio=0.5,
+        protect_rare_transitions=True,
+        protected_replay_fraction=0.25,
+        protected_score_weights=(0.6, 0.3, 0.1),
+    )
+
+    report = runner(env, agent(), loop_config=cfg, logger=logger, progress=progress)
+
+    assert report.num_updates > 0
+    assert any("reward/train_shaped" in logs for logs in report.log_history)
+    assert any("curriculum/stage_index" in logs for logs in report.log_history)
+    assert any("priority_replay/bucket_count/reach" in logs for logs in report.log_history)
+    assert any("train/td_error_mean" in logs for logs in report.log_history)
+    assert any(
+        metrics.get("priority_replay/batch_priority") == pytest.approx(2.0)
+        for _step, metrics in logger.scalar_calls
+    )
+    assert any("reward/train_shaped" in metrics for _step, metrics, _force in progress.calls)
+
+
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_train_loop_logs_eval_rollout_curriculum_diagnostics(agent, config, runner):
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    logger = _CountingLogger()
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=4,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+        reward_curriculum="reach_grip_lift_goal",
+    )
+
+    report = runner(env, agent(), loop_config=cfg, logger=logger, progress=progress)
+
+    assert any("reward/eval_rollout/native_total" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/eval_shaped" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/grip_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/reaching_object" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/lifting_object" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/object_goal_tracking" in logs for logs in report.log_history)
+    assert any(
+        "reward/eval_rollout/object_goal_tracking_fine_grained" in logs for logs in report.log_history
+    )
+    assert any("reward/eval_rollout/action_rate" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/joint_vel" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/eval_shaped" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/eval_rollout/grip_proxy" in metrics for _step, metrics, _force in progress.calls)
 
 
 def test_sac_same_env_eval_waits_for_clean_episode_after_start_threshold():

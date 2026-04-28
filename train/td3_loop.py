@@ -14,12 +14,19 @@ from typing import Any
 import numpy as np
 import torch
 
-from agents.replay_buffer import ReplayBuffer
+from agents.replay_buffer import DEFAULT_PRIORITY_SCORE_WEIGHTS, DEFAULT_PROTECTED_SCORE_WEIGHTS, ReplayBuffer
 from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
 from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_collection_state
 from train.loggers import TrainLogger
 from train.reward_components import extract_reward_components, reward_component_logs
+from train.reward_curriculum import (
+    CUBE_POS_BASE,
+    ProgressBucketConfig,
+    RewardCurriculumConfig,
+    assign_progress_labels,
+    shape_rewards,
+)
 from train.rollout_metrics import LaneEpisodeMetricTracker, infer_successes, split_train_eval_lanes
 
 
@@ -49,6 +56,18 @@ class TD3TrainLoopConfig:
     rollout_metrics_window: int = 20
     settle_steps: int = 0
     per_lane_settle_steps: int = 0
+    reward_curriculum: str = "none"
+    curriculum_stage_fracs: tuple[float, float, float] = (0.2, 0.5, 0.8)
+    grip_proxy_scale: float = 1.0
+    grip_proxy_sigma_m: float = 0.05
+    prioritize_replay: bool = False
+    priority_replay_ratio: float = 0.0
+    priority_score_weights: tuple[float, float, float, float] = DEFAULT_PRIORITY_SCORE_WEIGHTS
+    priority_rarity_power: float = 0.5
+    priority_rarity_eps: float = 1.0
+    protect_rare_transitions: bool = False
+    protected_replay_fraction: float = 0.2
+    protected_score_weights: tuple[float, float, float] = DEFAULT_PROTECTED_SCORE_WEIGHTS
 
 
 @dataclass
@@ -189,9 +208,26 @@ def run_td3_train_loop(
         action_dim=agent.config.action_dim,
         ram_budget_gib=cfg.ram_budget_gib,
         seed=cfg.seed,
+        prioritize_replay=cfg.prioritize_replay,
+        priority_replay_ratio=cfg.priority_replay_ratio,
+        priority_score_weights=cfg.priority_score_weights,
+        priority_rarity_power=cfg.priority_rarity_power,
+        priority_rarity_eps=cfg.priority_rarity_eps,
+        protect_rare_transitions=cfg.protect_rare_transitions,
+        protected_replay_fraction=cfg.protected_replay_fraction,
+        protected_score_weights=cfg.protected_score_weights,
     )
 
     images, proprios = _split_per_env(obs, num_envs)
+    reward_curriculum_config = RewardCurriculumConfig(
+        mode=cfg.reward_curriculum,
+        stage_fracs=cfg.curriculum_stage_fracs,
+        grip_proxy_scale=cfg.grip_proxy_scale,
+        grip_proxy_sigma_m=cfg.grip_proxy_sigma_m,
+    )
+    progress_bucket_config = ProgressBucketConfig()
+    lane_reset_cube_z = proprios[:, CUBE_POS_BASE.stop - 1].astype(np.float32, copy=True)
+    lane_episode_returns = np.zeros((num_envs,), dtype=np.float32)
     env_steps = 0
     update_count = 0
     log_history: list[dict[str, float]] = []
@@ -277,22 +313,46 @@ def run_td3_train_loop(
         dones = _broadcast_per_env(terminated, num_envs, bool, "terminated")
         truncs = _broadcast_per_env(truncated, num_envs, bool, "truncated")
         reward_components = extract_reward_components(_info, env, num_envs=num_envs, rewards=rewards)
+        shaped_rewards, curriculum_logs, grip_proxy = shape_rewards(
+            rewards,
+            reward_components,
+            proprios,
+            actions,
+            env_steps=env_steps,
+            total_env_steps=cfg.total_env_steps,
+            config=reward_curriculum_config,
+        )
+        bucket_labels = assign_progress_labels(
+            proprios=proprios,
+            next_proprios=next_proprios,
+            actions=actions,
+            components=reward_components,
+            cube_reset_z=lane_reset_cube_z,
+            config=progress_bucket_config,
+        )
 
         if active_train_indices.size > 0:
             agent.update_observation_normalizer(
                 proprios[active_train_indices],
                 images=images[active_train_indices],
             )
+            active_shaped_rewards = shaped_rewards[active_train_indices]
+            active_episode_returns = lane_episode_returns[active_train_indices] + active_shaped_rewards
             replay.push_batch(
                 images=images[active_train_indices],
                 proprios=proprios[active_train_indices],
                 actions=actions[active_train_indices],
-                rewards=rewards[active_train_indices],
+                rewards=active_shaped_rewards,
                 next_images=next_images[active_train_indices],
                 next_proprios=next_proprios[active_train_indices],
                 terminated=dones[active_train_indices],
                 truncated=truncs[active_train_indices],
+                bucket_labels=bucket_labels[active_train_indices],
+                episode_returns=active_episode_returns,
             )
+            lane_episode_returns[active_train_indices] = active_episode_returns
+            reset_active_train_indices = active_train_indices[dones[active_train_indices] | truncs[active_train_indices]]
+            lane_episode_returns[reset_active_train_indices] = 0.0
         previous_env_steps = env_steps
         env_steps += int(active_train_indices.size)
         if cfg.warmup_steps > 0 and previous_env_steps < cfg.warmup_steps:
@@ -357,9 +417,12 @@ def run_td3_train_loop(
                 force=True,
             )
             _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_rollout_logs, schedulers)
+        reset_lanes = (dones | truncs) & ~settling_before
+        if np.any(reset_lanes):
+            lane_reset_cube_z[reset_lanes] = next_proprios[reset_lanes, CUBE_POS_BASE.stop - 1]
         per_lane_settle_remaining = _advance_per_lane_settle(
             per_lane_settle_remaining,
-            (dones | truncs) & ~settling_before,
+            reset_lanes,
             cfg.per_lane_settle_steps,
         )
         if same_env_eval_tracker is not None:
@@ -398,6 +461,26 @@ def run_td3_train_loop(
             )
         if reward_logs:
             env_logs.update(reward_logs)
+        if curriculum_logs:
+            if active_train_indices.size > 0:
+                curriculum_logs = dict(curriculum_logs)
+                curriculum_logs["reward/train_shaped"] = float(np.mean(shaped_rewards[active_train_indices]))
+                curriculum_logs["reward/train/grip_proxy"] = float(np.mean(grip_proxy[active_train_indices]))
+            if same_env_eval_tracker is not None:
+                eval_metric_indices = same_env_eval_indices[same_env_eval_metric_mask]
+                if eval_metric_indices.size > 0:
+                    curriculum_logs["reward/eval_rollout/eval_shaped"] = float(
+                        np.mean(shaped_rewards[eval_metric_indices])
+                    )
+                    curriculum_logs["reward/eval_rollout/grip_proxy"] = float(
+                        np.mean(grip_proxy[eval_metric_indices])
+                    )
+            env_logs.update(curriculum_logs)
+            reward_logs.update(curriculum_logs)
+        if cfg.prioritize_replay:
+            priority_logs = replay.priority_logs()
+            env_logs.update(priority_logs)
+            reward_logs.update(priority_logs)
         env_logs.update(agent.normalizer_logs())
         if reward_logs:
             log_history.append(reward_logs)
@@ -410,6 +493,8 @@ def run_td3_train_loop(
             for _ in range(agent.config.utd_ratio):
                 batch = replay.sample(cfg.batch_size, device=agent.device)
                 final_logs = agent.update(batch)
+                if batch.indices is not None and agent.last_td_errors is not None:
+                    replay.update_td_errors(batch.indices, agent.last_td_errors)
                 _step_scheduler(schedulers, "critic")
                 if float(final_logs.get("train/actor_updated", 0.0)) > 0.0:
                     _step_scheduler(schedulers, "actor")
@@ -420,6 +505,8 @@ def run_td3_train_loop(
                 final_logs["train/num_env_steps"] = float(env_steps)
                 final_logs.update(_td3_lr_logs(agent))
                 final_logs.update(agent.normalizer_logs())
+                if cfg.prioritize_replay:
+                    final_logs.update(replay.priority_logs())
                 log_history.append(final_logs)
                 if logger is not None:
                     logger.log_scalars(env_steps, final_logs)
@@ -462,6 +549,8 @@ def run_td3_train_loop(
             "train/num_env_steps": float(env_steps),
         }
     final_logs.update(agent.normalizer_logs())
+    if cfg.prioritize_replay:
+        final_logs.update(replay.priority_logs())
     _update_progress(progress, env_steps, final_logs, force=True)
     _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, final_logs, schedulers)
     return TD3TrainLoopReport(

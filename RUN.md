@@ -125,6 +125,109 @@ python -m scripts.train_sac_continuous \
   --wandb-run-name sac_franka_500k_seed0_initsett550_perlnsett20_lrwp3000 \
   --wandb-mode online
 
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.05 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by eval_rollout/mean_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v2_nocurr_alphamin005 \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v2_nocurr_alphamin005_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v2_nocurr_alphamin005_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v2_nocurr_alphamin005 \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v2_nocurr_alphamin005 \
+  --wandb-mode online
+
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.05 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-stage-fracs 0.2,0.5,0.8 \
+  --grip-proxy-scale 1.0 \
+  --grip-proxy-sigma-m 0.05 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.60,0.25,0.15 \
+  --protected-replay-fraction 0.2 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by eval_rollout/mean_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v3_curr_prio_prot060_025_015 \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v3_curr_prio_prot060_025_015_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v3_curr_prio_prot060_025_015_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v3_curr_prio_prot060_025_015 \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v3_curr_prio_prot060_025_015 \
+  --wandb-mode online
+
+
 # Visualize Evaluation Learned Policy
 python -m scripts.record_gif_continuous \
   --backend isaac \
@@ -141,3 +244,18 @@ python -m scripts.record_gif_continuous \
   --gif-max-steps 230 \
   --target-overlay text-reticle \
   --headless  
+
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_500k_seed0_v2_nocurr_alphamin005_best.pt \
+  --save-gif ./logs/sac_franka_500k_seed0_v2_best.gif \
+  --save-mp4 ./logs/sac_franka_500k_seed0_v2_best.mp4 \
+  --save-metrics ./logs/sac_franka_500k_seed0_v2_best_visual_metrics.json \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless

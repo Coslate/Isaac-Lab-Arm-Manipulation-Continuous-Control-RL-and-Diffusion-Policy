@@ -146,6 +146,7 @@ class TD3Agent(nn.Module):
         )
         self.global_update_step = 0  # counts critic updates
         self._actor_update_count = 0
+        self.last_td_errors: torch.Tensor | None = None
 
     # ------------------------------------------------------------------ helpers
 
@@ -228,6 +229,8 @@ class TD3Agent(nn.Module):
 
         current_q1 = self.critic1(images_norm, proprios, actions)
         current_q2 = self.critic2(images_norm, proprios, actions)
+        td_errors = 0.5 * ((current_q1.detach() - target).abs() + (current_q2.detach() - target).abs())
+        self.last_td_errors = td_errors.detach()
         critic_loss = 0.5 * (
             torch.nn.functional.mse_loss(current_q1, target)
             + torch.nn.functional.mse_loss(current_q2, target)
@@ -257,6 +260,7 @@ class TD3Agent(nn.Module):
             "train/actor_loss": actor_loss_value,
             "train/q_mean": float(torch.cat([current_q1, current_q2]).mean().detach().item()),
             "train/actor_updated": float(actor_updated),
+            "train/td_error_mean": float(td_errors.mean().detach().item()),
         }
 
     def _soft_update_targets(self) -> None:
