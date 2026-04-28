@@ -2274,7 +2274,7 @@ importance ordering. The sampler only uses bucket frequency.
 
 | Label | Definition |
 |---|---|
-| `reach` | `norm(ee_to_cube) <= reach_threshold_m` or the stock `reaching_object` component is positive. |
+| `reach` | `norm(ee_to_cube) <= reach_threshold_m`; do not use `reaching_object > 0` because Isaac's dense reaching reward is positive for almost all finite distances and would make nearly every transition a reach sample. |
 | `grip` | `norm(ee_to_cube) <= grip_threshold_m` and either `action[:, 6] < close_command_threshold` or the gripper finger gap is below `closed_finger_gap_threshold_m`. |
 | `lift` | stock `lifting_object > 0` or cube height is above the lane's reset-time cube height by at least `lift_delta_m`. |
 | `goal` | stock `object_goal_tracking > 0`, stock `object_goal_tracking_fine_grained > 0`, or `norm(cube_to_target) <= goal_threshold_m`. |

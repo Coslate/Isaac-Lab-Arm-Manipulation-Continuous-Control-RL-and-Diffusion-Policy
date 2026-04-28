@@ -245,7 +245,7 @@ def assign_progress_labels(
         if reset_z.shape != (batch_size,):
             raise ValueError(f"cube_reset_z must have shape ({batch_size},); got {reset_z.shape}")
 
-    reach = (ee_distance <= cfg.reach_threshold_m) | (_component(components, "reaching_object", batch_size) > 0.0)
+    reach = ee_distance <= cfg.reach_threshold_m
     grip = (ee_distance <= cfg.grip_threshold_m) & (
         (action_array[:, GRIPPER_ACTION_INDEX] < cfg.close_command_threshold)
         | (finger_gap <= cfg.closed_finger_gap_threshold_m)

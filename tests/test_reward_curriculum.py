@@ -129,3 +129,22 @@ def test_progress_labels_are_multilabel_without_bucket_order() -> None:
     assert not labels[1, BUCKET_INDEX["normal"]]
     assert labels[2, BUCKET_INDEX["lift"]]
     assert labels[2, BUCKET_INDEX["goal"]]
+
+
+def test_reach_bucket_uses_distance_threshold_not_positive_reach_reward() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    proprios[0, EE_TO_CUBE] = 1.0
+    next_proprios[0, CUBE_TO_TARGET] = 1.0
+
+    labels = assign_progress_labels(
+        proprios=proprios,
+        next_proprios=next_proprios,
+        actions=actions,
+        components={"reaching_object": np.array([0.5], dtype=np.float32)},
+        cube_reset_z=np.zeros((1,), dtype=np.float32),
+    )
+
+    assert not labels[0, BUCKET_INDEX["reach"]]
+    assert labels[0, BUCKET_INDEX["normal"]]
