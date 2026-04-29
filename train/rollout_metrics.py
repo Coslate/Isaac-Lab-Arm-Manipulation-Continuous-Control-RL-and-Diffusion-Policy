@@ -10,7 +10,10 @@ import numpy as np
 
 
 DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M = 0.02
+PROPRIO_CUBE_POS_BASE_SLICE = slice(21, 24)
+PROPRIO_EE_TO_CUBE_SLICE = slice(27, 30)
 PROPRIO_CUBE_TO_TARGET_SLICE = slice(30, 33)
+ACTION_GRIPPER_INDEX = 6
 
 
 class LaneEpisodeMetricTracker:
@@ -86,6 +89,114 @@ class LaneEpisodeMetricTracker:
             self._metric_key("episode_count"): float(self.episode_count),
             self._metric_key("window_size"): float(len(self._completed_returns)),
         }
+
+    def _metric_key(self, suffix: str) -> str:
+        if "/" in self.prefix and self.prefix.rsplit("/", 1)[1]:
+            return f"{self.prefix}_{suffix}"
+        return f"{self.prefix}/{suffix}"
+
+
+class LaneLiftDiagnosticTracker:
+    """Track completed-episode lift/contact diagnostics for fixed vectorized lanes."""
+
+    def __init__(
+        self,
+        *,
+        num_lanes: int,
+        prefix: str,
+        window_size: int = 20,
+        grip_threshold_m: float = 0.05,
+        close_command_threshold: float = -0.25,
+    ) -> None:
+        if num_lanes <= 0:
+            raise ValueError("num_lanes must be positive")
+        if window_size <= 0:
+            raise ValueError("window_size must be positive")
+        if grip_threshold_m <= 0.0:
+            raise ValueError("grip_threshold_m must be positive")
+        self.num_lanes = int(num_lanes)
+        self.prefix = prefix.rstrip("/")
+        self.window_size = int(window_size)
+        self.grip_threshold_m = float(grip_threshold_m)
+        self.close_command_threshold = float(close_command_threshold)
+        self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
+        self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
+        self._min_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
+        self._close_near_counts = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._active_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._completed_max_cube_lift: deque[float] = deque(maxlen=self.window_size)
+        self._completed_min_ee_to_cube: deque[float] = deque(maxlen=self.window_size)
+        self._completed_min_cube_to_target: deque[float] = deque(maxlen=self.window_size)
+        self._completed_close_near_rates: deque[float] = deque(maxlen=self.window_size)
+
+    def step(
+        self,
+        *,
+        proprios: np.ndarray,
+        next_proprios: np.ndarray,
+        actions: np.ndarray,
+        terminated: np.ndarray,
+        truncated: np.ndarray,
+        cube_reset_z: np.ndarray,
+        active_mask: np.ndarray | None = None,
+    ) -> dict[str, float]:
+        proprios = _as_lane_matrix(proprios, self.num_lanes, "proprios")
+        next_proprios = _as_lane_matrix(next_proprios, self.num_lanes, "next_proprios")
+        actions = _as_lane_matrix(actions, self.num_lanes, "actions")
+        terminated = _as_lane_array(terminated, self.num_lanes, bool, "terminated")
+        truncated = _as_lane_array(truncated, self.num_lanes, bool, "truncated")
+        reset_z = _as_lane_array(cube_reset_z, self.num_lanes, np.float64, "cube_reset_z")
+        active = (
+            np.ones((self.num_lanes,), dtype=bool)
+            if active_mask is None
+            else _as_lane_array(active_mask, self.num_lanes, bool, "active_mask")
+        )
+        if not np.any(active):
+            return {}
+
+        cube_lift = next_proprios[:, PROPRIO_CUBE_POS_BASE_SLICE.stop - 1] - reset_z
+        ee_to_cube = np.linalg.norm(proprios[:, PROPRIO_EE_TO_CUBE_SLICE], axis=1)
+        cube_to_target = np.linalg.norm(next_proprios[:, PROPRIO_CUBE_TO_TARGET_SLICE], axis=1)
+        close_near = (
+            (ee_to_cube <= self.grip_threshold_m)
+            & (actions[:, ACTION_GRIPPER_INDEX] < self.close_command_threshold)
+        )
+
+        self._max_cube_lift[active] = np.maximum(self._max_cube_lift[active], cube_lift[active])
+        self._min_ee_to_cube[active] = np.minimum(self._min_ee_to_cube[active], ee_to_cube[active])
+        self._min_cube_to_target[active] = np.minimum(self._min_cube_to_target[active], cube_to_target[active])
+        self._close_near_counts[active] += close_near[active].astype(np.int64)
+        self._active_steps[active] += 1
+
+        completed = active & (terminated | truncated)
+        if not np.any(completed):
+            return {}
+
+        for lane in np.flatnonzero(completed):
+            steps = max(int(self._active_steps[lane]), 1)
+            self._completed_max_cube_lift.append(float(max(self._max_cube_lift[lane], 0.0)))
+            self._completed_min_ee_to_cube.append(float(self._min_ee_to_cube[lane]))
+            self._completed_min_cube_to_target.append(float(self._min_cube_to_target[lane]))
+            self._completed_close_near_rates.append(float(self._close_near_counts[lane]) / float(steps))
+            self._reset_lane(lane)
+        return self.summary()
+
+    def summary(self) -> dict[str, float]:
+        if not self._completed_max_cube_lift:
+            return {}
+        return {
+            self._metric_key("max_cube_lift_m"): float(np.max(self._completed_max_cube_lift)),
+            self._metric_key("min_ee_to_cube_m"): float(np.min(self._completed_min_ee_to_cube)),
+            self._metric_key("min_cube_to_target_m"): float(np.min(self._completed_min_cube_to_target)),
+            self._metric_key("gripper_close_near_cube_rate"): float(np.mean(self._completed_close_near_rates)),
+        }
+
+    def _reset_lane(self, lane: int) -> None:
+        self._max_cube_lift[lane] = -np.inf
+        self._min_ee_to_cube[lane] = np.inf
+        self._min_cube_to_target[lane] = np.inf
+        self._close_near_counts[lane] = 0
+        self._active_steps[lane] = 0
 
     def _metric_key(self, suffix: str) -> str:
         if "/" in self.prefix and self.prefix.rsplit("/", 1)[1]:
@@ -184,9 +295,19 @@ def _as_lane_array(value: np.ndarray, num_lanes: int, dtype: Any, name: str) -> 
     return array
 
 
+def _as_lane_matrix(value: np.ndarray, num_lanes: int, name: str) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float32)
+    if array.ndim == 1:
+        array = array[None, :]
+    if array.ndim != 2 or array.shape[0] != num_lanes:
+        raise ValueError(f"{name} must have shape ({num_lanes}, D); got {array.shape}")
+    return array
+
+
 __all__ = [
     "DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M",
     "LaneEpisodeMetricTracker",
+    "LaneLiftDiagnosticTracker",
     "infer_successes",
     "split_train_eval_lanes",
 ]

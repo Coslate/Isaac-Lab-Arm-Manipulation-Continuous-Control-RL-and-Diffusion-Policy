@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-04-28. The repository has completed the interview/demo vertical slice from
+Updated 2026-04-29. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -56,11 +56,14 @@ policy rollout -> episode-safe dataset -> metrics -> GIF/MP4/debug PNGs
 ```
 
 The current code base proves the robot-learning data and evaluation loop against the live
-Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, and live-monitor scaffolding.
-The latest SAC diagnostic runs still have `success_rate=0` and do not reliably enter the
-lift/goal reward region, so the next SAC-focused implementation PR is PR6.8: opt-in
-curriculum reward plus bucket-rarity prioritized replay. The remaining research-training
-stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
+Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, live-monitor scaffolding,
+running normalization, reward diagnostics, periodic/best checkpoints, reward curriculum, and
+bucket-rarity prioritized replay. The latest SAC diagnostic runs still have `success_rate=0`:
+PR6.8 made reach/grip/lift/goal events observable and replayable, but the learned policy still
+does not reliably convert near-cube closing into cube lift. The next SAC-focused implementation
+PR is PR6.9: progress-gated curriculum, dense lift progress reward, lift-aware best-checkpoint
+selection, and action/grip diagnostics. The remaining research-training stack is PPO, pure
+GRPO, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
 
 Runtime requirement for live Isaac commands:
 - On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
@@ -91,6 +94,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.6 - Running obs/action normalization | Done | `agents.normalization` running per-dimension proprio mean/std, optional channel-wise image running mean/std (`--image-normalization none|per_channel_running_mean_std`, default off), explicit `bidirectional_env_learner_affine` action normalizer, checkpointed `normalizer_state`, SAC/TD3 train/eval/checkpoint policy consistency, optional angle sin/cos primitive only for true wrap-around angle features | `tests/test_normalization.py` + SAC/TD3 checks -> `47 passed`; full pytest -> `259 passed, 1 skipped` | Serious SAC/TD3 training can now use normalized proprio inputs, optional train-lane-only image channel stats, and stable learner-action/env-action conversion; replay still stores raw env observations/actions. |
 | PR 6.7 - Training diagnostics + checkpoint controls | Done | Per-step visual reward trace in `record_gif_continuous` metrics, SAC/TD3 reward component logging under `reward/train/*` and `reward/eval_rollout/*`, periodic/best checkpoint manager, `--disable-reward-curriculum`, SAC `--alpha-min` floor | Targeted PR6.7 slice -> `70 passed`; full pytest -> `283 passed, 1 skipped` | Use this before the next serious SAC/TD3 run so failed runs leave reward traces, stock reward breakdown, intermediate checkpoints, and best-by-eval checkpoints for debugging. |
 | PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
+| PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -908,13 +912,21 @@ Logging key contract:
 - `reward/eval_rollout/<stock_reward_term>` with the same term names for same-env deterministic eval lanes
 - `reward/eval_rollout/eval_shaped` as a PR6.8 diagnostic only; it does not feed `eval_rollout/mean_return`
 - `reward/eval_rollout/grip_proxy` as a PR6.8 deterministic eval diagnostic
+- `reward/eval_rollout/lift_progress_proxy` as a PR6.9 deterministic eval diagnostic
 - `curriculum/stage_index` and `curriculum/stage/<stage_name>` when PR6.8 reward curriculum is enabled
 - `curriculum/stage_progress` when PR6.8 reward curriculum is enabled
+- `curriculum/gate/reach_rate`, `curriculum/gate/grip_rate`, and `curriculum/gate/lift_rate` when PR6.9 progress-gated curriculum is enabled
+- `curriculum/gate/held_stage` when PR6.9 progress-gated curriculum keeps the current stage because the next gate is not yet met
 - `reward/train_shaped` when PR6.8 reward curriculum changes the reward stored in replay
 - `reward/train/grip_proxy` when PR6.8 grip proxy is enabled
+- `reward/train/lift_progress_proxy` when PR6.9 dense lift progress reward is enabled
+- `action/train/gripper_mean` and `action/train/gripper_close_rate` for active train lanes
+- `action/eval_rollout/gripper_mean`, `action/eval_rollout/gripper_close_rate`, and `action/eval_rollout/gripper_close_near_cube_rate` for same-env deterministic eval lanes
+- `eval_rollout/max_cube_lift_m`, `eval_rollout/min_ee_to_cube_m`, `eval_rollout/min_cube_to_target_m`, and `eval_rollout/gripper_close_near_cube_rate` for PR6.9 lift-aware debugging and best-checkpoint selection
 - `train/td_error_mean` when PR6.8 TD-error priority feedback is enabled through SAC/TD3 updates
 - `priority_replay/batch_uniform`, `priority_replay/batch_priority`, `priority_replay/mean_priority_score`, and `priority_replay/protected_count` when PR6.8 prioritized replay is enabled
 - `priority_replay/bucket_count/<bucket>` and `priority_replay/bucket_rarity/<bucket>` for `normal`, `reach`, `grip`, `lift`, and `goal` when PR6.8 bucket-rarity replay is enabled
+- `priority_replay/bucket_count/grip_attempt` and `priority_replay/bucket_count/grip_effect` as PR6.9 diagnostic counts; these do not add a manual bucket importance order
 - `eval/mean_return`
 - `eval/success_rate`
 - `eval/mean_episode_length`
@@ -1038,7 +1050,7 @@ Roadmap layers:
 |---|---|---|
 | Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
 | Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
-| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.7 training instrumentation, PR11a eval, and PR12a visuals are done. The next SAC-focused PR is PR6.8 curriculum reward + bucket-rarity replay before deciding whether SAC is strong enough for PR8-full expert demos. |
+| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.9 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is the SAC v5 gated-lift run before deciding whether SAC is strong enough for PR8-full expert demos. |
 
 Current priority path:
 
@@ -1048,6 +1060,8 @@ PR3 done
   -> PR6 SAC train
   -> PR6.5/PR6.6/PR6.7 Training instrumentation, normalization, diagnostics
   -> PR6.8 Curriculum reward + bucket-rarity replay
+  -> PR6.9 Progress-gated lift curriculum + lift-aware diagnostics
+  -> SAC v5 gated-lift diagnostic run
   -> PR7 TD3 train
   -> PR11a SAC/TD3 checkpoint eval
   -> PR12a SAC/TD3 checkpoint visual rollout
@@ -2536,6 +2550,474 @@ PR6.8 is complete when:
 
 ```bash
 git commit -m "feat(train): add curriculum reward and bucket-rarity replay"
+```
+
+---
+
+### PR 6.9 — Progress-Gated Lift Curriculum And Lift-Aware Diagnostics
+
+**Goal / Why**
+
+PR6.8 made curriculum reward and bucket-rarity replay available, but the
+`sac_franka_500k_seed0_v4_reachbucketfix_curr_prio` run still ended with
+`success_rate=0`. The run did produce a small number of `reach`, `grip`, `lift`, and
+`goal` labels, but the policy did not reliably convert near-cube closing into lift. The
+best checkpoint was also selected by `eval_rollout/mean_return`, which can prefer a
+reach-only policy because dense stock reaching reward can rise while lift/success remain
+zero.
+
+PR6.9 keeps PR6.8's no-demo, no-BC, no-expert-action constraint and tightens the SAC/TD3
+training objective/debug loop around the missing behavior:
+
+```text
+reach cube -> close gripper near cube -> make cube height increase -> move lifted cube to target
+```
+
+**Inputs**
+- PR6.8 reward curriculum, grip proxy, bucket labels, bucket-rarity replay, and protected replay.
+- PR6.7 stock reward component extraction and checkpoint manager.
+- PR6.5 same-Isaac-env deterministic eval lanes.
+- 40D proprio contract:
+  - `proprio[:, 21:24]`: cube position in robot base frame,
+  - `proprio[:, 27:30]`: `ee_to_cube`,
+  - `proprio[:, 30:33]`: `cube_to_target`,
+  - `action[:, 6]`: gripper command; negative closes.
+
+**Coverage Of The Nine Review Items**
+
+| Item | PR6.9 decision |
+|---|---|
+| 1. Progress-gated curriculum | Add opt-in bucket-rate gates. The stage no longer advances only because env steps crossed a fraction. |
+| 2. Dense lift proxy | Add `lift_progress_proxy = clip((next_cube_z - cube_reset_z - 0.002) / 0.04, 0, 1)`. Do not multiply it by gripper action. If the cube really moves upward, that is useful progress by itself. |
+| 3. Proposed hyperparameter changes | The important PR code change is gating + lift proxy + better best metric. `--curriculum-stage-fracs 0.45,0.75,0.95` is not required once gates are active. Keep `--grip-proxy-scale`/`--grip-proxy-sigma-m` configurable but do not change defaults just to compensate for missing lift. Lower protected replay is recommended for the next run. `--alpha-min 0.10` is a run-level exploration knob, not a required PR6.9 code path. |
+| 4. Lift-aware metrics | Add `eval_rollout/max_cube_lift_m`, `eval_rollout/min_ee_to_cube_m`, `eval_rollout/min_cube_to_target_m`, and `eval_rollout/gripper_close_near_cube_rate`. |
+| 5. Grip bucket weakness | Keep the existing `grip` bucket for replay, but add diagnostic counts for `grip_attempt` and `grip_effect` so W&B shows whether the policy closes near the cube but fails to move it. |
+| 6. Lift-aware best selection | Add composite best selection: success first, max lift second, mean return third. Do not use `max_lifting_object`; `max_cube_lift_m` is clearer and less redundant. |
+| 7. Progress-gated curriculum details | Stage transitions are gated by recent observed bucket rates: reach gate, then grip gate, then lift gate. |
+| 8. Lower protected replay | Keep the existing configurable protected score path and recommend `--protected-replay-fraction 0.02` plus `--protected-score-weights 0.80,0.10,0.10` for the next run. |
+| 9. Action diagnostics | Add gripper action logs for active train lanes and deterministic eval lanes so W&B shows whether the policy is actually sending close commands. |
+
+**Outputs / CLI Contract**
+
+New or extended SAC/TD3 train CLI flags:
+
+```text
+--curriculum-gating none|bucket_rates
+--curriculum-gate-window-transitions INT
+--curriculum-gate-thresholds reach,grip,lift
+--lift-progress-deadband-m FLOAT
+--lift-progress-height-m FLOAT
+--save-best-by composite:success_lift_return
+```
+
+Recommended defaults:
+
+```text
+--curriculum-gating none
+--curriculum-gate-window-transitions 20000
+--curriculum-gate-thresholds 0.002,0.0005,0.0001
+--lift-progress-deadband-m 0.002
+--lift-progress-height-m 0.04
+```
+
+Notes:
+- Defaults must preserve PR6.8 behavior when the new flags are not used.
+- `--curriculum-stage-fracs` remains the fixed-fraction PR6.8 behavior when
+  `--curriculum-gating none`.
+- When `--curriculum-gating bucket_rates`, stage advancement is controlled by the recent
+  bucket-rate gates, not by fixed env-step fractions. Keep logging `curriculum/stage_progress`
+  as context, but do not auto-advance only because `env_steps / total_env_steps` crossed a
+  boundary.
+- Composite best selection is a deterministic lexicographic comparison:
+
+```text
+(eval_rollout/success_rate, eval_rollout/max_cube_lift_m, eval_rollout/mean_return)
+```
+
+This means a checkpoint with any higher success rate beats lower-success checkpoints; when
+success is tied, the checkpoint that lifts the cube higher wins; when both are tied, mean
+return breaks the tie.
+
+**Reward Design**
+
+Keep PR6.8's grip proxy. Do not add a second finger-closed reward to the main training
+objective in PR6.9: finger gap can shrink during an empty close, so it is not reliable
+evidence that the cube is grasped.
+
+Add a dense lift progress proxy:
+
+```text
+lift_delta = next_cube_z - cube_reset_z
+lift_progress_proxy = clip((lift_delta - lift_progress_deadband_m) / lift_progress_height_m, 0, 1)
+```
+
+Default:
+
+```text
+lift_progress_proxy = clip((next_cube_z - cube_reset_z - 0.002) / 0.04, 0, 1)
+```
+
+Interpretation:
+- Ignore the first `2mm` to avoid rewarding camera/physics jitter.
+- Give smooth credit from `2mm` through roughly `4.2cm` above reset height.
+- Do not multiply by gripper action. If the cube height truly increases, the transition is
+  useful regardless of which action component caused it.
+
+When `--reward-curriculum reach_grip_lift_goal` is enabled in PR6.9, compute:
+
+```text
+train_reward =
+  w_reach(stage)         * reaching_object
++ w_grip(stage)          * grip_proxy
++ w_lift_progress(stage) * lift_progress_proxy
++ w_lift_stock(stage)    * lifting_object
++ w_goal(stage)          * object_goal_tracking
++ w_fine(stage)          * object_goal_tracking_fine_grained
++ w_action(stage)        * action_rate
++ w_joint(stage)         * joint_vel
+```
+
+Recommended PR6.9 stage weights:
+
+| Stage | Intent | `w_reach` | `w_grip` | `w_lift_progress` | `w_lift_stock` | `w_goal` | `w_fine` | `w_action` | `w_joint` |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 reach | Make near-cube states common. | `3.0` | `0.5` | `0.0` | `0.0` | `0.0` | `0.0` | `0.25` | `0.25` |
+| 2 grip/pre-lift | Encourage closing at the cube and tiny lift progress. | `1.5` | `2.0` | `0.5` | `0.25` | `0.0` | `0.0` | `0.5` | `0.5` |
+| 3 lift | Make cube-height increase the main training signal. | `0.75` | `1.0` | `2.0` | `1.0` | `0.5` | `0.25` | `0.75` | `0.75` |
+| 4 stock-like | Return to stock task reward. | `1.0` | `0.0` | `0.0` | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` |
+
+`reward/train_shaped` is still the reward stored in replay. `reward/train/native_total`
+and stock component logs must remain visible so shaping cannot hide task regressions.
+
+**Progress-Gated Curriculum**
+
+Maintain a rolling window over active train-lane transitions that enter replay. Do not use
+settle transitions and do not use same-env eval lanes.
+
+For each inserted transition, PR6.8 already computes multi-label progress buckets. PR6.9
+uses the recent window to compute:
+
+```text
+reach_rate = count(reach labels in window) / window_size
+grip_rate  = count(grip labels in window) / window_size
+lift_rate  = count(lift labels in window) / window_size
+```
+
+Stage advancement rule:
+
+```text
+stage 1 reach -> stage 2 grip/pre-lift when reach_rate >= gate_reach
+stage 2 grip  -> stage 3 lift          when grip_rate  >= gate_grip
+stage 3 lift  -> stage 4 stock-like    when lift_rate  >= gate_lift
+```
+
+If the next gate is not met, keep the current stage and log:
+
+```text
+curriculum/gate/held_stage = 1
+```
+
+If a transition advances the stage, log `held_stage = 0` for that update. The log is a
+numeric backend-friendly value; progress messages can print the stage name.
+
+Required W&B/JSONL/progress logs:
+
+```text
+curriculum/gate/reach_rate
+curriculum/gate/grip_rate
+curriculum/gate/lift_rate
+curriculum/gate/held_stage
+curriculum/stage_index
+curriculum/stage/<stage_name>
+reward/train/lift_progress_proxy
+reward/eval_rollout/lift_progress_proxy
+```
+
+These logs should make it obvious whether a run is held in the reach, grip, or lift stage
+because actual behavior has not appeared yet.
+
+**Grip Attempt / Grip Effect Diagnostics**
+
+Keep PR6.8's existing `grip` bucket for prioritized replay. Add two diagnostic counts:
+
+```text
+grip_attempt =
+  norm(ee_to_cube) <= grip_threshold_m
+  and action[:, 6] < close_command_threshold
+
+grip_effect =
+  grip_attempt
+  and (
+    next_cube_z - cube_reset_z > lift_progress_deadband_m
+    or norm(next_cube_pos - cube_pos) > cube_motion_effect_threshold_m
+  )
+```
+
+Recommended:
+
+```text
+cube_motion_effect_threshold_m = 0.005
+```
+
+Log:
+
+```text
+priority_replay/bucket_count/grip_attempt
+priority_replay/bucket_count/grip_effect
+```
+
+These are diagnostic counts, not a manual bucket importance order. The immediate question is:
+
+```text
+grip_attempt high, grip_effect low -> policy closes near the cube but does not affect it
+grip_attempt low                  -> policy is not even trying to close near the cube
+grip_effect rising                -> policy starts causing useful cube motion
+```
+
+**Lift-Aware Eval Metrics**
+
+Same-env deterministic eval lanes and `record_gif_continuous`/PR11a-compatible eval paths
+should compute the following from the rollout:
+
+```text
+eval_rollout/max_cube_lift_m =
+  max(cube_z - cube_reset_z)
+
+eval_rollout/min_ee_to_cube_m =
+  min(norm(ee_to_cube))
+
+eval_rollout/min_cube_to_target_m =
+  min(norm(cube_to_target))
+
+eval_rollout/gripper_close_near_cube_rate =
+  mean(norm(ee_to_cube) <= grip_threshold_m and action[:, 6] < close_command_threshold)
+```
+
+Do not add `eval_rollout/max_lifting_object` in PR6.9. It is redundant with
+`max_cube_lift_m` and less readable. If a future report needs stock reward-term maxima,
+add them as a separate diagnostics PR.
+
+**Action Diagnostics**
+
+Log gripper action behavior separately for active training lanes and deterministic eval
+lanes:
+
+```text
+action/train/gripper_mean
+action/train/gripper_close_rate
+action/eval_rollout/gripper_mean
+action/eval_rollout/gripper_close_rate
+action/eval_rollout/gripper_close_near_cube_rate
+```
+
+Definitions:
+- `gripper_mean`: mean of `action[:, 6]`; more negative means the policy is sending more
+  close-side commands.
+- `gripper_close_rate`: fraction of actions with `action[:, 6] < close_command_threshold`.
+- `gripper_close_near_cube_rate`: fraction of steps where the policy is both near the cube
+  and sending a close-side command.
+
+This answers whether the failure is "does not close", "closes but not near the cube", or
+"closes near the cube but still does not move the cube".
+
+**Protected Replay Defaults For Next Run**
+
+PR6.9 should not remove PR6.8 protected replay. It should document and support a more
+conservative next-run setting:
+
+```text
+--protected-replay-fraction 0.02
+--protected-score-weights 0.80,0.10,0.10
+```
+
+Meaning:
+
+```text
+protected_score =
+  0.80 * transition_rarity_percentile
++ 0.10 * step_reward_percentile
++ 0.10 * episode_return_percentile
+```
+
+This keeps the protected pool small and rarity-focused. It reduces the risk that a large
+protected set becomes mostly old normal/reach transitions.
+
+**How To Use**
+
+Recommended SAC v5 run after PR6.9:
+
+```bash
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.10 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-gating bucket_rates \
+  --curriculum-gate-window-transitions 20000 \
+  --curriculum-gate-thresholds 0.002,0.0005,0.0001 \
+  --lift-progress-deadband-m 0.002 \
+  --lift-progress-height-m 0.04 \
+  --grip-proxy-scale 1.0 \
+  --grip-proxy-sigma-m 0.05 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.80,0.10,0.10 \
+  --protected-replay-fraction 0.02 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by composite:success_lift_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v5_gated_liftprogress \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v5_gated_liftprogress_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v5_gated_liftprogress_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v5_gated_liftprogress \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v5_gated_liftprogress \
+  --wandb-mode online
+```
+
+What to inspect in W&B during the run:
+
+```text
+curriculum/gate/reach_rate
+curriculum/gate/grip_rate
+curriculum/gate/lift_rate
+curriculum/gate/held_stage
+
+reward/train/grip_proxy
+reward/train/lift_progress_proxy
+reward/train/native_total
+reward/train_shaped
+
+priority_replay/bucket_count/reach
+priority_replay/bucket_count/grip
+priority_replay/bucket_count/lift
+priority_replay/bucket_count/goal
+priority_replay/bucket_count/grip_attempt
+priority_replay/bucket_count/grip_effect
+priority_replay/protected_count
+
+action/train/gripper_mean
+action/train/gripper_close_rate
+action/eval_rollout/gripper_mean
+action/eval_rollout/gripper_close_rate
+action/eval_rollout/gripper_close_near_cube_rate
+
+eval_rollout/max_cube_lift_m
+eval_rollout/min_ee_to_cube_m
+eval_rollout/min_cube_to_target_m
+eval_rollout/mean_return
+eval_rollout/success_rate
+```
+
+Debug interpretation:
+
+| Observation | Likely issue |
+|---|---|
+| `reach_rate` low | Still not reaching cube; keep reach stage and inspect exploration/action scale. |
+| `reach_rate` ok, `grip_rate` low | Policy reaches but does not close near cube; inspect gripper action logs. |
+| `grip_attempt` high, `grip_effect` low | Policy closes near cube but does not affect cube; tune grip/lift behavior or gripper command handling. |
+| `lift_progress_proxy` rises but `success_rate=0` | Lift is starting; keep goal stage locked until lift becomes common enough. |
+| `max_cube_lift_m` improves but `mean_return` does not | Best checkpoint should use composite/lift-aware selection, not mean return alone. |
+
+**How To Test**
+
+Add or extend focused tests:
+
+- `tests/test_reward_curriculum.py`
+  - computes `lift_progress_proxy = clip((next_cube_z - cube_reset_z - deadband) / height, 0, 1)`,
+  - returns zero lift progress for jitter below the deadband,
+  - applies the PR6.9 stage table with `w_lift_progress` and `w_lift_stock`,
+  - keeps `grip_proxy` unchanged from PR6.8,
+  - advances a gated curriculum only when the relevant recent bucket rate meets the threshold,
+  - holds a stage and logs `curriculum/gate/held_stage` when the threshold is not met,
+  - logs `curriculum/gate/reach_rate`, `curriculum/gate/grip_rate`, and `curriculum/gate/lift_rate`.
+- `tests/test_prioritized_replay.py`
+  - keeps PR6.8 bucket-rarity sampling unchanged,
+  - logs diagnostic `grip_attempt` and `grip_effect` counts without imposing a bucket importance order,
+  - verifies lower `protected_replay_fraction` caps protected entries,
+  - verifies `protected_score_weights=0.80,0.10,0.10` is normalized and applied.
+- SAC/TD3 loop/logger tests
+  - verify active train-lane action diagnostics emit `action/train/gripper_mean` and `action/train/gripper_close_rate`,
+  - verify same-env eval emits lift-aware metrics and eval gripper diagnostics,
+  - verify `reward/eval_rollout/lift_progress_proxy` is logged when curriculum diagnostics are enabled,
+  - verify settle transitions and eval lanes still do not enter replay or curriculum gate windows.
+- Checkpoint manager tests
+  - verify `--save-best-by composite:success_lift_return` compares success first, max lift second, mean return third,
+  - verify missing composite inputs fail readably instead of silently selecting a bad checkpoint.
+
+Targeted verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_prioritized_replay.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py \
+  tests/test_training_logger_and_scheduler.py
+```
+
+Full verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Acceptance Criteria**
+
+PR6.9 is complete when:
+- all new flags default to PR6.8-compatible behavior,
+- dense lift progress is available in shaped training reward and W&B diagnostics,
+- progress-gated curriculum can hold stages until observed behavior appears,
+- grip attempt/effect counts make near-cube closing failures visible,
+- lift-aware eval metrics are logged for deterministic same-env eval lanes,
+- action diagnostics show whether the policy sends gripper close commands,
+- composite best-checkpoint selection is implemented and tested,
+- protected replay can be run with a smaller rarity-focused protected pool,
+- targeted tests and full pytest pass in the `isaac_arm` environment.
+
+Implementation status on 2026-04-29:
+- Completed in code for SAC and TD3.
+- Targeted PR6.9 verification: `79 passed`.
+- Full `isaac_arm` pytest: `310 passed, 1 skipped`.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add progress-gated lift curriculum diagnostics"
 ```
 
 ---

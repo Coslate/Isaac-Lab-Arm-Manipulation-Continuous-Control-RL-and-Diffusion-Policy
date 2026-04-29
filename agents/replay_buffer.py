@@ -30,6 +30,7 @@ DEFAULT_RAM_BUDGET_GIB = 32.0
 DEFAULT_PRIORITY_SCORE_WEIGHTS: tuple[float, float, float, float] = (0.40, 0.25, 0.20, 0.15)
 DEFAULT_PROTECTED_SCORE_WEIGHTS: tuple[float, float, float] = (0.60, 0.25, 0.15)
 PROGRESS_BUCKETS: tuple[str, ...] = ("normal", "reach", "grip", "lift", "goal")
+DIAGNOSTIC_BUCKETS: tuple[str, ...] = ("grip_attempt", "grip_effect")
 
 
 @dataclass(frozen=True)
@@ -204,12 +205,14 @@ class ReplayBuffer:
         self._truncated = np.zeros((capacity,), dtype=bool)
         self._bootstrap_mask = np.zeros((capacity,), dtype=np.float32)
         self._bucket_labels = np.zeros((capacity, len(PROGRESS_BUCKETS)), dtype=bool)
+        self._diagnostic_labels = np.zeros((capacity, len(DIAGNOSTIC_BUCKETS)), dtype=bool)
         self._episode_returns = np.zeros((capacity,), dtype=np.float32)
         self._td_errors = np.ones((capacity,), dtype=np.float32)
         self._priority_scores = np.ones((capacity,), dtype=np.float32)
         self._protected_scores = np.zeros((capacity,), dtype=np.float32)
         self._protected = np.zeros((capacity,), dtype=bool)
         self._bucket_counts_cache = np.zeros((len(PROGRESS_BUCKETS),), dtype=np.int64)
+        self._diagnostic_counts_cache = np.zeros((len(DIAGNOSTIC_BUCKETS),), dtype=np.int64)
         self._last_mean_priority_score = 1.0
         self._protected_count = 0
 
@@ -242,6 +245,7 @@ class ReplayBuffer:
         terminated: bool,
         truncated: bool,
         bucket_labels: np.ndarray | None = None,
+        diagnostic_labels: np.ndarray | None = None,
         episode_return: float = 0.0,
     ) -> None:
         """Append a single transition. Validates dtype and shape strictly."""
@@ -259,9 +263,11 @@ class ReplayBuffer:
         bootstrap = self._compute_bootstrap_mask(terminated_bool, truncated_bool)
 
         labels = self._normalize_bucket_labels(bucket_labels)
+        diag_labels = self._normalize_diagnostic_labels(diagnostic_labels)
         idx = self._select_write_index()
         if idx < self._size:
             self._bucket_counts_cache -= self._bucket_labels[idx].astype(np.int64)
+            self._diagnostic_counts_cache -= self._diagnostic_labels[idx].astype(np.int64)
         self._images[idx] = image
         self._next_images[idx] = next_image
         self._proprios[idx] = proprio
@@ -272,12 +278,14 @@ class ReplayBuffer:
         self._truncated[idx] = truncated_bool
         self._bootstrap_mask[idx] = bootstrap
         self._bucket_labels[idx] = labels
+        self._diagnostic_labels[idx] = diag_labels
         self._episode_returns[idx] = float(episode_return) if np.isfinite(float(episode_return)) else 0.0
         self._td_errors[idx] = 1.0
         self._priority_scores[idx] = 1.0
         self._protected_scores[idx] = 0.0
         self._protected[idx] = False
         self._bucket_counts_cache += labels.astype(np.int64)
+        self._diagnostic_counts_cache += diag_labels.astype(np.int64)
 
         self._size = min(self._size + 1, self.capacity)
 
@@ -293,6 +301,7 @@ class ReplayBuffer:
         terminated: np.ndarray,
         truncated: np.ndarray,
         bucket_labels: np.ndarray | None = None,
+        diagnostic_labels: np.ndarray | None = None,
         episode_returns: np.ndarray | None = None,
     ) -> None:
         """Append a per-lane batch of transitions from one vectorized env step."""
@@ -311,6 +320,8 @@ class ReplayBuffer:
                 raise ValueError(f"{name} batch size {arr.shape[0]} != images {batch_size}")
         if bucket_labels is not None and bucket_labels.shape[0] != batch_size:
             raise ValueError(f"bucket_labels batch size {bucket_labels.shape[0]} != images {batch_size}")
+        if diagnostic_labels is not None and diagnostic_labels.shape[0] != batch_size:
+            raise ValueError(f"diagnostic_labels batch size {diagnostic_labels.shape[0]} != images {batch_size}")
         if episode_returns is None:
             episode_return_array = np.zeros((batch_size,), dtype=np.float32)
         else:
@@ -328,6 +339,7 @@ class ReplayBuffer:
                 terminated=bool(terminated[i]),
                 truncated=bool(truncated[i]),
                 bucket_labels=None if bucket_labels is None else bucket_labels[i],
+                diagnostic_labels=None if diagnostic_labels is None else diagnostic_labels[i],
                 episode_return=float(episode_return_array[i]),
             )
 
@@ -387,6 +399,9 @@ class ReplayBuffer:
         for index, name in enumerate(PROGRESS_BUCKETS):
             logs[f"priority_replay/bucket_count/{name}"] = float(counts[index])
             logs[f"priority_replay/bucket_rarity/{name}"] = float(rarities[index])
+        diag_counts = self.diagnostic_counts()
+        for index, name in enumerate(DIAGNOSTIC_BUCKETS):
+            logs[f"priority_replay/bucket_count/{name}"] = float(diag_counts[index])
         return logs
 
     def bucket_counts(self) -> np.ndarray:
@@ -397,6 +412,11 @@ class ReplayBuffer:
     def bucket_rarities(self, counts: np.ndarray | None = None) -> np.ndarray:
         count_array = self.bucket_counts() if counts is None else np.asarray(counts, dtype=np.float32)
         return (1.0 / np.power(count_array.astype(np.float32) + self.priority_rarity_eps, self.priority_rarity_power)).astype(np.float32)
+
+    def diagnostic_counts(self) -> np.ndarray:
+        if self._size == 0:
+            return np.zeros((len(DIAGNOSTIC_BUCKETS),), dtype=np.int64)
+        return self._diagnostic_counts_cache.copy()
 
     def _compute_bootstrap_mask(self, terminated: bool, truncated: bool) -> float:
         if terminated:
@@ -470,6 +490,14 @@ class ReplayBuffer:
         if np.any(array[1:]):
             array = array.copy()
             array[0] = False
+        return array.astype(bool, copy=False)
+
+    def _normalize_diagnostic_labels(self, labels: np.ndarray | None) -> np.ndarray:
+        if labels is None:
+            return np.zeros((len(DIAGNOSTIC_BUCKETS),), dtype=bool)
+        array = np.asarray(labels, dtype=bool).reshape(-1)
+        if array.shape != (len(DIAGNOSTIC_BUCKETS),):
+            raise ValueError(f"diagnostic_labels must have shape ({len(DIAGNOSTIC_BUCKETS)},); got {array.shape}")
         return array.astype(bool, copy=False)
 
     def _refresh_priority_scores(self) -> None:
@@ -596,6 +624,7 @@ def _unit_scores(values: np.ndarray) -> np.ndarray:
 
 __all__ = [
     "DEFAULT_ACTION_DIM",
+    "DIAGNOSTIC_BUCKETS",
     "DEFAULT_PROTECTED_SCORE_WEIGHTS",
     "DEFAULT_PROPRIO_DIM",
     "DEFAULT_PRIORITY_SCORE_WEIGHTS",

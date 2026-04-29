@@ -21,13 +21,18 @@ from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_co
 from train.loggers import TrainLogger
 from train.reward_components import extract_reward_components, reward_component_logs
 from train.reward_curriculum import (
+    CURRICULUM_GATING_NONE,
     CUBE_POS_BASE,
+    CurriculumGateConfig,
+    CurriculumGateTracker,
     ProgressBucketConfig,
     RewardCurriculumConfig,
+    action_diagnostic_logs,
     assign_progress_labels,
+    compute_progress_diagnostic_labels,
     shape_rewards,
 )
-from train.rollout_metrics import LaneEpisodeMetricTracker, infer_successes, split_train_eval_lanes
+from train.rollout_metrics import LaneEpisodeMetricTracker, LaneLiftDiagnosticTracker, infer_successes, split_train_eval_lanes
 
 
 DEFAULT_REPLAY_CAPACITY = 200_000
@@ -58,8 +63,13 @@ class TD3TrainLoopConfig:
     per_lane_settle_steps: int = 0
     reward_curriculum: str = "none"
     curriculum_stage_fracs: tuple[float, float, float] = (0.2, 0.5, 0.8)
+    curriculum_gating: str = CURRICULUM_GATING_NONE
+    curriculum_gate_window_transitions: int = 20_000
+    curriculum_gate_thresholds: tuple[float, float, float] = (0.002, 0.0005, 0.0001)
     grip_proxy_scale: float = 1.0
     grip_proxy_sigma_m: float = 0.05
+    lift_progress_deadband_m: float = 0.002
+    lift_progress_height_m: float = 0.04
     prioritize_replay: bool = False
     priority_replay_ratio: float = 0.0
     priority_score_weights: tuple[float, float, float, float] = DEFAULT_PRIORITY_SCORE_WEIGHTS
@@ -224,6 +234,15 @@ def run_td3_train_loop(
         stage_fracs=cfg.curriculum_stage_fracs,
         grip_proxy_scale=cfg.grip_proxy_scale,
         grip_proxy_sigma_m=cfg.grip_proxy_sigma_m,
+        lift_progress_deadband_m=cfg.lift_progress_deadband_m,
+        lift_progress_height_m=cfg.lift_progress_height_m,
+    )
+    curriculum_gate_tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=cfg.curriculum_gating,
+            window_transitions=cfg.curriculum_gate_window_transitions,
+            thresholds=cfg.curriculum_gate_thresholds,
+        )
     )
     progress_bucket_config = ProgressBucketConfig()
     lane_reset_cube_z = proprios[:, CUBE_POS_BASE.stop - 1].astype(np.float32, copy=True)
@@ -245,6 +264,17 @@ def run_td3_train_loop(
             num_lanes=int(same_env_eval_indices.shape[0]),
             prefix="eval_rollout",
             window_size=cfg.rollout_metrics_window,
+        )
+        if same_env_eval_indices.size > 0
+        else None
+    )
+    same_env_lift_tracker = (
+        LaneLiftDiagnosticTracker(
+            num_lanes=int(same_env_eval_indices.shape[0]),
+            prefix="eval_rollout",
+            window_size=cfg.rollout_metrics_window,
+            grip_threshold_m=progress_bucket_config.grip_threshold_m,
+            close_command_threshold=progress_bucket_config.close_command_threshold,
         )
         if same_env_eval_indices.size > 0
         else None
@@ -313,15 +343,6 @@ def run_td3_train_loop(
         dones = _broadcast_per_env(terminated, num_envs, bool, "terminated")
         truncs = _broadcast_per_env(truncated, num_envs, bool, "truncated")
         reward_components = extract_reward_components(_info, env, num_envs=num_envs, rewards=rewards)
-        shaped_rewards, curriculum_logs, grip_proxy = shape_rewards(
-            rewards,
-            reward_components,
-            proprios,
-            actions,
-            env_steps=env_steps,
-            total_env_steps=cfg.total_env_steps,
-            config=reward_curriculum_config,
-        )
         bucket_labels = assign_progress_labels(
             proprios=proprios,
             next_proprios=next_proprios,
@@ -329,6 +350,30 @@ def run_td3_train_loop(
             components=reward_components,
             cube_reset_z=lane_reset_cube_z,
             config=progress_bucket_config,
+        )
+        diagnostic_labels = compute_progress_diagnostic_labels(
+            proprios=proprios,
+            next_proprios=next_proprios,
+            actions=actions,
+            cube_reset_z=lane_reset_cube_z,
+            config=progress_bucket_config,
+        )
+        gate_logs = curriculum_gate_tracker.update(
+            bucket_labels[active_train_indices] if active_train_indices.size > 0 else None
+        )
+        shaped_rewards, curriculum_logs, grip_proxy, lift_progress_proxy = shape_rewards(
+            rewards,
+            reward_components,
+            proprios,
+            actions,
+            env_steps=env_steps,
+            total_env_steps=cfg.total_env_steps,
+            config=reward_curriculum_config,
+            next_proprios=next_proprios,
+            cube_reset_z=lane_reset_cube_z,
+            stage_index_override=(
+                curriculum_gate_tracker.stage_index if curriculum_gate_tracker.config.enabled else None
+            ),
         )
 
         if active_train_indices.size > 0:
@@ -348,6 +393,7 @@ def run_td3_train_loop(
                 terminated=dones[active_train_indices],
                 truncated=truncs[active_train_indices],
                 bucket_labels=bucket_labels[active_train_indices],
+                diagnostic_labels=diagnostic_labels[active_train_indices],
                 episode_returns=active_episode_returns,
             )
             lane_episode_returns[active_train_indices] = active_episode_returns
@@ -408,6 +454,18 @@ def run_td3_train_loop(
                 successes=successes[same_env_eval_indices],
                 active_mask=same_env_eval_metric_mask,
             )
+            if same_env_lift_tracker is not None:
+                eval_rollout_logs.update(
+                    same_env_lift_tracker.step(
+                        proprios=proprios[same_env_eval_indices],
+                        next_proprios=next_proprios[same_env_eval_indices],
+                        actions=actions[same_env_eval_indices],
+                        terminated=dones[same_env_eval_indices],
+                        truncated=truncs[same_env_eval_indices],
+                        cube_reset_z=lane_reset_cube_z[same_env_eval_indices],
+                        active_mask=same_env_eval_metric_mask,
+                    )
+                )
             _log_loop_metrics(
                 logger,
                 progress,
@@ -444,6 +502,26 @@ def run_td3_train_loop(
             "train/settling_train_lanes": float(settling_train_lanes),
             "train/settling_eval_lanes": float(settling_eval_lanes),
         }
+        action_logs: dict[str, float] = {}
+        if active_train_indices.size > 0:
+            action_logs.update(
+                action_diagnostic_logs(
+                    actions[active_train_indices],
+                    prefix="action/train",
+                    config=progress_bucket_config,
+                )
+            )
+        if same_env_eval_tracker is not None:
+            eval_metric_indices = same_env_eval_indices[same_env_eval_metric_mask]
+            if eval_metric_indices.size > 0:
+                action_logs.update(
+                    action_diagnostic_logs(
+                        actions[eval_metric_indices],
+                        prefix="action/eval_rollout",
+                        proprios=proprios[eval_metric_indices],
+                        config=progress_bucket_config,
+                    )
+                )
         reward_logs = reward_component_logs(
             reward_components,
             prefix="reward/train",
@@ -458,14 +536,21 @@ def run_td3_train_loop(
                     lane_indices=same_env_eval_indices,
                     active_mask=same_env_eval_metric_mask,
                 )
-            )
+                )
         if reward_logs:
             env_logs.update(reward_logs)
+        if action_logs:
+            env_logs.update(action_logs)
+            reward_logs.update(action_logs)
         if curriculum_logs:
             if active_train_indices.size > 0:
                 curriculum_logs = dict(curriculum_logs)
                 curriculum_logs["reward/train_shaped"] = float(np.mean(shaped_rewards[active_train_indices]))
                 curriculum_logs["reward/train/grip_proxy"] = float(np.mean(grip_proxy[active_train_indices]))
+                curriculum_logs["reward/train/lift_progress_proxy"] = float(
+                    np.mean(lift_progress_proxy[active_train_indices])
+                )
+            curriculum_logs.update(gate_logs)
             if same_env_eval_tracker is not None:
                 eval_metric_indices = same_env_eval_indices[same_env_eval_metric_mask]
                 if eval_metric_indices.size > 0:
@@ -474,6 +559,9 @@ def run_td3_train_loop(
                     )
                     curriculum_logs["reward/eval_rollout/grip_proxy"] = float(
                         np.mean(grip_proxy[eval_metric_indices])
+                    )
+                    curriculum_logs["reward/eval_rollout/lift_progress_proxy"] = float(
+                        np.mean(lift_progress_proxy[eval_metric_indices])
                     )
             env_logs.update(curriculum_logs)
             reward_logs.update(curriculum_logs)

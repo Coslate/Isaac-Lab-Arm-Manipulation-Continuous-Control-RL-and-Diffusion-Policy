@@ -33,6 +33,13 @@ from eval.eval_loop import (
     target_position_constant_by_episode,
     target_positions_by_episode_from_dataset,
 )
+from train.reward_curriculum import (
+    CUBE_POS_BASE,
+    CUBE_TO_TARGET,
+    EE_TO_CUBE,
+    GRIPPER_ACTION_INDEX,
+    ProgressBucketConfig,
+)
 
 
 @dataclass
@@ -61,6 +68,10 @@ class EvalCheckpointMetrics:
     closest_target_approach_by_episode: dict[str, dict[str, Any]] = field(default_factory=dict)
     target_positions_base_m_by_episode: dict[str, list[float]] = field(default_factory=dict)
     target_position_constant_by_episode: bool | None = None
+    max_cube_lift_m: float = 0.0
+    min_ee_to_cube_m: float = 0.0
+    min_cube_to_target_m: float = 0.0
+    gripper_close_near_cube_rate: float = 0.0
     legacy_warning: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -110,6 +121,7 @@ def evaluate_episodes(
     success_array = np.asarray(success_flags, dtype=bool)
 
     target_positions_by_episode = target_positions_by_episode_from_dataset(episode_keys, episodes)
+    lift_metrics = _lift_aware_metrics(episodes)
 
     return EvalCheckpointMetrics(
         agent_type=agent_type,
@@ -137,6 +149,10 @@ def evaluate_episodes(
         ),
         target_positions_base_m_by_episode=target_positions_by_episode,
         target_position_constant_by_episode=target_position_constant_by_episode(episodes),
+        max_cube_lift_m=lift_metrics["max_cube_lift_m"],
+        min_ee_to_cube_m=lift_metrics["min_ee_to_cube_m"],
+        min_cube_to_target_m=lift_metrics["min_cube_to_target_m"],
+        gripper_close_near_cube_rate=lift_metrics["gripper_close_near_cube_rate"],
         legacy_warning=legacy_warning,
     )
 
@@ -174,6 +190,47 @@ def _combine_sources(sources: list[str]) -> str:
     if unique == {SUCCESS_SOURCE_PROPRIO}:
         return SUCCESS_SOURCE_PROPRIO
     return SUCCESS_SOURCE_MIXED
+
+
+def _lift_aware_metrics(episodes: list[EpisodeData]) -> dict[str, float]:
+    cfg = ProgressBucketConfig()
+    max_cube_lifts: list[float] = []
+    min_ee_to_cube: list[float] = []
+    min_cube_to_target: list[float] = []
+    close_near_count = 0
+    step_count = 0
+    for episode in episodes:
+        proprios = np.asarray(episode.proprios, dtype=np.float32)
+        actions = np.asarray(episode.actions, dtype=np.float32)
+        if proprios.ndim != 2 or proprios.shape[0] == 0:
+            continue
+        if proprios.shape[1] >= CUBE_POS_BASE.stop:
+            cube_z = proprios[:, CUBE_POS_BASE.stop - 1]
+            max_cube_lifts.append(float(np.max(cube_z - cube_z[0])))
+        if proprios.shape[1] >= EE_TO_CUBE.stop:
+            ee_dist = np.linalg.norm(proprios[:, EE_TO_CUBE], axis=1)
+            min_ee_to_cube.append(float(np.min(ee_dist)))
+        if proprios.shape[1] >= CUBE_TO_TARGET.stop:
+            target_dist = np.linalg.norm(proprios[:, CUBE_TO_TARGET], axis=1)
+            min_cube_to_target.append(float(np.min(target_dist)))
+        if (
+            proprios.shape[1] >= EE_TO_CUBE.stop
+            and actions.ndim == 2
+            and actions.shape[0] == proprios.shape[0]
+            and actions.shape[1] > GRIPPER_ACTION_INDEX
+        ):
+            ee_dist = np.linalg.norm(proprios[:, EE_TO_CUBE], axis=1)
+            close_near = (ee_dist <= cfg.grip_threshold_m) & (
+                actions[:, GRIPPER_ACTION_INDEX] < cfg.close_command_threshold
+            )
+            close_near_count += int(np.count_nonzero(close_near))
+            step_count += int(close_near.size)
+    return {
+        "max_cube_lift_m": float(max(max_cube_lifts) if max_cube_lifts else 0.0),
+        "min_ee_to_cube_m": float(min(min_ee_to_cube) if min_ee_to_cube else 0.0),
+        "min_cube_to_target_m": float(min(min_cube_to_target) if min_cube_to_target else 0.0),
+        "gripper_close_near_cube_rate": float(close_near_count / step_count) if step_count > 0 else 0.0,
+    }
 
 
 __all__ = [

@@ -88,6 +88,12 @@ def test_record_checkpoint_visuals_create_gif_png_and_metrics(tmp_path, agent_ty
     assert payload["target_debug_pixel_source"] == "debug_camera_projection"
     assert payload["target_debug_pixel_by_episode"] == {"episode_000": [100, 32]}
     assert {"mean_return", "success_rate", "mean_action_jerk"} <= set(payload)
+    assert {
+        "max_cube_lift_m",
+        "min_ee_to_cube_m",
+        "min_cube_to_target_m",
+        "gripper_close_near_cube_rate",
+    } <= set(payload)
     assert len(payload["visual_rollout_reward_trace"]) == payload["visual_rollout_reward_num_steps"] == 5
     assert payload["visual_rollout_reward_sum"] == pytest.approx(payload["mean_return"])
     assert payload["visual_rollout_reward_min"] <= payload["visual_rollout_reward_mean"] <= payload["visual_rollout_reward_max"]

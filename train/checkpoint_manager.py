@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 
+COMPOSITE_SUCCESS_LIFT_RETURN = "composite:success_lift_return"
+COMPOSITE_SUCCESS_KEY = "eval_rollout/success_rate"
+COMPOSITE_LIFT_KEY = "eval_rollout/max_cube_lift_m"
+COMPOSITE_RETURN_KEY = "eval_rollout/mean_return"
+
+
 class TrainingCheckpointManager:
     """Save periodic checkpoints and a metric-selected best checkpoint."""
 
@@ -35,7 +41,7 @@ class TrainingCheckpointManager:
         self.seed = int(seed)
         self.env_id = str(env_id)
         self.next_periodic_step = self.checkpoint_every_env_steps if self.checkpoint_every_env_steps > 0 else None
-        self.best_metric_value: float | None = None
+        self.best_metric_value: Any | None = None
         self.periodic_paths: list[Path] = []
         self.history: list[dict[str, Any]] = []
 
@@ -63,18 +69,40 @@ class TrainingCheckpointManager:
             while self.next_periodic_step is not None and env_steps >= self.next_periodic_step:
                 self.next_periodic_step += self.checkpoint_every_env_steps
 
-        if self.save_best_by is not None and self.save_best_by in metrics:
-            metric_value = float(metrics[self.save_best_by])
-            if math.isfinite(metric_value) and (
-                self.best_metric_value is None or metric_value > self.best_metric_value
+        if self.save_best_by is not None:
+            candidate = self._best_candidate(metrics)
+            if candidate is not None and (
+                self.best_metric_value is None or _metric_better(candidate, self.best_metric_value)
             ):
-                self.best_metric_value = metric_value
+                self.best_metric_value = candidate
                 self._save_best(
                     agent,
                     env_steps=env_steps,
-                    metric_value=metric_value,
+                    metric_value=candidate,
                     scheduler_state=scheduler_state,
                 )
+
+    def _best_candidate(self, metrics: dict[str, float]) -> Any | None:
+        if self.save_best_by == COMPOSITE_SUCCESS_LIFT_RETURN:
+            keys = (COMPOSITE_SUCCESS_KEY, COMPOSITE_LIFT_KEY, COMPOSITE_RETURN_KEY)
+            present = [key for key in keys if key in metrics]
+            if not present:
+                return None
+            missing = [key for key in keys if key not in metrics]
+            if missing:
+                raise ValueError(
+                    f"{COMPOSITE_SUCCESS_LIFT_RETURN} requires {keys}; missing {tuple(missing)}"
+                )
+            values = tuple(float(metrics[key]) for key in keys)
+            if not all(math.isfinite(value) for value in values):
+                return None
+            return values
+        if self.save_best_by is None or self.save_best_by not in metrics:
+            return None
+        metric_value = float(metrics[self.save_best_by])
+        if not math.isfinite(metric_value):
+            return None
+        return metric_value
 
     def _save_periodic(self, agent: Any, *, env_steps: int, scheduler_state: dict[str, Any] | None) -> None:
         path = self.checkpoint_dir / f"{self.checkpoint_name}_step_{env_steps:09d}.pt"
@@ -88,7 +116,7 @@ class TrainingCheckpointManager:
         agent: Any,
         *,
         env_steps: int,
-        metric_value: float,
+        metric_value: Any,
         scheduler_state: dict[str, Any] | None,
     ) -> None:
         path = self.checkpoint_dir / f"{self.checkpoint_name}_best.pt"
@@ -99,7 +127,7 @@ class TrainingCheckpointManager:
                 "env_steps": env_steps,
                 "path": str(path),
                 "metric_key": self.save_best_by,
-                "metric_value": metric_value,
+                "metric_value": _metric_history_value(metric_value),
             }
         )
 
@@ -120,4 +148,20 @@ class TrainingCheckpointManager:
             self.history.append({"kind": "pruned", "path": str(old_path)})
 
 
-__all__ = ["TrainingCheckpointManager"]
+def _metric_better(candidate: Any, incumbent: Any) -> bool:
+    return candidate > incumbent
+
+
+def _metric_history_value(value: Any) -> Any:
+    if isinstance(value, tuple):
+        return [float(item) for item in value]
+    return float(value)
+
+
+__all__ = [
+    "COMPOSITE_LIFT_KEY",
+    "COMPOSITE_RETURN_KEY",
+    "COMPOSITE_SUCCESS_KEY",
+    "COMPOSITE_SUCCESS_LIFT_RETURN",
+    "TrainingCheckpointManager",
+]

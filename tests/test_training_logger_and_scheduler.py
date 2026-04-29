@@ -17,7 +17,7 @@ from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
 from scripts.train_sac_continuous import _FakeSACEnv, _build_fake_env, parse_args as parse_sac_args
 from scripts.train_td3_continuous import parse_args as parse_td3_args
-from train.checkpoint_manager import TrainingCheckpointManager
+from train.checkpoint_manager import COMPOSITE_SUCCESS_LIFT_RETURN, TrainingCheckpointManager
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
 from train.lr_scheduler import (
     estimate_total_update_steps,
@@ -461,6 +461,70 @@ def test_training_checkpoint_manager_saves_periodic_prunes_and_best(tmp_path: Pa
     assert any(event["kind"] == "pruned" for event in manager.history)
 
 
+def test_training_checkpoint_manager_composite_best_prefers_success_then_lift_then_return(tmp_path: Path):
+    torch.manual_seed(0)
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_composite",
+        save_best_by=COMPOSITE_SUCCESS_LIFT_RETURN,
+        seed=7,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        10,
+        {
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.01,
+            "eval_rollout/mean_return": 10.0,
+        },
+        {"actor": {"step_count": 1}},
+    )
+    manager(
+        agent,
+        20,
+        {
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.02,
+            "eval_rollout/mean_return": 0.0,
+        },
+        {"actor": {"step_count": 2}},
+    )
+    manager(
+        agent,
+        30,
+        {
+            "eval_rollout/success_rate": 1.0,
+            "eval_rollout/max_cube_lift_m": 0.0,
+            "eval_rollout/mean_return": -10.0,
+        },
+        {"actor": {"step_count": 3}},
+    )
+
+    best = tmp_path / "sac_composite_best.pt"
+    assert best.exists()
+    best_payload = load_checkpoint(best, expected_agent_type="sac")
+    assert best_payload.metadata.num_env_steps == 30
+    assert manager.best_metric_value == pytest.approx((1.0, 0.0, -10.0))
+    assert manager.history[-1]["metric_key"] == COMPOSITE_SUCCESS_LIFT_RETURN
+    assert manager.history[-1]["metric_value"] == pytest.approx([1.0, 0.0, -10.0])
+
+
+def test_training_checkpoint_manager_composite_best_requires_all_eval_rollout_metrics(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_bad_composite",
+        save_best_by=COMPOSITE_SUCCESS_LIFT_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    with pytest.raises(ValueError, match="requires"):
+        manager(agent, 10, {"eval_rollout/mean_return": 1.0}, None)
+
+
 def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     sac_args = parse_sac_args(
         [
@@ -479,8 +543,18 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "reach_grip_lift_goal",
             "--curriculum-stage-fracs",
             "0.2,0.5,0.8",
+            "--curriculum-gating",
+            "bucket_rates",
+            "--curriculum-gate-window-transitions",
+            "123",
+            "--curriculum-gate-thresholds",
+            "0.1,0.2,0.3",
             "--grip-proxy-scale",
             "1.25",
+            "--lift-progress-deadband-m",
+            "0.003",
+            "--lift-progress-height-m",
+            "0.05",
             "--prioritize-replay",
             "--priority-replay-ratio",
             "0.5",
@@ -506,6 +580,14 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "--disable-reward-curriculum",
             "--reward-curriculum",
             "reach_grip_lift_goal",
+            "--curriculum-gating",
+            "bucket_rates",
+            "--curriculum-gate-thresholds",
+            "0.1,0.2,0.3",
+            "--lift-progress-deadband-m",
+            "0.003",
+            "--lift-progress-height-m",
+            "0.05",
             "--prioritize-replay",
             "--priority-replay-ratio",
             "0.5",
@@ -522,7 +604,12 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.disable_reward_curriculum is True
     assert sac_args.reward_curriculum == "reach_grip_lift_goal"
     assert sac_args.curriculum_stage_fracs == "0.2,0.5,0.8"
+    assert sac_args.curriculum_gating == "bucket_rates"
+    assert sac_args.curriculum_gate_window_transitions == 123
+    assert sac_args.curriculum_gate_thresholds == "0.1,0.2,0.3"
     assert sac_args.grip_proxy_scale == pytest.approx(1.25)
+    assert sac_args.lift_progress_deadband_m == pytest.approx(0.003)
+    assert sac_args.lift_progress_height_m == pytest.approx(0.05)
     assert sac_args.prioritize_replay is True
     assert sac_args.priority_replay_ratio == pytest.approx(0.5)
     assert sac_args.priority_score_weights == "0.4,0.25,0.2,0.15"
@@ -534,6 +621,10 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.save_best_by == "eval_rollout/mean_return"
     assert td3_args.disable_reward_curriculum is True
     assert td3_args.reward_curriculum == "reach_grip_lift_goal"
+    assert td3_args.curriculum_gating == "bucket_rates"
+    assert td3_args.curriculum_gate_thresholds == "0.1,0.2,0.3"
+    assert td3_args.lift_progress_deadband_m == pytest.approx(0.003)
+    assert td3_args.lift_progress_height_m == pytest.approx(0.05)
     assert td3_args.prioritize_replay is True
     assert td3_args.priority_replay_ratio == pytest.approx(0.5)
     assert td3_args.protect_rare_transitions is True
@@ -684,6 +775,60 @@ def test_train_loop_logs_eval_rollout_curriculum_diagnostics(agent, config, runn
     assert any("reward/eval_rollout/joint_vel" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/eval_shaped" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/eval_rollout/grip_proxy" in metrics for _step, metrics, _force in progress.calls)
+
+
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(agent, config, runner):
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    logger = _CountingLogger()
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=4,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+        reward_curriculum="reach_grip_lift_goal",
+        curriculum_gating="bucket_rates",
+        curriculum_gate_window_transitions=8,
+        curriculum_gate_thresholds=(0.0, 0.0, 0.0),
+        prioritize_replay=True,
+        priority_replay_ratio=0.5,
+        protect_rare_transitions=True,
+        protected_replay_fraction=0.25,
+    )
+
+    report = runner(env, agent(), loop_config=cfg, logger=logger, progress=progress)
+
+    assert report.num_updates > 0
+    assert any("reward/train/lift_progress_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/lift_progress_proxy" in logs for logs in report.log_history)
+    assert any("curriculum/gate/reach_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/held_stage" in logs for logs in report.log_history)
+    assert any("priority_replay/bucket_count/grip_attempt" in logs for logs in report.log_history)
+    assert any("priority_replay/bucket_count/grip_effect" in logs for logs in report.log_history)
+    assert any("action/train/gripper_mean" in logs for logs in report.log_history)
+    assert any("action/train/gripper_close_rate" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/gripper_mean" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/gripper_close_rate" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
+    assert any("eval_rollout/max_cube_lift_m" in logs for logs in report.log_history)
+    assert any("eval_rollout/min_ee_to_cube_m" in logs for logs in report.log_history)
+    assert any("eval_rollout/min_cube_to_target_m" in logs for logs in report.log_history)
+    assert any("eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
+    assert any("action/train/gripper_mean" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("eval_rollout/max_cube_lift_m" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("action/eval_rollout/gripper_mean" in metrics for _step, metrics, _force in progress.calls)
 
 
 def test_sac_same_env_eval_waits_for_clean_episode_after_start_threshold():

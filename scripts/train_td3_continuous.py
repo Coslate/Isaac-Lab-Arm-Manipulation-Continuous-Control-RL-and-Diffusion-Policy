@@ -33,7 +33,12 @@ from train.lr_scheduler import (
     make_scheduler,
 )
 from train.progress import TrainProgressReporter
-from train.reward_curriculum import SUPPORTED_REWARD_CURRICULA, parse_stage_fracs
+from train.reward_curriculum import (
+    SUPPORTED_CURRICULUM_GATING,
+    SUPPORTED_REWARD_CURRICULA,
+    parse_gate_thresholds,
+    parse_stage_fracs,
+)
 from train.reward_probe import probe_reward_signal
 from train.td3_loop import TD3TrainLoopConfig, run_td3_train_loop
 
@@ -103,8 +108,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--disable-reward-curriculum", action="store_true")
     parser.add_argument("--reward-curriculum", choices=SUPPORTED_REWARD_CURRICULA, default="none")
     parser.add_argument("--curriculum-stage-fracs", dest="curriculum_stage_fracs", default="0.2,0.5,0.8")
+    parser.add_argument("--curriculum-gating", dest="curriculum_gating", choices=SUPPORTED_CURRICULUM_GATING, default="none")
+    parser.add_argument("--curriculum-gate-window-transitions", dest="curriculum_gate_window_transitions", type=int, default=20_000)
+    parser.add_argument("--curriculum-gate-thresholds", dest="curriculum_gate_thresholds", default="0.002,0.0005,0.0001")
     parser.add_argument("--grip-proxy-scale", dest="grip_proxy_scale", type=float, default=1.0)
     parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
+    parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
+    parser.add_argument("--lift-progress-height-m", dest="lift_progress_height_m", type=float, default=0.04)
     parser.add_argument("--prioritize-replay", action="store_true")
     parser.add_argument("--priority-replay-ratio", dest="priority_replay_ratio", type=float, default=0.5)
     parser.add_argument(
@@ -176,8 +186,13 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         per_lane_settle_steps=args.per_lane_settle_steps,
         reward_curriculum=args.reward_curriculum,
         curriculum_stage_fracs=parse_stage_fracs(args.curriculum_stage_fracs),
+        curriculum_gating=args.curriculum_gating,
+        curriculum_gate_window_transitions=args.curriculum_gate_window_transitions,
+        curriculum_gate_thresholds=parse_gate_thresholds(args.curriculum_gate_thresholds),
         grip_proxy_scale=args.grip_proxy_scale,
         grip_proxy_sigma_m=args.grip_proxy_sigma_m,
+        lift_progress_deadband_m=args.lift_progress_deadband_m,
+        lift_progress_height_m=args.lift_progress_height_m,
         prioritize_replay=args.prioritize_replay,
         priority_replay_ratio=args.priority_replay_ratio if args.prioritize_replay else 0.0,
         priority_score_weights=_parse_priority_score_weights(args.priority_score_weights),
@@ -328,12 +343,19 @@ def _validate_checkpoint_args(args: argparse.Namespace) -> None:
 
 def _validate_pr68_args(args: argparse.Namespace) -> None:
     parse_stage_fracs(args.curriculum_stage_fracs)
+    parse_gate_thresholds(args.curriculum_gate_thresholds)
     _parse_priority_score_weights(args.priority_score_weights)
     _parse_protected_score_weights(args.protected_score_weights)
+    if args.curriculum_gate_window_transitions <= 0:
+        raise ValueError("--curriculum-gate-window-transitions must be positive")
     if args.grip_proxy_scale < 0.0:
         raise ValueError("--grip-proxy-scale must be non-negative")
     if args.grip_proxy_sigma_m <= 0.0:
         raise ValueError("--grip-proxy-sigma-m must be positive")
+    if args.lift_progress_deadband_m < 0.0:
+        raise ValueError("--lift-progress-deadband-m must be non-negative")
+    if args.lift_progress_height_m <= 0.0:
+        raise ValueError("--lift-progress-height-m must be positive")
     if not 0.0 <= args.priority_replay_ratio <= 1.0:
         raise ValueError("--priority-replay-ratio must be in [0, 1]")
     if args.priority_rarity_power < 0.0:

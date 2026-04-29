@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from agents.replay_buffer import ReplayBuffer, make_dummy_transition
+from agents.replay_buffer import DIAGNOSTIC_BUCKETS, ReplayBuffer, make_dummy_transition
 from train.reward_curriculum import BUCKET_INDEX, PROGRESS_BUCKETS
 
 
@@ -13,6 +13,13 @@ def _label(*names: str) -> np.ndarray:
     labels = np.zeros((len(PROGRESS_BUCKETS),), dtype=bool)
     for name in names:
         labels[BUCKET_INDEX[name]] = True
+    return labels
+
+
+def _diagnostic_label(*names: str) -> np.ndarray:
+    labels = np.zeros((len(DIAGNOSTIC_BUCKETS),), dtype=bool)
+    for name in names:
+        labels[DIAGNOSTIC_BUCKETS.index(name)] = True
     return labels
 
 
@@ -132,3 +139,32 @@ def test_protected_score_weights_are_validated() -> None:
         ReplayBuffer(capacity=4, ram_budget_gib=8.0, protected_score_weights=(1.0, -1.0, 0.0))
     with pytest.raises(ValueError, match="protected_score_weights must contain at least one positive"):
         ReplayBuffer(capacity=4, ram_budget_gib=8.0, protected_score_weights=(0.0, 0.0, 0.0))
+
+
+def test_replay_buffer_logs_grip_attempt_and_effect_diagnostic_counts() -> None:
+    rng = np.random.default_rng(4)
+    buffer = ReplayBuffer(
+        capacity=8,
+        ram_budget_gib=8.0,
+        seed=0,
+        prioritize_replay=True,
+        priority_replay_ratio=0.5,
+    )
+
+    buffer.push(
+        **make_dummy_transition(rng=rng),
+        bucket_labels=_label("grip"),
+        diagnostic_labels=_diagnostic_label("grip_attempt"),
+        episode_return=0.0,
+    )
+    buffer.push(
+        **make_dummy_transition(rng=rng),
+        bucket_labels=_label("lift"),
+        diagnostic_labels=_diagnostic_label("grip_attempt", "grip_effect"),
+        episode_return=1.0,
+    )
+
+    logs = buffer.priority_logs()
+
+    assert logs["priority_replay/bucket_count/grip_attempt"] == pytest.approx(2.0)
+    assert logs["priority_replay/bucket_count/grip_effect"] == pytest.approx(1.0)

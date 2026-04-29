@@ -29,6 +29,7 @@ from eval.eval_loop import (
     mean_action_jerk,
 )
 from scripts.eval_checkpoint_continuous import parse_args, run_fake_backend
+from train.reward_curriculum import CUBE_POS_BASE, CUBE_TO_TARGET, EE_TO_CUBE, GRIPPER_ACTION_INDEX
 
 
 PROPRIO_DIM = 40
@@ -125,6 +126,43 @@ def test_evaluate_episodes_rejects_empty_input():
             env_id=ISAAC_FRANKA_IK_REL_ENV_ID,
             num_env_steps=0,
         )
+
+
+def test_evaluate_episodes_reports_lift_aware_diagnostics():
+    length = 4
+    proprios = np.zeros((length, PROPRIO_DIM), dtype=np.float32)
+    actions = np.zeros((length, 7), dtype=np.float32)
+    proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.02, 0.03, 0.07, 0.05], dtype=np.float32)
+    proprios[:, EE_TO_CUBE] = np.array(
+        [[0.2, 0.0, 0.0], [0.04, 0.0, 0.0], [0.03, 0.0, 0.0], [0.1, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.5, 0.0, 0.0], [0.2, 0.0, 0.0], [0.08, 0.0, 0.0], [0.1, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    actions[:, GRIPPER_ACTION_INDEX] = np.array([0.0, -1.0, 0.0, -1.0], dtype=np.float32)
+    episode = EpisodeData(
+        images=np.zeros((length, *IMAGE_SHAPE), dtype=np.uint8),
+        proprios=proprios,
+        actions=actions,
+        rewards=np.zeros((length,), dtype=np.float32),
+        dones=np.array([False, False, False, True]),
+        truncateds=np.zeros((length,), dtype=bool),
+        metadata=EpisodeMetadata(policy_name="fake_sac", env_backend="fake"),
+    )
+
+    metrics = evaluate_episodes(
+        [episode],
+        agent_type="sac",
+        checkpoint="/tmp/fake.pt",
+        num_env_steps=1,
+    )
+
+    assert metrics.max_cube_lift_m == pytest.approx(0.05)
+    assert metrics.min_ee_to_cube_m == pytest.approx(0.03)
+    assert metrics.min_cube_to_target_m == pytest.approx(0.08)
+    assert metrics.gripper_close_near_cube_rate == pytest.approx(0.25)
 
 
 # ---------------------------------------------------------------------------

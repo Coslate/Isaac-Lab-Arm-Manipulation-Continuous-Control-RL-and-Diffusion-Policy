@@ -45,6 +45,7 @@ class TrainProgressReporter:
         ("reward/train/native_total", "reward_train_total"),
         ("reward/train_shaped", "reward_train_shaped"),
         ("reward/train/grip_proxy", "reward_train_grip_proxy"),
+        ("reward/train/lift_progress_proxy", "reward_train_lift_progress"),
         ("reward/train/reaching_object", "reward_train_reach"),
         ("reward/train/lifting_object", "reward_train_lift"),
         ("reward/train/object_goal_tracking", "reward_train_goal"),
@@ -54,6 +55,7 @@ class TrainProgressReporter:
         ("reward/eval_rollout/native_total", "reward_eval_total"),
         ("reward/eval_rollout/eval_shaped", "reward_eval_shaped"),
         ("reward/eval_rollout/grip_proxy", "reward_eval_grip_proxy"),
+        ("reward/eval_rollout/lift_progress_proxy", "reward_eval_lift_progress"),
         ("reward/eval_rollout/reaching_object", "reward_eval_reach"),
         ("reward/eval_rollout/lifting_object", "reward_eval_lift"),
         ("reward/eval_rollout/object_goal_tracking", "reward_eval_goal"),
@@ -62,6 +64,15 @@ class TrainProgressReporter:
         ("reward/eval_rollout/joint_vel", "reward_eval_joint_vel"),
         ("curriculum/stage_index", "curriculum_stage"),
         ("curriculum/stage_progress", "curriculum_progress"),
+        ("curriculum/gate/reach_rate", "gate_reach"),
+        ("curriculum/gate/grip_rate", "gate_grip"),
+        ("curriculum/gate/lift_rate", "gate_lift"),
+        ("curriculum/gate/held_stage", "gate_held"),
+        ("action/train/gripper_mean", "train_gripper_mean"),
+        ("action/train/gripper_close_rate", "train_gripper_close"),
+        ("action/eval_rollout/gripper_mean", "eval_gripper_mean"),
+        ("action/eval_rollout/gripper_close_rate", "eval_gripper_close"),
+        ("action/eval_rollout/gripper_close_near_cube_rate", "eval_close_near_cube"),
         ("priority_replay/batch_uniform", "priority_uniform"),
         ("priority_replay/batch_priority", "priority_batch"),
         ("priority_replay/mean_priority_score", "priority_mean"),
@@ -70,6 +81,8 @@ class TrainProgressReporter:
         ("priority_replay/bucket_count/grip", "bucket_grip"),
         ("priority_replay/bucket_count/lift", "bucket_lift"),
         ("priority_replay/bucket_count/goal", "bucket_goal"),
+        ("priority_replay/bucket_count/grip_attempt", "bucket_grip_attempt"),
+        ("priority_replay/bucket_count/grip_effect", "bucket_grip_effect"),
         ("train_rollout/mean_return", "train_rollout_return"),
         ("train_rollout/success_rate", "train_rollout_success"),
         ("train_rollout/mean_episode_length", "train_rollout_len"),
@@ -82,6 +95,10 @@ class TrainProgressReporter:
         ("eval_rollout/success_rate", "eval_rollout_success"),
         ("eval_rollout/mean_episode_length", "eval_rollout_len"),
         ("eval_rollout/episode_count", "eval_rollout_eps"),
+        ("eval_rollout/max_cube_lift_m", "eval_max_lift_m"),
+        ("eval_rollout/min_ee_to_cube_m", "eval_min_ee_cube_m"),
+        ("eval_rollout/min_cube_to_target_m", "eval_min_cube_target_m"),
+        ("eval_rollout/gripper_close_near_cube_rate", "eval_close_near_cube"),
     )
 
     def __init__(
@@ -318,6 +335,7 @@ def _format_metric(key: str, value: float) -> str:
         "normalizer/proprio_count",
         "normalizer/image_count",
         "curriculum/stage_index",
+        "curriculum/gate/held_stage",
         "priority_replay/batch_uniform",
         "priority_replay/batch_priority",
         "priority_replay/protected_count",
@@ -326,6 +344,8 @@ def _format_metric(key: str, value: float) -> str:
         "priority_replay/bucket_count/grip",
         "priority_replay/bucket_count/lift",
         "priority_replay/bucket_count/goal",
+        "priority_replay/bucket_count/grip_attempt",
+        "priority_replay/bucket_count/grip_effect",
     }:
         return str(int(round(value)))
     if "learning_rate" in key:
