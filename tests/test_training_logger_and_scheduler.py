@@ -549,6 +549,18 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "123",
             "--curriculum-gate-thresholds",
             "0.1,0.2,0.3",
+            "--curriculum-gate-eval-window-episodes",
+            "12",
+            "--curriculum-gate-min-eval-episodes",
+            "8",
+            "--curriculum-gate-eval-thresholds",
+            "0.4,0.3,0.05,0.1",
+            "--curriculum-gate-min-train-exposures",
+            "400,100,20,20",
+            "--curriculum-gate-lift-success-height-m",
+            "0.02",
+            "--curriculum-gate-min-stage-env-steps",
+            "10000",
             "--grip-proxy-scale",
             "1.25",
             "--lift-progress-deadband-m",
@@ -584,6 +596,10 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "bucket_rates",
             "--curriculum-gate-thresholds",
             "0.1,0.2,0.3",
+            "--curriculum-gate-eval-thresholds",
+            "0.4,0.3,0.05,0.1",
+            "--curriculum-gate-min-train-exposures",
+            "400,100,20,20",
             "--lift-progress-deadband-m",
             "0.003",
             "--lift-progress-height-m",
@@ -607,6 +623,12 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.curriculum_gating == "bucket_rates"
     assert sac_args.curriculum_gate_window_transitions == 123
     assert sac_args.curriculum_gate_thresholds == "0.1,0.2,0.3"
+    assert sac_args.curriculum_gate_eval_window_episodes == 12
+    assert sac_args.curriculum_gate_min_eval_episodes == 8
+    assert sac_args.curriculum_gate_eval_thresholds == "0.4,0.3,0.05,0.1"
+    assert sac_args.curriculum_gate_min_train_exposures == "400,100,20,20"
+    assert sac_args.curriculum_gate_lift_success_height_m == pytest.approx(0.02)
+    assert sac_args.curriculum_gate_min_stage_env_steps == 10000
     assert sac_args.grip_proxy_scale == pytest.approx(1.25)
     assert sac_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert sac_args.lift_progress_height_m == pytest.approx(0.05)
@@ -623,6 +645,8 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.reward_curriculum == "reach_grip_lift_goal"
     assert td3_args.curriculum_gating == "bucket_rates"
     assert td3_args.curriculum_gate_thresholds == "0.1,0.2,0.3"
+    assert td3_args.curriculum_gate_eval_thresholds == "0.4,0.3,0.05,0.1"
+    assert td3_args.curriculum_gate_min_train_exposures == "400,100,20,20"
     assert td3_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert td3_args.lift_progress_height_m == pytest.approx(0.05)
     assert td3_args.prioritize_replay is True
@@ -829,6 +853,78 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("action/train/gripper_mean" in metrics for _step, metrics in logger.scalar_calls)
     assert any("eval_rollout/max_cube_lift_m" in metrics for _step, metrics in logger.scalar_calls)
     assert any("action/eval_rollout/gripper_mean" in metrics for _step, metrics, _force in progress.calls)
+
+
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    logger = _CountingLogger()
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=4,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+        reward_curriculum="reach_grip_lift_goal",
+        curriculum_gating="eval_dual_gate",
+        curriculum_gate_eval_window_episodes=4,
+        curriculum_gate_min_eval_episodes=1,
+        curriculum_gate_eval_thresholds=(0.0, 0.0, 0.0, 0.0),
+        curriculum_gate_min_train_exposures=(0, 0, 0, 0),
+        curriculum_gate_lift_success_height_m=0.02,
+        curriculum_gate_min_stage_env_steps=0,
+    )
+
+    report = runner(env, agent(), loop_config=cfg, logger=logger, progress=progress)
+
+    assert report.num_updates > 0
+    assert any("curriculum/gate/mode_eval_dual_gate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_reach_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_grip_attempt_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_grip_effect_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_lift_2cm_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/exposure_reach_count" in logs for logs in report.log_history)
+    assert any("curriculum/gate/exposure_grip_attempt_count" in logs for logs in report.log_history)
+    assert any("curriculum/gate/exposure_grip_effect_count" in logs for logs in report.log_history)
+    assert any("curriculum/gate/exposure_lift_progress_count" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_gate_passed" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("curriculum/gate/advanced_stage" in metrics for _step, metrics, _force in progress.calls)
+    assert any(kind == "curriculum_advance" for _step, kind, _fields in progress.notes)
+
+
+@pytest.mark.parametrize(
+    ("agent", "config", "runner"),
+    [
+        (lambda: SACAgent(_tiny_sac_config()), SACTrainLoopConfig, run_sac_train_loop),
+        (lambda: TD3Agent(_tiny_td3_config()), TD3TrainLoopConfig, run_td3_train_loop),
+    ],
+)
+def test_eval_dual_gate_requires_same_env_eval_lanes(agent, config, runner):
+    env = _FakeSACEnv(num_envs=2, seed=0, terminal_step=3)
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=0,
+        batch_size=4,
+        total_env_steps=4,
+        seed=0,
+        ram_budget_gib=4.0,
+        reward_curriculum="reach_grip_lift_goal",
+        curriculum_gating="eval_dual_gate",
+    )
+
+    with pytest.raises(ValueError, match="same_env_eval_lanes"):
+        runner(env, agent(), loop_config=cfg)
 
 
 def test_sac_same_env_eval_waits_for_clean_episode_after_start_threshold():

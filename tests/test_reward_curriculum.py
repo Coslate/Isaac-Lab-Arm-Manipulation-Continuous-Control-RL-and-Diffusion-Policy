@@ -10,23 +10,29 @@ from train.reward_curriculum import (
     CUBE_POS_BASE,
     CUBE_TO_TARGET,
     CURRICULUM_GATING_BUCKET_RATES,
+    CURRICULUM_GATING_EVAL_DUAL_GATE,
     CurriculumGateConfig,
     CurriculumGateTracker,
     DIAGNOSTIC_BUCKET_INDEX,
     EE_TO_CUBE,
+    EVAL_GATE_LABEL_INDEX,
     GRIPPER_ACTION_INDEX,
     PROGRESS_BUCKETS,
     REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
     RewardCurriculumConfig,
     assign_progress_labels,
+    compute_lift_success_labels,
     compute_lift_progress_proxy,
     compute_grip_proxy,
     compute_progress_diagnostic_labels,
     curriculum_stage,
+    parse_eval_gate_thresholds,
     parse_gate_thresholds,
+    parse_min_train_exposures,
     parse_stage_fracs,
     shape_rewards,
 )
+from train.rollout_metrics import LaneEvalSubskillTracker
 
 
 def test_parse_stage_fracs_requires_three_increasing_fractions() -> None:
@@ -43,6 +49,17 @@ def test_parse_gate_thresholds_requires_three_nonnegative_values() -> None:
         parse_gate_thresholds("0.1,0.2")
     with pytest.raises(ValueError, match="non-negative"):
         parse_gate_thresholds("0.1,-0.2,0.3")
+
+
+def test_parse_eval_dual_gate_controls_validate_lengths_and_ranges() -> None:
+    assert parse_eval_gate_thresholds("0.4,0.3,0.05,0.1") == pytest.approx((0.4, 0.3, 0.05, 0.1))
+    assert parse_min_train_exposures("400,100,20,20") == (400, 100, 20, 20)
+    with pytest.raises(ValueError, match="exactly four"):
+        parse_eval_gate_thresholds("0.1,0.2,0.3")
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        parse_eval_gate_thresholds("0.1,1.2,0.3,0.4")
+    with pytest.raises(ValueError, match="non-negative"):
+        parse_min_train_exposures("1,2,-3,4")
 
 
 def test_curriculum_stage_uses_total_step_fractions() -> None:
@@ -114,6 +131,16 @@ def test_lift_progress_proxy_ignores_jitter_and_scales_to_threshold() -> None:
     assert lift[0] == pytest.approx(0.0)
     assert lift[1] == pytest.approx(0.5)
     assert lift[2] == pytest.approx(1.0)
+
+
+def test_lift_success_labels_use_absolute_lift_height() -> None:
+    next_proprios = np.zeros((3, 40), dtype=np.float32)
+    reset_z = np.array([0.02, 0.02, 0.02], dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.021, 0.039, 0.041], dtype=np.float32)
+
+    labels = compute_lift_success_labels(next_proprios, reset_z, height_m=0.02)
+
+    assert labels.tolist() == [False, False, True]
 
 
 def test_shape_rewards_adds_dense_lift_progress_when_next_state_is_available() -> None:
@@ -241,6 +268,79 @@ def test_curriculum_gate_tracker_advances_only_when_recent_bucket_rates_pass_thr
     assert tracker.stage_index == 1
     assert logs["curriculum/gate/grip_rate"] < 0.5
     assert logs["curriculum/gate/held_stage"] == pytest.approx(1.0)
+
+
+def test_eval_dual_gate_tracker_requires_eval_exposure_and_min_stage_steps() -> None:
+    tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=CURRICULUM_GATING_EVAL_DUAL_GATE,
+            eval_window_episodes=2,
+            min_eval_episodes=2,
+            eval_thresholds=(0.5, 0.5, 0.5, 0.5),
+            min_train_exposures=(2, 1, 1, 1),
+            min_stage_env_steps=5,
+        )
+    )
+    reach = np.zeros((2, len(PROGRESS_BUCKETS)), dtype=bool)
+    reach[:, BUCKET_INDEX["reach"]] = True
+    eval_reach = np.zeros((2, 4), dtype=bool)
+    eval_reach[:, EVAL_GATE_LABEL_INDEX["reach"]] = True
+
+    logs = tracker.update(reach, eval_episode_labels=eval_reach, env_steps=4)
+
+    assert tracker.stage_index == 0
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/exposure_gate_passed"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/min_stage_steps_passed"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/held_stage"] == pytest.approx(1.0)
+
+    logs = tracker.update(env_steps=5)
+
+    assert tracker.stage_index == 1
+    assert logs["curriculum/gate/advanced_stage"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/exposure_reach_count"] == pytest.approx(0.0)
+
+    grip_diag = np.ones((1, 2), dtype=bool)
+    eval_grip_attempt_only = np.zeros((2, 4), dtype=bool)
+    eval_grip_attempt_only[:, EVAL_GATE_LABEL_INDEX["grip_attempt"]] = True
+
+    logs = tracker.update(
+        diagnostic_labels=grip_diag,
+        eval_episode_labels=eval_grip_attempt_only,
+        env_steps=10,
+    )
+
+    assert tracker.stage_index == 1
+    assert logs["curriculum/gate/eval_grip_attempt_episode_rate"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/eval_grip_effect_episode_rate"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/exposure_gate_passed"] == pytest.approx(1.0)
+
+
+def test_lane_eval_subskill_tracker_emits_completed_episode_labels() -> None:
+    tracker = LaneEvalSubskillTracker(num_lanes=1, lift_success_height_m=0.02)
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    reset_z = np.zeros((1,), dtype=np.float32)
+    proprios[0, EE_TO_CUBE] = 0.01
+    actions[0, GRIPPER_ACTION_INDEX] = -1.0
+    next_proprios[0, CUBE_POS_BASE.stop - 1] = 0.03
+
+    labels = tracker.step(
+        proprios=proprios,
+        next_proprios=next_proprios,
+        actions=actions,
+        terminated=np.array([True]),
+        truncated=np.array([False]),
+        cube_reset_z=reset_z,
+    )
+
+    assert labels.shape == (1, 4)
+    assert labels[0, EVAL_GATE_LABEL_INDEX["reach"]]
+    assert labels[0, EVAL_GATE_LABEL_INDEX["grip_attempt"]]
+    assert labels[0, EVAL_GATE_LABEL_INDEX["grip_effect"]]
+    assert labels[0, EVAL_GATE_LABEL_INDEX["lift_2cm"]]
 
 
 def test_reach_bucket_uses_distance_threshold_not_positive_reach_reward() -> None:

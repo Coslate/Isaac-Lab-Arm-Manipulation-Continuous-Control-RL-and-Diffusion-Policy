@@ -204,6 +204,113 @@ class LaneLiftDiagnosticTracker:
         return f"{self.prefix}/{suffix}"
 
 
+class LaneEvalSubskillTracker:
+    """Emit completed-episode subskill labels for eval-dual curriculum gates."""
+
+    def __init__(
+        self,
+        *,
+        num_lanes: int,
+        reach_threshold_m: float = 0.08,
+        grip_threshold_m: float = 0.05,
+        close_command_threshold: float = -0.25,
+        lift_progress_deadband_m: float = 0.002,
+        cube_motion_effect_threshold_m: float = 0.005,
+        lift_success_height_m: float = 0.02,
+    ) -> None:
+        if num_lanes <= 0:
+            raise ValueError("num_lanes must be positive")
+        if reach_threshold_m <= 0.0:
+            raise ValueError("reach_threshold_m must be positive")
+        if grip_threshold_m <= 0.0:
+            raise ValueError("grip_threshold_m must be positive")
+        if lift_progress_deadband_m < 0.0:
+            raise ValueError("lift_progress_deadband_m must be non-negative")
+        if cube_motion_effect_threshold_m <= 0.0:
+            raise ValueError("cube_motion_effect_threshold_m must be positive")
+        if lift_success_height_m <= 0.0:
+            raise ValueError("lift_success_height_m must be positive")
+        self.num_lanes = int(num_lanes)
+        self.reach_threshold_m = float(reach_threshold_m)
+        self.grip_threshold_m = float(grip_threshold_m)
+        self.close_command_threshold = float(close_command_threshold)
+        self.lift_progress_deadband_m = float(lift_progress_deadband_m)
+        self.cube_motion_effect_threshold_m = float(cube_motion_effect_threshold_m)
+        self.lift_success_height_m = float(lift_success_height_m)
+        self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
+        self._saw_grip_attempt = np.zeros((self.num_lanes,), dtype=bool)
+        self._saw_grip_effect = np.zeros((self.num_lanes,), dtype=bool)
+        self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
+
+    def step(
+        self,
+        *,
+        proprios: np.ndarray,
+        next_proprios: np.ndarray,
+        actions: np.ndarray,
+        terminated: np.ndarray,
+        truncated: np.ndarray,
+        cube_reset_z: np.ndarray,
+        active_mask: np.ndarray | None = None,
+    ) -> np.ndarray:
+        proprios = _as_lane_matrix(proprios, self.num_lanes, "proprios")
+        next_proprios = _as_lane_matrix(next_proprios, self.num_lanes, "next_proprios")
+        actions = _as_lane_matrix(actions, self.num_lanes, "actions")
+        terminated = _as_lane_array(terminated, self.num_lanes, bool, "terminated")
+        truncated = _as_lane_array(truncated, self.num_lanes, bool, "truncated")
+        reset_z = _as_lane_array(cube_reset_z, self.num_lanes, np.float64, "cube_reset_z")
+        active = (
+            np.ones((self.num_lanes,), dtype=bool)
+            if active_mask is None
+            else _as_lane_array(active_mask, self.num_lanes, bool, "active_mask")
+        )
+        if not np.any(active):
+            return np.zeros((0, 4), dtype=bool)
+
+        ee_to_cube = np.linalg.norm(proprios[:, PROPRIO_EE_TO_CUBE_SLICE], axis=1)
+        cube_motion = np.linalg.norm(
+            next_proprios[:, PROPRIO_CUBE_POS_BASE_SLICE] - proprios[:, PROPRIO_CUBE_POS_BASE_SLICE],
+            axis=1,
+        )
+        cube_lift = next_proprios[:, PROPRIO_CUBE_POS_BASE_SLICE.stop - 1] - reset_z
+        grip_attempt = (
+            (ee_to_cube <= self.grip_threshold_m)
+            & (actions[:, ACTION_GRIPPER_INDEX] < self.close_command_threshold)
+        )
+        grip_effect = grip_attempt & (
+            (cube_lift > self.lift_progress_deadband_m)
+            | (cube_motion > self.cube_motion_effect_threshold_m)
+        )
+
+        self._min_ee_to_cube[active] = np.minimum(self._min_ee_to_cube[active], ee_to_cube[active])
+        self._saw_grip_attempt[active] |= grip_attempt[active]
+        self._saw_grip_effect[active] |= grip_effect[active]
+        self._max_cube_lift[active] = np.maximum(self._max_cube_lift[active], cube_lift[active])
+
+        completed = active & (terminated | truncated)
+        if not np.any(completed):
+            return np.zeros((0, 4), dtype=bool)
+
+        labels: list[list[bool]] = []
+        for lane in np.flatnonzero(completed):
+            labels.append(
+                [
+                    bool(self._min_ee_to_cube[lane] <= self.reach_threshold_m),
+                    bool(self._saw_grip_attempt[lane]),
+                    bool(self._saw_grip_effect[lane]),
+                    bool(self._max_cube_lift[lane] >= self.lift_success_height_m),
+                ]
+            )
+            self._reset_lane(lane)
+        return np.asarray(labels, dtype=bool)
+
+    def _reset_lane(self, lane: int) -> None:
+        self._min_ee_to_cube[lane] = np.inf
+        self._saw_grip_attempt[lane] = False
+        self._saw_grip_effect[lane] = False
+        self._max_cube_lift[lane] = -np.inf
+
+
 def split_train_eval_lanes(num_envs: int, eval_lanes: int) -> tuple[np.ndarray, np.ndarray]:
     """Return lane indices where the last ``eval_lanes`` are held out for eval."""
 
@@ -306,6 +413,7 @@ def _as_lane_matrix(value: np.ndarray, num_lanes: int, name: str) -> np.ndarray:
 
 __all__ = [
     "DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M",
+    "LaneEvalSubskillTracker",
     "LaneEpisodeMetricTracker",
     "LaneLiftDiagnosticTracker",
     "infer_successes",

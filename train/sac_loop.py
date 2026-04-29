@@ -27,6 +27,7 @@ from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_co
 from train.loggers import TrainLogger
 from train.reward_components import extract_reward_components, reward_component_logs
 from train.reward_curriculum import (
+    CURRICULUM_GATING_EVAL_DUAL_GATE,
     CURRICULUM_GATING_NONE,
     CUBE_POS_BASE,
     CurriculumGateConfig,
@@ -35,10 +36,17 @@ from train.reward_curriculum import (
     RewardCurriculumConfig,
     action_diagnostic_logs,
     assign_progress_labels,
+    compute_lift_success_labels,
     compute_progress_diagnostic_labels,
     shape_rewards,
 )
-from train.rollout_metrics import LaneEpisodeMetricTracker, LaneLiftDiagnosticTracker, infer_successes, split_train_eval_lanes
+from train.rollout_metrics import (
+    LaneEpisodeMetricTracker,
+    LaneEvalSubskillTracker,
+    LaneLiftDiagnosticTracker,
+    infer_successes,
+    split_train_eval_lanes,
+)
 
 
 DEFAULT_REPLAY_CAPACITY = 200_000
@@ -72,6 +80,12 @@ class SACTrainLoopConfig:
     curriculum_gating: str = CURRICULUM_GATING_NONE
     curriculum_gate_window_transitions: int = 20_000
     curriculum_gate_thresholds: tuple[float, float, float] = (0.002, 0.0005, 0.0001)
+    curriculum_gate_eval_window_episodes: int = 20
+    curriculum_gate_min_eval_episodes: int = 20
+    curriculum_gate_eval_thresholds: tuple[float, float, float, float] = (0.40, 0.30, 0.05, 0.10)
+    curriculum_gate_min_train_exposures: tuple[int, int, int, int] = (400, 100, 20, 20)
+    curriculum_gate_lift_success_height_m: float = 0.02
+    curriculum_gate_min_stage_env_steps: int = 10_000
     grip_proxy_scale: float = 1.0
     grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
@@ -217,6 +231,8 @@ def run_sac_train_loop(
         raise ValueError("same_env_eval_start_env_steps must be non-negative")
     if cfg.per_lane_settle_steps < 0:
         raise ValueError("per_lane_settle_steps must be non-negative")
+    if cfg.curriculum_gating == CURRICULUM_GATING_EVAL_DUAL_GATE and cfg.same_env_eval_lanes <= 0:
+        raise ValueError("eval_dual_gate curriculum gating requires same_env_eval_lanes > 0")
     rng = np.random.default_rng(cfg.seed)
 
     obs = _reset_and_settle(env, seed=cfg.seed, settle_steps=cfg.settle_steps, progress=progress)
@@ -253,6 +269,12 @@ def run_sac_train_loop(
             mode=cfg.curriculum_gating,
             window_transitions=cfg.curriculum_gate_window_transitions,
             thresholds=cfg.curriculum_gate_thresholds,
+            eval_window_episodes=cfg.curriculum_gate_eval_window_episodes,
+            min_eval_episodes=cfg.curriculum_gate_min_eval_episodes,
+            eval_thresholds=cfg.curriculum_gate_eval_thresholds,
+            min_train_exposures=cfg.curriculum_gate_min_train_exposures,
+            lift_success_height_m=cfg.curriculum_gate_lift_success_height_m,
+            min_stage_env_steps=cfg.curriculum_gate_min_stage_env_steps,
         )
     )
     progress_bucket_config = ProgressBucketConfig()
@@ -288,6 +310,19 @@ def run_sac_train_loop(
             close_command_threshold=progress_bucket_config.close_command_threshold,
         )
         if same_env_eval_indices.size > 0
+        else None
+    )
+    same_env_subskill_tracker = (
+        LaneEvalSubskillTracker(
+            num_lanes=int(same_env_eval_indices.shape[0]),
+            reach_threshold_m=progress_bucket_config.reach_threshold_m,
+            grip_threshold_m=progress_bucket_config.grip_threshold_m,
+            close_command_threshold=progress_bucket_config.close_command_threshold,
+            lift_progress_deadband_m=progress_bucket_config.lift_progress_deadband_m,
+            cube_motion_effect_threshold_m=progress_bucket_config.cube_motion_effect_threshold_m,
+            lift_success_height_m=cfg.curriculum_gate_lift_success_height_m,
+        )
+        if curriculum_gate_tracker.config.eval_dual_gate_enabled and same_env_eval_indices.size > 0
         else None
     )
     same_env_eval_active = (
@@ -369,9 +404,21 @@ def run_sac_train_loop(
             cube_reset_z=lane_reset_cube_z,
             config=progress_bucket_config,
         )
-        gate_logs = curriculum_gate_tracker.update(
-            bucket_labels[active_train_indices] if active_train_indices.size > 0 else None
+        train_lift_success_labels = (
+            compute_lift_success_labels(
+                next_proprios[active_train_indices],
+                lane_reset_cube_z[active_train_indices],
+                height_m=cfg.curriculum_gate_lift_success_height_m,
+            )
+            if active_train_indices.size > 0
+            else None
         )
+        gate_logs: dict[str, float] = {}
+        if curriculum_gate_tracker.config.bucket_rates_enabled:
+            gate_logs = curriculum_gate_tracker.update(
+                bucket_labels[active_train_indices] if active_train_indices.size > 0 else None,
+                env_steps=env_steps,
+            )
         shaped_rewards, curriculum_logs, grip_proxy, lift_progress_proxy = shape_rewards(
             rewards,
             reward_components,
@@ -458,6 +505,7 @@ def run_sac_train_loop(
         if same_env_eval_tracker is not None:
             same_env_eval_active_before = same_env_eval_active.copy()
             same_env_eval_metric_mask = same_env_eval_active_before & ~settling_before[same_env_eval_indices]
+            eval_gate_episode_labels = np.zeros((0, 4), dtype=bool)
             eval_rollout_logs = same_env_eval_tracker.step(
                 rewards=rewards[same_env_eval_indices],
                 terminated=dones[same_env_eval_indices],
@@ -477,6 +525,16 @@ def run_sac_train_loop(
                         active_mask=same_env_eval_metric_mask,
                     )
                 )
+            if same_env_subskill_tracker is not None:
+                eval_gate_episode_labels = same_env_subskill_tracker.step(
+                    proprios=proprios[same_env_eval_indices],
+                    next_proprios=next_proprios[same_env_eval_indices],
+                    actions=actions[same_env_eval_indices],
+                    terminated=dones[same_env_eval_indices],
+                    truncated=truncs[same_env_eval_indices],
+                    cube_reset_z=lane_reset_cube_z[same_env_eval_indices],
+                    active_mask=same_env_eval_metric_mask,
+                )
             _log_loop_metrics(
                 logger,
                 progress,
@@ -486,6 +544,28 @@ def run_sac_train_loop(
                 force=True,
             )
             _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_rollout_logs, schedulers)
+        else:
+            eval_gate_episode_labels = None
+        if curriculum_gate_tracker.config.eval_dual_gate_enabled:
+            previous_stage = curriculum_gate_tracker.stage_index
+            gate_logs = curriculum_gate_tracker.update(
+                bucket_labels[active_train_indices] if active_train_indices.size > 0 else None,
+                diagnostic_labels=diagnostic_labels[active_train_indices] if active_train_indices.size > 0 else None,
+                lift_success_labels=train_lift_success_labels,
+                eval_episode_labels=eval_gate_episode_labels,
+                env_steps=env_steps,
+            )
+            if curriculum_gate_tracker.stage_index > previous_stage:
+                _note_progress(
+                    progress,
+                    env_steps,
+                    "curriculum_advance",
+                    {
+                        "from": reward_curriculum_config.stage_weights[previous_stage].name,
+                        "to": reward_curriculum_config.stage_weights[curriculum_gate_tracker.stage_index].name,
+                        "reason": "eval_dual_gate",
+                    },
+                )
         reset_lanes = (dones | truncs) & ~settling_before
         if np.any(reset_lanes):
             lane_reset_cube_z[reset_lanes] = next_proprios[reset_lanes, CUBE_POS_BASE.stop - 1]
@@ -561,7 +641,6 @@ def run_sac_train_loop(
                 curriculum_logs["reward/train/lift_progress_proxy"] = float(
                     np.mean(lift_progress_proxy[active_train_indices])
                 )
-            curriculum_logs.update(gate_logs)
             if same_env_eval_tracker is not None:
                 eval_metric_indices = same_env_eval_indices[same_env_eval_metric_mask]
                 if eval_metric_indices.size > 0:
@@ -576,6 +655,9 @@ def run_sac_train_loop(
                     )
             env_logs.update(curriculum_logs)
             reward_logs.update(curriculum_logs)
+        if gate_logs:
+            env_logs.update(gate_logs)
+            reward_logs.update(gate_logs)
         if cfg.prioritize_replay:
             priority_logs = replay.priority_logs()
             env_logs.update(priority_logs)

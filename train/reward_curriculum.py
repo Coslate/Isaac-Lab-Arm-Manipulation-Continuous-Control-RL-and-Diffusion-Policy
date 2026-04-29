@@ -15,12 +15,21 @@ SUPPORTED_REWARD_CURRICULA = (REWARD_CURRICULUM_NONE, REWARD_CURRICULUM_REACH_GR
 
 CURRICULUM_GATING_NONE = "none"
 CURRICULUM_GATING_BUCKET_RATES = "bucket_rates"
-SUPPORTED_CURRICULUM_GATING = (CURRICULUM_GATING_NONE, CURRICULUM_GATING_BUCKET_RATES)
+CURRICULUM_GATING_EVAL_DUAL_GATE = "eval_dual_gate"
+SUPPORTED_CURRICULUM_GATING = (
+    CURRICULUM_GATING_NONE,
+    CURRICULUM_GATING_BUCKET_RATES,
+    CURRICULUM_GATING_EVAL_DUAL_GATE,
+)
 
 PROGRESS_BUCKETS = ("normal", "reach", "grip", "lift", "goal")
 BUCKET_INDEX = {name: index for index, name in enumerate(PROGRESS_BUCKETS)}
 DIAGNOSTIC_BUCKETS = ("grip_attempt", "grip_effect")
 DIAGNOSTIC_BUCKET_INDEX = {name: index for index, name in enumerate(DIAGNOSTIC_BUCKETS)}
+EVAL_GATE_LABELS = ("reach", "grip_attempt", "grip_effect", "lift_2cm")
+EVAL_GATE_LABEL_INDEX = {name: index for index, name in enumerate(EVAL_GATE_LABELS)}
+EXPOSURE_GATE_LABELS = ("reach", "grip_attempt", "grip_effect", "lift_progress")
+EXPOSURE_GATE_LABEL_INDEX = {name: index for index, name in enumerate(EXPOSURE_GATE_LABELS)}
 
 GRIPPER_FINGER_POS = slice(14, 16)
 CUBE_POS_BASE = slice(21, 24)
@@ -156,11 +165,17 @@ class ProgressBucketConfig:
 
 @dataclass(frozen=True)
 class CurriculumGateConfig:
-    """Config for PR6.9 progress-gated curriculum stage advancement."""
+    """Config for PR6.9/PR6.10 curriculum stage advancement."""
 
     mode: str = CURRICULUM_GATING_NONE
     window_transitions: int = 20_000
     thresholds: tuple[float, float, float] = (0.002, 0.0005, 0.0001)
+    eval_window_episodes: int = 20
+    min_eval_episodes: int = 20
+    eval_thresholds: tuple[float, float, float, float] = (0.40, 0.30, 0.05, 0.10)
+    min_train_exposures: tuple[int, int, int, int] = (400, 100, 20, 20)
+    lift_success_height_m: float = 0.02
+    min_stage_env_steps: int = 10_000
 
     def __post_init__(self) -> None:
         if self.mode not in SUPPORTED_CURRICULUM_GATING:
@@ -171,23 +186,66 @@ class CurriculumGateConfig:
             raise ValueError("curriculum gate thresholds must contain three values")
         if any(float(threshold) < 0.0 for threshold in self.thresholds):
             raise ValueError("curriculum gate thresholds must be non-negative")
+        if self.eval_window_episodes <= 0:
+            raise ValueError("curriculum gate eval window episodes must be positive")
+        if self.min_eval_episodes <= 0:
+            raise ValueError("curriculum gate min eval episodes must be positive")
+        if self.min_eval_episodes > self.eval_window_episodes:
+            raise ValueError("curriculum gate min eval episodes must be <= eval window episodes")
+        if len(self.eval_thresholds) != 4:
+            raise ValueError("curriculum gate eval thresholds must contain four values")
+        if any(float(threshold) < 0.0 or float(threshold) > 1.0 for threshold in self.eval_thresholds):
+            raise ValueError("curriculum gate eval thresholds must be in [0, 1]")
+        if len(self.min_train_exposures) != 4:
+            raise ValueError("curriculum gate min train exposures must contain four values")
+        if any(int(count) < 0 for count in self.min_train_exposures):
+            raise ValueError("curriculum gate min train exposures must be non-negative")
+        if self.lift_success_height_m <= 0.0:
+            raise ValueError("curriculum gate lift success height must be positive")
+        if self.min_stage_env_steps < 0:
+            raise ValueError("curriculum gate min stage env steps must be non-negative")
 
     @property
     def enabled(self) -> bool:
+        return self.mode != CURRICULUM_GATING_NONE
+
+    @property
+    def bucket_rates_enabled(self) -> bool:
         return self.mode == CURRICULUM_GATING_BUCKET_RATES
+
+    @property
+    def eval_dual_gate_enabled(self) -> bool:
+        return self.mode == CURRICULUM_GATING_EVAL_DUAL_GATE
 
 
 class CurriculumGateTracker:
-    """Track recent bucket rates and hold/advance the curriculum stage."""
+    """Track curriculum gates and hold/advance the curriculum stage."""
 
     def __init__(self, config: CurriculumGateConfig | None = None) -> None:
         self.config = config or CurriculumGateConfig()
         self.stage_index = 0
         self._window: deque[np.ndarray] = deque(maxlen=int(self.config.window_transitions))
+        self._eval_window: deque[np.ndarray] = deque(maxlen=int(self.config.eval_window_episodes))
+        self._stage_exposures = np.zeros((len(EXPOSURE_GATE_LABELS),), dtype=np.int64)
+        self._stage_start_env_steps = 0
         self._held_stage = 1.0 if self.config.enabled else 0.0
+        self._eval_gate_passed = 0.0
+        self._exposure_gate_passed = 0.0
+        self._min_stage_steps_passed = 0.0
+        self._advanced_stage = 0.0
 
-    def update(self, labels: np.ndarray | None) -> dict[str, float]:
-        """Update recent bucket rates and return gate diagnostics."""
+    def update(
+        self,
+        labels: np.ndarray | None = None,
+        *,
+        diagnostic_labels: np.ndarray | None = None,
+        lift_success_labels: np.ndarray | None = None,
+        eval_episode_labels: np.ndarray | None = None,
+        env_steps: int = 0,
+    ) -> dict[str, float]:
+        """Update curriculum gate state and return diagnostics."""
+
+        self._last_update_env_steps = int(env_steps)
 
         if labels is not None:
             array = np.asarray(labels, dtype=bool)
@@ -199,10 +257,48 @@ class CurriculumGateTracker:
                 )
             for row in array:
                 self._window.append(row.astype(bool, copy=True))
+            if self.config.eval_dual_gate_enabled:
+                self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["reach"]] += int(
+                    np.count_nonzero(array[:, BUCKET_INDEX["reach"]])
+                )
+
+        if self.config.eval_dual_gate_enabled:
+            if diagnostic_labels is not None:
+                diagnostic_array = np.asarray(diagnostic_labels, dtype=bool)
+                if diagnostic_array.ndim == 1:
+                    diagnostic_array = diagnostic_array[None, :]
+                if diagnostic_array.ndim != 2 or diagnostic_array.shape[1] != len(DIAGNOSTIC_BUCKETS):
+                    raise ValueError(
+                        f"diagnostic_labels must have shape (N, {len(DIAGNOSTIC_BUCKETS)}); "
+                        f"got {diagnostic_array.shape}"
+                    )
+                self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["grip_attempt"]] += int(
+                    np.count_nonzero(diagnostic_array[:, DIAGNOSTIC_BUCKET_INDEX["grip_attempt"]])
+                )
+                self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["grip_effect"]] += int(
+                    np.count_nonzero(diagnostic_array[:, DIAGNOSTIC_BUCKET_INDEX["grip_effect"]])
+                )
+            if lift_success_labels is not None:
+                lift_array = np.asarray(lift_success_labels, dtype=bool).reshape(-1)
+                self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["lift_progress"]] += int(
+                    np.count_nonzero(lift_array)
+                )
+            if eval_episode_labels is not None:
+                eval_array = np.asarray(eval_episode_labels, dtype=bool)
+                if eval_array.ndim == 1:
+                    eval_array = eval_array[None, :]
+                if eval_array.ndim != 2 or eval_array.shape[1] != len(EVAL_GATE_LABELS):
+                    raise ValueError(
+                        f"eval_episode_labels must have shape (N, {len(EVAL_GATE_LABELS)}); "
+                        f"got {eval_array.shape}"
+                    )
+                for row in eval_array:
+                    self._eval_window.append(row.astype(bool, copy=True))
 
         rates = self.rates()
         held = 0.0
-        if self.config.enabled:
+        self._advanced_stage = 0.0
+        if self.config.bucket_rates_enabled:
             previous_stage = self.stage_index
             thresholds = self.config.thresholds
             while self.stage_index < 3:
@@ -211,6 +307,28 @@ class CurriculumGateTracker:
                     break
                 self.stage_index += 1
             held = 1.0 if self.stage_index == previous_stage and self.stage_index < 3 else 0.0
+            self._advanced_stage = 1.0 if self.stage_index > previous_stage else 0.0
+        elif self.config.eval_dual_gate_enabled:
+            previous_stage = self.stage_index
+            self._eval_gate_passed = 1.0 if self._eval_gate_passes() else 0.0
+            self._exposure_gate_passed = 1.0 if self._exposure_gate_passes() else 0.0
+            self._min_stage_steps_passed = (
+                1.0
+                if max(int(env_steps) - self._stage_start_env_steps, 0)
+                >= int(self.config.min_stage_env_steps)
+                else 0.0
+            )
+            if (
+                self.stage_index < 3
+                and self._eval_gate_passed > 0.0
+                and self._exposure_gate_passed > 0.0
+                and self._min_stage_steps_passed > 0.0
+            ):
+                self.stage_index += 1
+                self._stage_exposures[:] = 0
+                self._stage_start_env_steps = int(env_steps)
+            held = 1.0 if self.stage_index == previous_stage and self.stage_index < 3 else 0.0
+            self._advanced_stage = 1.0 if self.stage_index > previous_stage else 0.0
         self._held_stage = held
         logs = self.logs()
         logs["curriculum/gate/held_stage"] = held
@@ -228,12 +346,90 @@ class CurriculumGateTracker:
 
     def logs(self) -> dict[str, float]:
         rates = self.rates()
-        return {
+        logs = {
             "curriculum/gate/reach_rate": rates["reach"],
             "curriculum/gate/grip_rate": rates["grip"],
             "curriculum/gate/lift_rate": rates["lift"],
             "curriculum/gate/held_stage": self._held_stage,
         }
+        if self.config.eval_dual_gate_enabled:
+            eval_rates = self.eval_rates()
+            logs.update(
+                {
+                    "curriculum/gate/mode_eval_dual_gate": 1.0,
+                    "curriculum/gate/eval_window_size": float(len(self._eval_window)),
+                    "curriculum/gate/eval_reach_episode_rate": eval_rates["reach"],
+                    "curriculum/gate/eval_grip_attempt_episode_rate": eval_rates["grip_attempt"],
+                    "curriculum/gate/eval_grip_effect_episode_rate": eval_rates["grip_effect"],
+                    "curriculum/gate/eval_lift_2cm_episode_rate": eval_rates["lift_2cm"],
+                    "curriculum/gate/exposure_reach_count": float(
+                        self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["reach"]]
+                    ),
+                    "curriculum/gate/exposure_grip_attempt_count": float(
+                        self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["grip_attempt"]]
+                    ),
+                    "curriculum/gate/exposure_grip_effect_count": float(
+                        self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["grip_effect"]]
+                    ),
+                    "curriculum/gate/exposure_lift_progress_count": float(
+                        self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["lift_progress"]]
+                    ),
+                    "curriculum/gate/stage_env_steps": float(max(self._last_env_steps() - self._stage_start_env_steps, 0)),
+                    "curriculum/gate/eval_gate_passed": self._eval_gate_passed,
+                    "curriculum/gate/exposure_gate_passed": self._exposure_gate_passed,
+                    "curriculum/gate/min_stage_steps_passed": self._min_stage_steps_passed,
+                    "curriculum/gate/advanced_stage": self._advanced_stage,
+                }
+            )
+        return logs
+
+    def eval_rates(self) -> dict[str, float]:
+        if not self._eval_window:
+            return {name: 0.0 for name in EVAL_GATE_LABELS}
+        labels = np.stack(tuple(self._eval_window), axis=0).astype(np.float32)
+        return {
+            "reach": float(np.mean(labels[:, EVAL_GATE_LABEL_INDEX["reach"]])),
+            "grip_attempt": float(np.mean(labels[:, EVAL_GATE_LABEL_INDEX["grip_attempt"]])),
+            "grip_effect": float(np.mean(labels[:, EVAL_GATE_LABEL_INDEX["grip_effect"]])),
+            "lift_2cm": float(np.mean(labels[:, EVAL_GATE_LABEL_INDEX["lift_2cm"]])),
+        }
+
+    def _last_env_steps(self) -> int:
+        return getattr(self, "_last_update_env_steps", self._stage_start_env_steps)
+
+    def _eval_gate_passes(self) -> bool:
+        if self.stage_index >= 3:
+            return True
+        if len(self._eval_window) < int(self.config.min_eval_episodes):
+            return False
+        rates = self.eval_rates()
+        reach_threshold, grip_attempt_threshold, grip_effect_threshold, lift_threshold = (
+            float(value) for value in self.config.eval_thresholds
+        )
+        if self.stage_index == 0:
+            return rates["reach"] >= reach_threshold
+        if self.stage_index == 1:
+            return rates["grip_attempt"] >= grip_attempt_threshold and rates["grip_effect"] >= grip_effect_threshold
+        if self.stage_index == 2:
+            return rates["lift_2cm"] >= lift_threshold
+        return True
+
+    def _exposure_gate_passes(self) -> bool:
+        if self.stage_index >= 3:
+            return True
+        reach_min, grip_attempt_min, grip_effect_min, lift_progress_min = (
+            int(value) for value in self.config.min_train_exposures
+        )
+        if self.stage_index == 0:
+            return self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["reach"]] >= reach_min
+        if self.stage_index == 1:
+            return (
+                self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["grip_attempt"]] >= grip_attempt_min
+                and self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["grip_effect"]] >= grip_effect_min
+            )
+        if self.stage_index == 2:
+            return self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["lift_progress"]] >= lift_progress_min
+        return True
 
 
 def parse_stage_fracs(value: str | Sequence[float]) -> tuple[float, float, float]:
@@ -267,6 +463,40 @@ def parse_gate_thresholds(value: str | Sequence[float]) -> tuple[float, float, f
     if any(threshold < 0.0 for threshold in thresholds):
         raise ValueError("curriculum gate thresholds must be non-negative")
     return thresholds  # type: ignore[return-value]
+
+
+def parse_eval_gate_thresholds(value: str | Sequence[float]) -> tuple[float, float, float, float]:
+    """Parse four episode-rate thresholds for eval dual-gated curriculum."""
+
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if len(parts) != 4:
+            raise ValueError("curriculum gate eval thresholds must contain exactly four comma-separated values")
+        thresholds = tuple(float(part) for part in parts)
+    else:
+        if len(value) != 4:
+            raise ValueError("curriculum gate eval thresholds must contain exactly four values")
+        thresholds = tuple(float(part) for part in value)
+    if any(threshold < 0.0 or threshold > 1.0 for threshold in thresholds):
+        raise ValueError("curriculum gate eval thresholds must be in [0, 1]")
+    return thresholds  # type: ignore[return-value]
+
+
+def parse_min_train_exposures(value: str | Sequence[int]) -> tuple[int, int, int, int]:
+    """Parse four non-negative stage-local train exposure counts."""
+
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if len(parts) != 4:
+            raise ValueError("curriculum gate min train exposures must contain exactly four comma-separated values")
+        counts = tuple(int(part) for part in parts)
+    else:
+        if len(value) != 4:
+            raise ValueError("curriculum gate min train exposures must contain exactly four values")
+        counts = tuple(int(part) for part in value)
+    if any(count < 0 for count in counts):
+        raise ValueError("curriculum gate min train exposures must be non-negative")
+    return counts  # type: ignore[return-value]
 
 
 def _validate_stage_fracs(fracs: Sequence[float]) -> None:
@@ -341,6 +571,24 @@ def compute_lift_progress_proxy(
     cube_z = next_proprio_array[:, CUBE_POS_BASE.stop - 1]
     lift_delta = cube_z - reset_z
     return np.clip((lift_delta - float(deadband_m)) / float(height_m), 0.0, 1.0).astype(np.float32)
+
+
+def compute_lift_success_labels(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    height_m: float = 0.02,
+) -> np.ndarray:
+    """Return per-transition labels for reaching a concrete lift height."""
+
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if height_m <= 0.0:
+        raise ValueError("height_m must be positive")
+    reset_z = np.asarray(cube_reset_z, dtype=np.float32).reshape(-1)
+    if reset_z.shape != (next_proprio_array.shape[0],):
+        raise ValueError(f"cube_reset_z must have shape ({next_proprio_array.shape[0]},); got {reset_z.shape}")
+    cube_z = next_proprio_array[:, CUBE_POS_BASE.stop - 1]
+    return (cube_z - reset_z) >= float(height_m)
 
 
 def shape_rewards(
@@ -560,11 +808,16 @@ __all__ = [
     "CUBE_POS_BASE",
     "CUBE_TO_TARGET",
     "CURRICULUM_GATING_BUCKET_RATES",
+    "CURRICULUM_GATING_EVAL_DUAL_GATE",
     "CURRICULUM_GATING_NONE",
     "DEFAULT_STAGE_WEIGHTS",
     "DIAGNOSTIC_BUCKETS",
     "DIAGNOSTIC_BUCKET_INDEX",
     "EE_TO_CUBE",
+    "EVAL_GATE_LABELS",
+    "EVAL_GATE_LABEL_INDEX",
+    "EXPOSURE_GATE_LABELS",
+    "EXPOSURE_GATE_LABEL_INDEX",
     "GRIPPER_ACTION_INDEX",
     "GRIPPER_FINGER_POS",
     "PROGRESS_BUCKETS",
@@ -579,11 +832,14 @@ __all__ = [
     "StageWeights",
     "action_diagnostic_logs",
     "assign_progress_labels",
+    "compute_lift_success_labels",
     "compute_lift_progress_proxy",
     "compute_grip_proxy",
     "compute_progress_diagnostic_labels",
     "curriculum_stage",
+    "parse_eval_gate_thresholds",
     "parse_gate_thresholds",
+    "parse_min_train_exposures",
     "parse_stage_fracs",
     "shape_rewards",
 ]

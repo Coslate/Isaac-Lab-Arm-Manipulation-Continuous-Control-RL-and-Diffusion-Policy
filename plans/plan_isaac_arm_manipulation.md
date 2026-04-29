@@ -58,11 +58,12 @@ policy rollout -> episode-safe dataset -> metrics -> GIF/MP4/debug PNGs
 The current code base proves the robot-learning data and evaluation loop against the live
 Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, live-monitor scaffolding,
 running normalization, reward diagnostics, periodic/best checkpoints, reward curriculum, and
-bucket-rarity prioritized replay. The latest SAC diagnostic runs still have `success_rate=0`:
-PR6.8 made reach/grip/lift/goal events observable and replayable, but the learned policy still
-does not reliably convert near-cube closing into cube lift. The next SAC-focused implementation
-PR is PR6.9: progress-gated curriculum, dense lift progress reward, lift-aware best-checkpoint
-selection, and action/grip diagnostics. The remaining research-training stack is PPO, pure
+bucket-rarity prioritized replay, and eval-subskill dual-gated curriculum advancement. The
+latest SAC diagnostic runs still have `success_rate=0`: PR6.8 made reach/grip/lift/goal
+events observable and replayable, PR6.9 added dense lift progress diagnostics, and PR6.10
+replaced bucket-ratio-only curriculum advancement with current-policy eval + minimum-exposure
+dual gates. The next action is a serious SAC v6 run using `--curriculum-gating eval_dual_gate`.
+The remaining research-training stack is PPO, pure
 GRPO, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
 
 Runtime requirement for live Isaac commands:
@@ -95,6 +96,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.7 - Training diagnostics + checkpoint controls | Done | Per-step visual reward trace in `record_gif_continuous` metrics, SAC/TD3 reward component logging under `reward/train/*` and `reward/eval_rollout/*`, periodic/best checkpoint manager, `--disable-reward-curriculum`, SAC `--alpha-min` floor | Targeted PR6.7 slice -> `70 passed`; full pytest -> `283 passed, 1 skipped` | Use this before the next serious SAC/TD3 run so failed runs leave reward traces, stock reward breakdown, intermediate checkpoints, and best-by-eval checkpoints for debugging. |
 | PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
 | PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
+| PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -1050,7 +1052,7 @@ Roadmap layers:
 |---|---|---|
 | Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
 | Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
-| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.9 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is the SAC v5 gated-lift run before deciding whether SAC is strong enough for PR8-full expert demos. |
+| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.10 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is the SAC v6 dual-gated diagnostic run. |
 
 Current priority path:
 
@@ -1061,7 +1063,8 @@ PR3 done
   -> PR6.5/PR6.6/PR6.7 Training instrumentation, normalization, diagnostics
   -> PR6.8 Curriculum reward + bucket-rarity replay
   -> PR6.9 Progress-gated lift curriculum + lift-aware diagnostics
-  -> SAC v5 gated-lift diagnostic run
+  -> PR6.10 Eval-subskill dual-gated curriculum
+  -> SAC v6 dual-gated diagnostic run
   -> PR7 TD3 train
   -> PR11a SAC/TD3 checkpoint eval
   -> PR12a SAC/TD3 checkpoint visual rollout
@@ -3018,6 +3021,502 @@ Implementation status on 2026-04-29:
 
 ```bash
 git commit -m "feat(train): add progress-gated lift curriculum diagnostics"
+```
+
+---
+
+### PR 6.10 — Eval-Subskill Dual-Gated Curriculum
+
+**Status**
+
+Done. Implemented for SAC and TD3 train loops, CLI parsers, progress/W&B/JSONL logging,
+and checkpoint-compatible loop config serialization.
+
+Verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_training_logger_and_scheduler.py
+# 56 passed
+
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+# 318 passed, 1 skipped
+```
+
+**Goal / Why**
+
+PR6.9's `bucket_rates` curriculum gate is useful but still indirect. It answers:
+
+```text
+Did recent replay data contain enough reach/grip/lift-looking transitions?
+```
+
+That is not the same as:
+
+```text
+Can the current policy reliably do the subskill now?
+```
+
+PR6.10 upgrades curriculum advancement to a dual gate:
+
+```text
+A. current-policy deterministic eval gate
+B. minimum training-exposure gate
+```
+
+The stage advances only when both are true. This keeps the no-demo, no-BC, no-expert-action
+constraint, but makes curriculum stages mean actual policy competence instead of a few lucky
+events in replay.
+
+**Design Decision**
+
+Keep PR6.9 `bucket_rates` as a fallback mode for experiments, but do not use it as the main
+recommendation for serious SAC runs. The preferred mode after PR6.10 is:
+
+```text
+--curriculum-gating eval_dual_gate
+```
+
+This mode requires same-env deterministic eval lanes:
+
+```text
+--same-env-eval-lanes N, where N > 0
+```
+
+If `--curriculum-gating eval_dual_gate` is requested with `same_env_eval_lanes=0`, training
+must fail readably before the run starts.
+
+**Inputs**
+
+- PR6.9 same-env eval lift-aware metrics:
+  - `eval_rollout/max_cube_lift_m`
+  - `eval_rollout/min_ee_to_cube_m`
+  - `eval_rollout/min_cube_to_target_m`
+  - `eval_rollout/gripper_close_near_cube_rate`
+- PR6.9 action diagnostics:
+  - `action/eval_rollout/gripper_close_rate`
+  - `action/eval_rollout/gripper_close_near_cube_rate`
+- PR6.8/PR6.9 replay labels and diagnostics:
+  - progress buckets: `reach`, `grip`, `lift`, `goal`
+  - diagnostic buckets: `grip_attempt`, `grip_effect`
+- 40D proprio contract:
+  - `proprio[:, 21:24]`: cube position in robot base frame
+  - `proprio[:, 27:30]`: `ee_to_cube`
+  - `proprio[:, 30:33]`: `cube_to_target`
+  - `action[:, 6]`: gripper command; negative closes
+
+**CLI Contract**
+
+Extend SAC and TD3 train scripts:
+
+```text
+--curriculum-gating none|bucket_rates|eval_dual_gate
+--curriculum-gate-eval-window-episodes INT
+--curriculum-gate-min-eval-episodes INT
+--curriculum-gate-eval-thresholds reach,grip_attempt,grip_effect,lift_2cm
+--curriculum-gate-min-train-exposures reach,grip_attempt,grip_effect,lift_progress
+--curriculum-gate-lift-success-height-m FLOAT
+--curriculum-gate-min-stage-env-steps INT
+```
+
+Recommended defaults:
+
+```text
+--curriculum-gate-eval-window-episodes 20
+--curriculum-gate-min-eval-episodes 20
+--curriculum-gate-eval-thresholds 0.40,0.30,0.05,0.10
+--curriculum-gate-min-train-exposures 400,100,20,20
+--curriculum-gate-lift-success-height-m 0.02
+--curriculum-gate-min-stage-env-steps 10000
+```
+
+Interpretation:
+
+```text
+reach threshold       = 40% of recent eval episodes reach cube
+grip_attempt threshold= 30% of recent eval episodes close near cube
+grip_effect threshold = 5% of recent eval episodes close near cube and move/lift cube
+lift_2cm threshold    = 10% of recent eval episodes lift cube at least 2cm
+```
+
+`--curriculum-gate-min-stage-env-steps` prevents a stage from advancing immediately after
+one lucky clean eval episode. It counts active train transitions collected since the current
+stage began, not settle steps and not same-env eval lanes.
+
+**Current-Policy Eval Gate**
+
+Add a completed-episode tracker for deterministic same-env eval lanes. It should track
+per-episode subskill booleans, not only scalar means.
+
+For each completed eval episode:
+
+```text
+reach_episode =
+  min(norm(ee_to_cube)) <= reach_threshold_m
+
+grip_attempt_episode =
+  any(norm(ee_to_cube) <= grip_threshold_m
+      and action[:, 6] < close_command_threshold)
+
+grip_effect_episode =
+  any(grip_attempt at step t
+      and (
+        cube_z[t+1] - cube_reset_z > lift_progress_deadband_m
+        or norm(cube_pos[t+1] - cube_pos[t]) > cube_motion_effect_threshold_m
+      ))
+
+lift_2cm_episode =
+  max(cube_z - cube_reset_z) >= curriculum_gate_lift_success_height_m
+```
+
+Default thresholds:
+
+```text
+reach_threshold_m = 0.08
+grip_threshold_m = 0.05
+close_command_threshold = -0.25
+lift_progress_deadband_m = 0.002
+cube_motion_effect_threshold_m = 0.005
+curriculum_gate_lift_success_height_m = 0.02
+```
+
+Maintain a rolling window over completed deterministic eval episodes:
+
+```text
+eval_reach_episode_rate =
+  mean(reach_episode over window)
+
+eval_grip_attempt_episode_rate =
+  mean(grip_attempt_episode over window)
+
+eval_grip_effect_episode_rate =
+  mean(grip_effect_episode over window)
+
+eval_lift_2cm_episode_rate =
+  mean(lift_2cm_episode over window)
+```
+
+Do not advance stages until the eval window has at least
+`curriculum_gate_min_eval_episodes` completed episodes.
+
+**Minimum Training-Exposure Gate**
+
+The eval gate answers whether the current deterministic policy can perform the subskill.
+The exposure gate ensures the replay buffer has enough recent/current-stage data to train
+on that behavior.
+
+Track stage-local counts for active train-lane transitions only:
+
+```text
+stage_exposure/reach_count
+stage_exposure/grip_attempt_count
+stage_exposure/grip_effect_count
+stage_exposure/lift_progress_count
+stage_exposure/active_train_transition_count
+```
+
+Reset these counts each time the curriculum advances to the next stage.
+
+Definitions:
+
+```text
+reach_count:
+  number of active train transitions with reach=True
+
+grip_attempt_count:
+  number of active train transitions with grip_attempt=True
+
+grip_effect_count:
+  number of active train transitions with grip_effect=True
+
+lift_progress_count:
+  number of active train transitions where
+  next_cube_z - cube_reset_z >= curriculum_gate_lift_success_height_m
+```
+
+The exposure gate uses raw counts rather than percentages. This makes it easy to reason
+about minimum sample availability.
+
+Recommended default:
+
+```text
+--curriculum-gate-min-train-exposures 400,100,20,20
+```
+
+Meaning:
+
+```text
+reach exposure       >= 400 train transitions
+grip_attempt exposure>= 100 train transitions
+grip_effect exposure >= 20 train transitions
+lift_progress exposure >= 20 train transitions
+```
+
+**Stage Advancement Rule**
+
+Use four curriculum stages from PR6.9:
+
+```text
+0 reach
+1 grip_pre_lift
+2 lift
+3 stock_like
+```
+
+Stage 0 -> 1:
+
+```text
+eval_reach_episode_rate >= 0.40
+and stage_exposure/reach_count >= 400
+and stage_env_steps >= curriculum_gate_min_stage_env_steps
+```
+
+Stage 1 -> 2:
+
+```text
+eval_grip_attempt_episode_rate >= 0.30
+and eval_grip_effect_episode_rate >= 0.05
+and stage_exposure/grip_attempt_count >= 100
+and stage_exposure/grip_effect_count >= 20
+and stage_env_steps >= curriculum_gate_min_stage_env_steps
+```
+
+Stage 2 -> 3:
+
+```text
+eval_lift_2cm_episode_rate >= 0.10
+and stage_exposure/lift_progress_count >= 20
+and stage_env_steps >= curriculum_gate_min_stage_env_steps
+```
+
+Stage 3:
+
+```text
+hold stock_like; no further advancement
+```
+
+Important behavior:
+- If eval gate passes but exposure gate fails, hold the stage.
+- If exposure gate passes but eval gate fails, hold the stage.
+- If eval window is not yet full enough, hold the stage.
+- If there are no same-env eval lanes, fail before training starts.
+
+**Logging Contract**
+
+Log scalar metrics to W&B/TensorBoard/JSONL/progress:
+
+```text
+curriculum/gate/mode_eval_dual_gate
+curriculum/gate/eval_window_size
+curriculum/gate/eval_reach_episode_rate
+curriculum/gate/eval_grip_attempt_episode_rate
+curriculum/gate/eval_grip_effect_episode_rate
+curriculum/gate/eval_lift_2cm_episode_rate
+
+curriculum/gate/exposure_reach_count
+curriculum/gate/exposure_grip_attempt_count
+curriculum/gate/exposure_grip_effect_count
+curriculum/gate/exposure_lift_progress_count
+curriculum/gate/stage_env_steps
+
+curriculum/gate/eval_gate_passed
+curriculum/gate/exposure_gate_passed
+curriculum/gate/min_stage_steps_passed
+curriculum/gate/held_stage
+curriculum/gate/advanced_stage
+```
+
+Use numeric flags (`0.0` or `1.0`) for logger backends.
+
+For human-readable progress/file logs, include a note when a stage advances:
+
+```text
+sac train | curriculum_advance | env_step=... | from=reach to=grip_pre_lift reason=eval_dual_gate
+```
+
+For JSONL, optionally include a non-scalar diagnostic event:
+
+```json
+{
+  "type": "curriculum_gate",
+  "event": "held",
+  "stage": "grip_pre_lift",
+  "blocked_by": ["eval_grip_effect_episode_rate", "stage_exposure/grip_effect_count"]
+}
+```
+
+If the logger stack only supports scalars, keep the structured event in `progress_log` and
+the final train JSON summary.
+
+**Best-Checkpoint Selection**
+
+Keep PR6.9:
+
+```text
+--save-best-by composite:success_lift_return
+```
+
+Do not use `eval_rollout/mean_return` alone while curriculum reward is shaped. The best
+checkpoint should prefer actual success, then cube lift, then return.
+
+**Recommended SAC Run After PR6.10**
+
+```bash
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.10 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-gating eval_dual_gate \
+  --curriculum-gate-eval-window-episodes 20 \
+  --curriculum-gate-min-eval-episodes 20 \
+  --curriculum-gate-eval-thresholds 0.40,0.30,0.05,0.10 \
+  --curriculum-gate-min-train-exposures 400,100,20,20 \
+  --curriculum-gate-lift-success-height-m 0.02 \
+  --curriculum-gate-min-stage-env-steps 10000 \
+  --lift-progress-deadband-m 0.002 \
+  --lift-progress-height-m 0.04 \
+  --grip-proxy-scale 1.0 \
+  --grip-proxy-sigma-m 0.05 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.80,0.10,0.10 \
+  --protected-replay-fraction 0.02 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by composite:success_lift_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v6_eval_dual_gate \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v6_eval_dual_gate_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v6_eval_dual_gate_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v6_eval_dual_gate \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v6_eval_dual_gate \
+  --wandb-mode online
+```
+
+**What To Watch In W&B**
+
+The key question is whether the stage is held for a good reason:
+
+```text
+curriculum/gate/eval_reach_episode_rate
+curriculum/gate/eval_grip_attempt_episode_rate
+curriculum/gate/eval_grip_effect_episode_rate
+curriculum/gate/eval_lift_2cm_episode_rate
+
+curriculum/gate/exposure_reach_count
+curriculum/gate/exposure_grip_attempt_count
+curriculum/gate/exposure_grip_effect_count
+curriculum/gate/exposure_lift_progress_count
+
+curriculum/gate/eval_gate_passed
+curriculum/gate/exposure_gate_passed
+curriculum/gate/held_stage
+curriculum/stage_index
+```
+
+Debug interpretation:
+
+| Observation | Meaning |
+|---|---|
+| eval gate fails, exposure gate passes | Replay has examples, but current policy cannot reproduce the subskill. Keep stage. |
+| eval gate passes, exposure gate fails | Policy got lucky or has too little replay support. Keep stage until enough samples exist. |
+| reach eval rate high, grip attempt low | Policy reaches but does not send close commands near cube. |
+| grip attempt high, grip effect low | Policy closes near cube but does not move/lift cube. |
+| lift 2cm rate rises, success still zero | Lift behavior exists; goal stage can start once exposure also passes. |
+
+**Tests**
+
+Add focused coverage:
+
+- `tests/test_reward_curriculum.py`
+  - parse and validate `eval_dual_gate` config,
+  - reject bad eval threshold counts and exposure counts,
+  - verify stage 0 advances only when eval reach rate, reach exposure, and min stage steps all pass,
+  - verify stage 1 requires both grip attempt and grip effect eval/exposure gates,
+  - verify stage-local exposure counters reset after stage advancement.
+- `tests/test_rollout_metrics.py` or `tests/test_training_logger_and_scheduler.py`
+  - verify completed eval episodes compute `reach_episode`, `grip_attempt_episode`, `grip_effect_episode`, and `lift_2cm_episode`,
+  - verify partial episodes do not count,
+  - verify settle/cooldown steps do not count toward eval gate.
+- SAC/TD3 loop tests:
+  - `eval_dual_gate` fails readably when `same_env_eval_lanes=0`,
+  - stage does not advance from replay exposure alone,
+  - stage does not advance from eval success alone,
+  - stage advances when both gates pass,
+  - logs all `curriculum/gate/*` scalars to JSONL/W&B logger and progress.
+- Parser tests:
+  - SAC and TD3 accept all new CLI flags,
+  - invalid threshold/exposure values raise `ValueError`.
+
+Targeted verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py
+```
+
+Full verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Acceptance Criteria**
+
+PR6.10 is complete when:
+- `eval_dual_gate` is available for SAC and TD3 train scripts,
+- `bucket_rates` remains available but is no longer the recommended main gate,
+- stage advancement requires both current-policy eval performance and minimum train exposure,
+- same-env eval lanes produce subskill episode rates,
+- active train lanes produce stage-local exposure counts,
+- stage-local exposure counters reset after every advancement,
+- W&B/JSONL/progress clearly show why a stage is held or advanced,
+- training fails early if `eval_dual_gate` is requested without same-env eval lanes,
+- targeted tests and full pytest pass in the `isaac_arm` environment.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add eval-subskill dual curriculum gates"
 ```
 
 ---

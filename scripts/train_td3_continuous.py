@@ -34,9 +34,12 @@ from train.lr_scheduler import (
 )
 from train.progress import TrainProgressReporter
 from train.reward_curriculum import (
+    CURRICULUM_GATING_EVAL_DUAL_GATE,
     SUPPORTED_CURRICULUM_GATING,
     SUPPORTED_REWARD_CURRICULA,
+    parse_eval_gate_thresholds,
     parse_gate_thresholds,
+    parse_min_train_exposures,
     parse_stage_fracs,
 )
 from train.reward_probe import probe_reward_signal
@@ -111,6 +114,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--curriculum-gating", dest="curriculum_gating", choices=SUPPORTED_CURRICULUM_GATING, default="none")
     parser.add_argument("--curriculum-gate-window-transitions", dest="curriculum_gate_window_transitions", type=int, default=20_000)
     parser.add_argument("--curriculum-gate-thresholds", dest="curriculum_gate_thresholds", default="0.002,0.0005,0.0001")
+    parser.add_argument("--curriculum-gate-eval-window-episodes", dest="curriculum_gate_eval_window_episodes", type=int, default=20)
+    parser.add_argument("--curriculum-gate-min-eval-episodes", dest="curriculum_gate_min_eval_episodes", type=int, default=20)
+    parser.add_argument(
+        "--curriculum-gate-eval-thresholds",
+        dest="curriculum_gate_eval_thresholds",
+        default="0.40,0.30,0.05,0.10",
+    )
+    parser.add_argument(
+        "--curriculum-gate-min-train-exposures",
+        dest="curriculum_gate_min_train_exposures",
+        default="400,100,20,20",
+    )
+    parser.add_argument("--curriculum-gate-lift-success-height-m", dest="curriculum_gate_lift_success_height_m", type=float, default=0.02)
+    parser.add_argument("--curriculum-gate-min-stage-env-steps", dest="curriculum_gate_min_stage_env_steps", type=int, default=10_000)
     parser.add_argument("--grip-proxy-scale", dest="grip_proxy_scale", type=float, default=1.0)
     parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
     parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
@@ -189,6 +206,12 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         curriculum_gating=args.curriculum_gating,
         curriculum_gate_window_transitions=args.curriculum_gate_window_transitions,
         curriculum_gate_thresholds=parse_gate_thresholds(args.curriculum_gate_thresholds),
+        curriculum_gate_eval_window_episodes=args.curriculum_gate_eval_window_episodes,
+        curriculum_gate_min_eval_episodes=args.curriculum_gate_min_eval_episodes,
+        curriculum_gate_eval_thresholds=parse_eval_gate_thresholds(args.curriculum_gate_eval_thresholds),
+        curriculum_gate_min_train_exposures=parse_min_train_exposures(args.curriculum_gate_min_train_exposures),
+        curriculum_gate_lift_success_height_m=args.curriculum_gate_lift_success_height_m,
+        curriculum_gate_min_stage_env_steps=args.curriculum_gate_min_stage_env_steps,
         grip_proxy_scale=args.grip_proxy_scale,
         grip_proxy_sigma_m=args.grip_proxy_sigma_m,
         lift_progress_deadband_m=args.lift_progress_deadband_m,
@@ -322,6 +345,8 @@ def _validate_same_env_eval_args(args: argparse.Namespace) -> None:
         raise ValueError("--same-env-eval-lanes must be non-negative")
     if args.same_env_eval_lanes >= args.num_envs:
         raise ValueError("--same-env-eval-lanes must be smaller than --num-envs")
+    if args.curriculum_gating == CURRICULUM_GATING_EVAL_DUAL_GATE and args.same_env_eval_lanes <= 0:
+        raise ValueError("--curriculum-gating eval_dual_gate requires --same-env-eval-lanes > 0")
     if args.same_env_eval_start_env_steps < 0:
         raise ValueError("--same-env-eval-start-env-steps must be non-negative")
     if args.rollout_metrics_window <= 0:
@@ -344,10 +369,22 @@ def _validate_checkpoint_args(args: argparse.Namespace) -> None:
 def _validate_pr68_args(args: argparse.Namespace) -> None:
     parse_stage_fracs(args.curriculum_stage_fracs)
     parse_gate_thresholds(args.curriculum_gate_thresholds)
+    parse_eval_gate_thresholds(args.curriculum_gate_eval_thresholds)
+    parse_min_train_exposures(args.curriculum_gate_min_train_exposures)
     _parse_priority_score_weights(args.priority_score_weights)
     _parse_protected_score_weights(args.protected_score_weights)
     if args.curriculum_gate_window_transitions <= 0:
         raise ValueError("--curriculum-gate-window-transitions must be positive")
+    if args.curriculum_gate_eval_window_episodes <= 0:
+        raise ValueError("--curriculum-gate-eval-window-episodes must be positive")
+    if args.curriculum_gate_min_eval_episodes <= 0:
+        raise ValueError("--curriculum-gate-min-eval-episodes must be positive")
+    if args.curriculum_gate_min_eval_episodes > args.curriculum_gate_eval_window_episodes:
+        raise ValueError("--curriculum-gate-min-eval-episodes must be <= --curriculum-gate-eval-window-episodes")
+    if args.curriculum_gate_lift_success_height_m <= 0.0:
+        raise ValueError("--curriculum-gate-lift-success-height-m must be positive")
+    if args.curriculum_gate_min_stage_env_steps < 0:
+        raise ValueError("--curriculum-gate-min-stage-env-steps must be non-negative")
     if args.grip_proxy_scale < 0.0:
         raise ValueError("--grip-proxy-scale must be non-negative")
     if args.grip_proxy_sigma_m <= 0.0:
