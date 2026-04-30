@@ -101,7 +101,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
 | PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
 | PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
-| PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `44 passed`; full pytest in `isaac_arm` -> `331 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage. |
+| PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt`, configurable consecutive eval-gate confirmation via `--curriculum-gate-consecutive-eval-passes` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `44 passed`; consecutive-gate slice -> `68 passed`; full pytest in `isaac_arm` -> `333 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage without advancing on one lucky eval window. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -3143,6 +3143,7 @@ Extend SAC and TD3 train scripts:
 --curriculum-gate-min-train-exposures reach,grip_attempt,grip_effect,lift_progress
 --curriculum-gate-lift-success-height-m FLOAT
 --curriculum-gate-min-stage-env-steps INT
+--curriculum-gate-consecutive-eval-passes INT
 ```
 
 Recommended defaults:
@@ -3154,6 +3155,7 @@ Recommended defaults:
 --curriculum-gate-min-train-exposures 400,100,20,20
 --curriculum-gate-lift-success-height-m 0.02
 --curriculum-gate-min-stage-env-steps 10000
+--curriculum-gate-consecutive-eval-passes 1
 ```
 
 Interpretation:
@@ -3165,9 +3167,11 @@ grip_effect threshold = 5% of recent eval episodes close near cube and move/lift
 lift_2cm threshold    = 10% of recent eval episodes lift cube at least 2cm
 ```
 
-`--curriculum-gate-min-stage-env-steps` prevents a stage from advancing immediately after
-one lucky clean eval episode. It counts active train transitions collected since the current
-stage began, not settle steps and not same-env eval lanes.
+`--curriculum-gate-min-stage-env-steps` counts active train transitions collected since the
+current stage began, not settle steps and not same-env eval lanes.
+`--curriculum-gate-consecutive-eval-passes` prevents a one-window spike from advancing the
+curriculum. It counts consecutive completed eval-window updates whose current-policy eval
+gate passes. Default `1` preserves PR6.10 behavior; serious noisy runs should use `2`.
 
 **Current-Policy Eval Gate**
 
@@ -3293,6 +3297,7 @@ Stage 0 -> 1:
 
 ```text
 eval_reach_episode_rate >= 0.40
+for curriculum_gate_consecutive_eval_passes consecutive eval-window updates
 and stage_exposure/reach_count >= 400
 and stage_env_steps >= curriculum_gate_min_stage_env_steps
 ```
@@ -3302,6 +3307,7 @@ Stage 1 -> 2:
 ```text
 eval_grip_attempt_episode_rate >= 0.30
 and eval_grip_effect_episode_rate >= 0.05
+for curriculum_gate_consecutive_eval_passes consecutive eval-window updates
 and stage_exposure/grip_attempt_count >= 100
 and stage_exposure/grip_effect_count >= 20
 and stage_env_steps >= curriculum_gate_min_stage_env_steps
@@ -3311,6 +3317,7 @@ Stage 2 -> 3:
 
 ```text
 eval_lift_2cm_episode_rate >= 0.10
+for curriculum_gate_consecutive_eval_passes consecutive eval-window updates
 and stage_exposure/lift_progress_count >= 20
 and stage_env_steps >= curriculum_gate_min_stage_env_steps
 ```
@@ -3324,6 +3331,8 @@ hold stock_like; no further advancement
 Important behavior:
 - If eval gate passes but exposure gate fails, hold the stage.
 - If exposure gate passes but eval gate fails, hold the stage.
+- If eval gate passes once but the consecutive-pass requirement is not yet met, hold the stage.
+- If a new completed eval window fails, reset the consecutive eval-pass counter to zero.
 - If eval window is not yet full enough, hold the stage.
 - If there are no same-env eval lanes, fail before training starts.
 
@@ -3346,6 +3355,9 @@ curriculum/gate/exposure_lift_progress_count
 curriculum/gate/stage_env_steps
 
 curriculum/gate/eval_gate_passed
+curriculum/gate/consecutive_eval_passes
+curriculum/gate/consecutive_eval_required
+curriculum/gate/consecutive_eval_gate_passed
 curriculum/gate/exposure_gate_passed
 curriculum/gate/min_stage_steps_passed
 curriculum/gate/held_stage
@@ -3425,6 +3437,7 @@ python -m scripts.train_sac_continuous \
   --curriculum-gate-min-train-exposures 400,100,20,20 \
   --curriculum-gate-lift-success-height-m 0.02 \
   --curriculum-gate-min-stage-env-steps 10000 \
+  --curriculum-gate-consecutive-eval-passes 2 \
   --lift-progress-deadband-m 0.002 \
   --lift-progress-height-m 0.04 \
   --grip-proxy-scale 1.0 \
@@ -3470,6 +3483,8 @@ curriculum/gate/exposure_grip_effect_count
 curriculum/gate/exposure_lift_progress_count
 
 curriculum/gate/eval_gate_passed
+curriculum/gate/consecutive_eval_passes
+curriculum/gate/consecutive_eval_gate_passed
 curriculum/gate/exposure_gate_passed
 curriculum/gate/held_stage
 curriculum/stage_index
@@ -3481,6 +3496,7 @@ Debug interpretation:
 |---|---|
 | eval gate fails, exposure gate passes | Replay has examples, but current policy cannot reproduce the subskill. Keep stage. |
 | eval gate passes, exposure gate fails | Policy got lucky or has too little replay support. Keep stage until enough samples exist. |
+| eval gate passes once, consecutive gate fails | One eval window cleared the threshold, but stability is not proven. Keep stage until the configured consecutive-pass count is reached. |
 | reach eval rate high, grip attempt low | Policy reaches but does not send close commands near cube. |
 | grip attempt high, grip effect low | Policy closes near cube but does not move/lift cube. |
 | lift 2cm rate rises, success still zero | Lift behavior exists; goal stage can start once exposure also passes. |
@@ -3493,6 +3509,8 @@ Add focused coverage:
   - parse and validate `eval_dual_gate` config,
   - reject bad eval threshold counts and exposure counts,
   - verify stage 0 advances only when eval reach rate, reach exposure, and min stage steps all pass,
+  - verify `--curriculum-gate-consecutive-eval-passes 2` holds after one passing eval window,
+  - verify the consecutive eval-pass counter resets after a failed eval window,
   - verify stage 1 requires both grip attempt and grip effect eval/exposure gates,
   - verify stage-local exposure counters reset after stage advancement.
 - `tests/test_rollout_metrics.py` or `tests/test_training_logger_and_scheduler.py`
@@ -3507,6 +3525,7 @@ Add focused coverage:
   - logs all `curriculum/gate/*` scalars to JSONL/W&B logger and progress.
 - Parser tests:
   - SAC and TD3 accept all new CLI flags,
+  - SAC and TD3 parse `--curriculum-gate-consecutive-eval-passes`,
   - invalid threshold/exposure values raise `ValueError`.
 
 Targeted verification command:
@@ -3921,6 +3940,7 @@ python -m scripts.train_sac_continuous \
   --curriculum-gate-min-train-exposures 400,100,20,20 \
   --curriculum-gate-lift-success-height-m 0.02 \
   --curriculum-gate-min-stage-env-steps 10000 \
+  --curriculum-gate-consecutive-eval-passes 2 \
   --reach-progress-stage-scales 0.5,0.1,0.0,0.0 \
   --reach-progress-clip-m 0.01 \
   --vertical-alignment-penalty-scale 0.1 \

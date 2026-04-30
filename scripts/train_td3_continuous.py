@@ -130,6 +130,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--curriculum-gate-lift-success-height-m", dest="curriculum_gate_lift_success_height_m", type=float, default=0.02)
     parser.add_argument("--curriculum-gate-min-stage-env-steps", dest="curriculum_gate_min_stage_env_steps", type=int, default=10_000)
+    parser.add_argument("--curriculum-gate-consecutive-eval-passes", dest="curriculum_gate_consecutive_eval_passes", type=int, default=1)
     parser.add_argument("--grip-proxy-scale", dest="grip_proxy_scale", type=float, default=1.0)
     parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
     parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
@@ -227,6 +228,7 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         curriculum_gate_min_train_exposures=parse_min_train_exposures(args.curriculum_gate_min_train_exposures),
         curriculum_gate_lift_success_height_m=args.curriculum_gate_lift_success_height_m,
         curriculum_gate_min_stage_env_steps=args.curriculum_gate_min_stage_env_steps,
+        curriculum_gate_consecutive_eval_passes=args.curriculum_gate_consecutive_eval_passes,
         grip_proxy_scale=args.grip_proxy_scale,
         grip_proxy_sigma_m=args.grip_proxy_sigma_m,
         lift_progress_deadband_m=args.lift_progress_deadband_m,
@@ -413,6 +415,8 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--curriculum-gate-lift-success-height-m must be positive")
     if args.curriculum_gate_min_stage_env_steps < 0:
         raise ValueError("--curriculum-gate-min-stage-env-steps must be non-negative")
+    if args.curriculum_gate_consecutive_eval_passes <= 0:
+        raise ValueError("--curriculum-gate-consecutive-eval-passes must be positive")
     if args.grip_proxy_scale < 0.0:
         raise ValueError("--grip-proxy-scale must be non-negative")
     if args.grip_proxy_sigma_m <= 0.0:

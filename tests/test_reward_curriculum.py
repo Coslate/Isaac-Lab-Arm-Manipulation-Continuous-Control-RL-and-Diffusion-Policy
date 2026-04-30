@@ -66,6 +66,8 @@ def test_parse_eval_dual_gate_controls_validate_lengths_and_ranges() -> None:
         parse_eval_gate_thresholds("0.1,1.2,0.3,0.4")
     with pytest.raises(ValueError, match="non-negative"):
         parse_min_train_exposures("1,2,-3,4")
+    with pytest.raises(ValueError, match="consecutive eval passes"):
+        CurriculumGateConfig(mode=CURRICULUM_GATING_EVAL_DUAL_GATE, consecutive_eval_passes=0)
 
 
 def test_parse_pr611_stage_controls_validate_values() -> None:
@@ -414,6 +416,67 @@ def test_eval_dual_gate_tracker_requires_eval_exposure_and_min_stage_steps() -> 
     assert logs["curriculum/gate/eval_grip_effect_episode_rate"] == pytest.approx(0.0)
     assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(0.0)
     assert logs["curriculum/gate/exposure_gate_passed"] == pytest.approx(1.0)
+
+
+def test_eval_dual_gate_tracker_requires_consecutive_eval_passes() -> None:
+    tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=CURRICULUM_GATING_EVAL_DUAL_GATE,
+            eval_window_episodes=2,
+            min_eval_episodes=2,
+            eval_thresholds=(0.5, 0.5, 0.5, 0.5),
+            min_train_exposures=(2, 0, 0, 0),
+            min_stage_env_steps=0,
+            consecutive_eval_passes=2,
+        )
+    )
+    reach = np.zeros((2, len(PROGRESS_BUCKETS)), dtype=bool)
+    reach[:, BUCKET_INDEX["reach"]] = True
+    eval_reach = np.zeros((2, 4), dtype=bool)
+    eval_reach[:, EVAL_GATE_LABEL_INDEX["reach"]] = True
+
+    logs = tracker.update(reach, eval_episode_labels=eval_reach, env_steps=0)
+
+    assert tracker.stage_index == 0
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/consecutive_eval_passes"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/consecutive_eval_required"] == pytest.approx(2.0)
+    assert logs["curriculum/gate/consecutive_eval_gate_passed"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/advanced_stage"] == pytest.approx(0.0)
+
+    logs = tracker.update(eval_episode_labels=eval_reach, env_steps=1)
+
+    assert tracker.stage_index == 1
+    assert logs["curriculum/gate/advanced_stage"] == pytest.approx(1.0)
+
+
+def test_eval_dual_gate_consecutive_pass_count_resets_on_failed_eval_window() -> None:
+    tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=CURRICULUM_GATING_EVAL_DUAL_GATE,
+            eval_window_episodes=2,
+            min_eval_episodes=2,
+            eval_thresholds=(0.5, 0.5, 0.5, 0.5),
+            min_train_exposures=(2, 0, 0, 0),
+            min_stage_env_steps=0,
+            consecutive_eval_passes=2,
+        )
+    )
+    reach = np.zeros((2, len(PROGRESS_BUCKETS)), dtype=bool)
+    reach[:, BUCKET_INDEX["reach"]] = True
+    eval_reach = np.zeros((2, 4), dtype=bool)
+    eval_reach[:, EVAL_GATE_LABEL_INDEX["reach"]] = True
+    eval_fail = np.zeros((2, 4), dtype=bool)
+
+    logs = tracker.update(reach, eval_episode_labels=eval_reach, env_steps=0)
+    assert logs["curriculum/gate/consecutive_eval_passes"] == pytest.approx(1.0)
+
+    logs = tracker.update(eval_episode_labels=eval_fail, env_steps=1)
+
+    assert tracker.stage_index == 0
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/consecutive_eval_passes"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/consecutive_eval_gate_passed"] == pytest.approx(0.0)
 
 
 def test_lane_eval_subskill_tracker_emits_completed_episode_labels() -> None:

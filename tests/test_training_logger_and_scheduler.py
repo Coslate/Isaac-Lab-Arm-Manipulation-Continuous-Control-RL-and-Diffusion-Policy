@@ -710,6 +710,8 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.02",
             "--curriculum-gate-min-stage-env-steps",
             "10000",
+            "--curriculum-gate-consecutive-eval-passes",
+            "2",
             "--grip-proxy-scale",
             "1.25",
             "--lift-progress-deadband-m",
@@ -774,6 +776,8 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.4,0.3,0.05,0.1",
             "--curriculum-gate-min-train-exposures",
             "400,100,20,20",
+            "--curriculum-gate-consecutive-eval-passes",
+            "3",
             "--lift-progress-deadband-m",
             "0.003",
             "--lift-progress-height-m",
@@ -828,6 +832,7 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.curriculum_gate_min_train_exposures == "400,100,20,20"
     assert sac_args.curriculum_gate_lift_success_height_m == pytest.approx(0.02)
     assert sac_args.curriculum_gate_min_stage_env_steps == 10000
+    assert sac_args.curriculum_gate_consecutive_eval_passes == 2
     assert sac_args.grip_proxy_scale == pytest.approx(1.25)
     assert sac_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert sac_args.lift_progress_height_m == pytest.approx(0.05)
@@ -859,6 +864,7 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.curriculum_gate_thresholds == "0.1,0.2,0.3"
     assert td3_args.curriculum_gate_eval_thresholds == "0.4,0.3,0.05,0.1"
     assert td3_args.curriculum_gate_min_train_exposures == "400,100,20,20"
+    assert td3_args.curriculum_gate_consecutive_eval_passes == 3
     assert td3_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert td3_args.lift_progress_height_m == pytest.approx(0.05)
     assert td3_args.reach_progress_stage_scales == "0.5,0.1,0,0"
@@ -1137,6 +1143,9 @@ def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
     assert any("curriculum/gate/exposure_grip_attempt_count" in logs for logs in report.log_history)
     assert any("curriculum/gate/exposure_grip_effect_count" in logs for logs in report.log_history)
     assert any("curriculum/gate/exposure_lift_progress_count" in logs for logs in report.log_history)
+    assert any("curriculum/gate/consecutive_eval_passes" in logs for logs in report.log_history)
+    assert any("curriculum/gate/consecutive_eval_required" in logs for logs in report.log_history)
+    assert any("curriculum/gate/consecutive_eval_gate_passed" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_gate_passed" in metrics for _step, metrics in logger.scalar_calls)
     assert any("curriculum/gate/advanced_stage" in metrics for _step, metrics, _force in progress.calls)
     assert any(kind == "curriculum_advance" for _step, kind, _fields in progress.notes)

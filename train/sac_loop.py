@@ -88,6 +88,7 @@ class SACTrainLoopConfig:
     curriculum_gate_min_train_exposures: tuple[int, int, int, int] = (400, 100, 20, 20)
     curriculum_gate_lift_success_height_m: float = 0.02
     curriculum_gate_min_stage_env_steps: int = 10_000
+    curriculum_gate_consecutive_eval_passes: int = 1
     grip_proxy_scale: float = 1.0
     grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
@@ -302,6 +303,7 @@ def run_sac_train_loop(
             min_train_exposures=cfg.curriculum_gate_min_train_exposures,
             lift_success_height_m=cfg.curriculum_gate_lift_success_height_m,
             min_stage_env_steps=cfg.curriculum_gate_min_stage_env_steps,
+            consecutive_eval_passes=cfg.curriculum_gate_consecutive_eval_passes,
         )
     )
     progress_bucket_config = ProgressBucketConfig()

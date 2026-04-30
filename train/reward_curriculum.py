@@ -198,6 +198,7 @@ class CurriculumGateConfig:
     min_train_exposures: tuple[int, int, int, int] = (400, 100, 20, 20)
     lift_success_height_m: float = 0.02
     min_stage_env_steps: int = 10_000
+    consecutive_eval_passes: int = 1
 
     def __post_init__(self) -> None:
         if self.mode not in SUPPORTED_CURRICULUM_GATING:
@@ -226,6 +227,8 @@ class CurriculumGateConfig:
             raise ValueError("curriculum gate lift success height must be positive")
         if self.min_stage_env_steps < 0:
             raise ValueError("curriculum gate min stage env steps must be non-negative")
+        if self.consecutive_eval_passes <= 0:
+            raise ValueError("curriculum gate consecutive eval passes must be positive")
 
     @property
     def enabled(self) -> bool:
@@ -252,6 +255,8 @@ class CurriculumGateTracker:
         self._stage_start_env_steps = 0
         self._held_stage = 1.0 if self.config.enabled else 0.0
         self._eval_gate_passed = 0.0
+        self._consecutive_eval_gate_passes = 0
+        self._consecutive_eval_gate_passed = 0.0
         self._exposure_gate_passed = 0.0
         self._min_stage_steps_passed = 0.0
         self._advanced_stage = 0.0
@@ -284,6 +289,7 @@ class CurriculumGateTracker:
                     np.count_nonzero(array[:, BUCKET_INDEX["reach"]])
                 )
 
+        new_eval_gate_observation = False
         if self.config.eval_dual_gate_enabled:
             if diagnostic_labels is not None:
                 diagnostic_array = np.asarray(diagnostic_labels, dtype=bool)
@@ -314,6 +320,7 @@ class CurriculumGateTracker:
                         f"eval_episode_labels must have shape (N, {len(EVAL_GATE_LABELS)}); "
                         f"got {eval_array.shape}"
                     )
+                new_eval_gate_observation = eval_array.shape[0] > 0
                 for row in eval_array:
                     self._eval_window.append(row.astype(bool, copy=True))
 
@@ -332,7 +339,21 @@ class CurriculumGateTracker:
             self._advanced_stage = 1.0 if self.stage_index > previous_stage else 0.0
         elif self.config.eval_dual_gate_enabled:
             previous_stage = self.stage_index
-            self._eval_gate_passed = 1.0 if self._eval_gate_passes() else 0.0
+            eval_gate_passes = self._eval_gate_passes()
+            if new_eval_gate_observation:
+                if eval_gate_passes:
+                    self._consecutive_eval_gate_passes = min(
+                        self._consecutive_eval_gate_passes + 1,
+                        int(self.config.consecutive_eval_passes),
+                    )
+                else:
+                    self._consecutive_eval_gate_passes = 0
+            self._eval_gate_passed = 1.0 if eval_gate_passes else 0.0
+            self._consecutive_eval_gate_passed = (
+                1.0
+                if self._consecutive_eval_gate_passes >= int(self.config.consecutive_eval_passes)
+                else 0.0
+            )
             self._exposure_gate_passed = 1.0 if self._exposure_gate_passes() else 0.0
             self._min_stage_steps_passed = (
                 1.0
@@ -342,13 +363,15 @@ class CurriculumGateTracker:
             )
             if (
                 self.stage_index < 3
-                and self._eval_gate_passed > 0.0
+                and self._consecutive_eval_gate_passed > 0.0
                 and self._exposure_gate_passed > 0.0
                 and self._min_stage_steps_passed > 0.0
             ):
                 self.stage_index += 1
                 self._stage_exposures[:] = 0
                 self._stage_start_env_steps = int(env_steps)
+                self._consecutive_eval_gate_passes = 0
+                self._consecutive_eval_gate_passed = 0.0
             held = 1.0 if self.stage_index == previous_stage and self.stage_index < 3 else 0.0
             self._advanced_stage = 1.0 if self.stage_index > previous_stage else 0.0
         self._held_stage = held
@@ -398,6 +421,9 @@ class CurriculumGateTracker:
                     ),
                     "curriculum/gate/stage_env_steps": float(max(self._last_env_steps() - self._stage_start_env_steps, 0)),
                     "curriculum/gate/eval_gate_passed": self._eval_gate_passed,
+                    "curriculum/gate/consecutive_eval_passes": float(self._consecutive_eval_gate_passes),
+                    "curriculum/gate/consecutive_eval_required": float(self.config.consecutive_eval_passes),
+                    "curriculum/gate/consecutive_eval_gate_passed": self._consecutive_eval_gate_passed,
                     "curriculum/gate/exposure_gate_passed": self._exposure_gate_passed,
                     "curriculum/gate/min_stage_steps_passed": self._min_stage_steps_passed,
                     "curriculum/gate/advanced_stage": self._advanced_stage,
