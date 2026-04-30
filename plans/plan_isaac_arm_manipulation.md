@@ -101,7 +101,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
 | PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
 | PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
-| PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt`, configurable consecutive eval-gate confirmation via `--curriculum-gate-consecutive-eval-passes` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `44 passed`; consecutive-gate slice -> `68 passed`; full pytest in `isaac_arm` -> `333 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage without advancing on one lucky eval window. |
+| PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt`, global overall `best.pt` selection, configurable consecutive eval-gate confirmation via `--curriculum-gate-consecutive-eval-passes` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `45 passed`; consecutive-gate slice -> `68 passed`; full pytest in `isaac_arm` -> `334 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage without advancing on one lucky eval window. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -3773,9 +3773,23 @@ Maintain independent best checkpoints per stage:
 
 Comparisons are only valid within the same stage. `eval_reach_episode_rate` from stage 0 must
 not be compared numerically against `max_cube_lift_m` from stage 2 or `success_rate` from stage 3.
-The generic `<checkpoint_name>_best.pt` may point to the best checkpoint from the highest stage
-reached so far, but `checkpoint_history` must keep stage id and comparator tuple so the result
-is reproducible.
+These `best_stage*.pt` files are stage-local debug records only.
+
+The generic `<checkpoint_name>_best.pt` must mean the overall strongest checkpoint across the
+whole run, not merely the best checkpoint from the highest stage reached so far. Select it with
+a cross-stage comparable task-level tuple:
+
+```text
+maximize eval_rollout/success_rate
+then maximize eval_rollout/max_cube_lift_m
+then minimize eval_rollout/min_cube_to_target_m
+then minimize eval_rollout/min_ee_to_cube_m
+then maximize eval_rollout/mean_return
+```
+
+This prevents a weak later-stage checkpoint from overwriting a genuinely stronger earlier-stage
+checkpoint. `checkpoint_history` must mark stage-local entries separately from global best entries
+and keep the comparator tuple so the result is reproducible.
 
 Checkpoint selector input contract:
 
@@ -3785,16 +3799,17 @@ calling the stage-aware checkpoint selector.
 ```
 
 The train loop emits `eval_rollout/*` when an eval episode completes, then updates
-`curriculum/gate/*` later in the same env step. Calling the checkpoint manager with
-those two metric dictionaries separately is not enough: `stage_aware:reach_lift_success_return`
-requires both sets at once, such as `eval_rollout/min_ee_to_cube_m`,
-`eval_rollout/mean_return`, `curriculum/stage_index`, and
+`curriculum/gate/*` later in the same env step. The global `<checkpoint_name>_best.pt`
+selector can run from eval rollout task metrics alone. The stage-local `best_stage*.pt`
+selector requires both sets at once, such as `eval_rollout/min_ee_to_cube_m`,
+`eval_rollout/min_cube_to_target_m`, `eval_rollout/max_cube_lift_m`,
+`eval_rollout/success_rate`, `eval_rollout/mean_return`, `curriculum/stage_index`, and
 `curriculum/gate/eval_reach_episode_rate`. The implementation must merge only the
 same-step eval rollout metrics into the env/gate checkpoint metrics so stale eval
 summaries from older env steps cannot create misleading best-stage checkpoints.
 
-This keeps the best checkpoint meaningful for the current curriculum stage. It also makes PR12a
-visualization less misleading during early-stage debugging.
+This keeps both checkpoint meanings clean: `best_stage*.pt` is meaningful for curriculum-stage
+debugging, while `<checkpoint_name>_best.pt` is the best overall policy to visualize/evaluate.
 
 5. Protected replay refresh / age controls:
 
@@ -4025,6 +4040,7 @@ Add focused coverage:
 - `tests/test_training_logger_and_scheduler.py`
   - SAC and TD3 log new reward/action diagnostics to logger, W&B reporter, JSONL, and progress,
   - `stage_aware:reach_lift_success_return` keeps separate best checkpoint records for stage 0/1/2/3,
+  - generic `<checkpoint_name>_best.pt` is the cross-stage overall best, not the highest-stage local best,
   - same-step `eval_rollout/*` and `curriculum/gate/*` metrics are merged before stage-aware checkpoint selection, so `best_stage*.pt` is actually written,
   - stage 0 best chooses a lower `eval_rollout/min_ee_to_cube_m` checkpoint when `eval_reach_episode_rate` ties,
   - stage-aware selector falls back readably when required keys are missing.

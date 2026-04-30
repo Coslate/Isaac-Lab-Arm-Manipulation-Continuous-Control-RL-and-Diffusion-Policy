@@ -504,6 +504,165 @@ python -m scripts.train_sac_continuous \
   --wandb-mode online
 
 
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.05 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-gating eval_dual_gate \
+  --curriculum-gate-eval-window-episodes 20 \
+  --curriculum-gate-min-eval-episodes 20 \
+  --curriculum-gate-eval-thresholds 0.30,0.30,0.05,0.10 \
+  --curriculum-gate-min-train-exposures 400,100,20,20 \
+  --curriculum-gate-lift-success-height-m 0.02 \
+  --curriculum-gate-min-stage-env-steps 10000 \
+  --curriculum-gate-consecutive-eval-passes 2 \
+  --reach-progress-stage-scales 0.5,0.25,0.05,0.0 \
+  --reach-progress-clip-m 0.01 \
+  --vertical-alignment-penalty-scale 0.02 \
+  --vertical-alignment-penalty-stages reach \
+  --vertical-alignment-deadband-m 0.04 \
+  --rotation-action-penalty-scale 0.001 \
+  --rotation-action-penalty-stages reach \
+  --lift-progress-deadband-m 0.002 \
+  --lift-progress-height-m 0.04 \
+  --grip-proxy-scale 2.0 \
+  --grip-proxy-sigma-m 0.08 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.80,0.10,0.10 \
+  --protected-replay-fraction 0.02 \
+  --protected-max-age-env-steps 100000 \
+  --protected-refresh-every-env-steps 10000 \
+  --protected-stage-local \
+  --protected-stage-grace-env-steps 50000 \
+  --protected-old-stage-retain-fraction 0.5 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 10 \
+  --save-best-by stage_aware:reach_lift_success_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v8_tuned_consecutive_eval2 \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v8_tuned_consecutive_eval2_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v8_tuned_consecutive_eval2_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v8_tuned_consecutive_eval2 \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v8_tuned_consecutive_eval2 \
+  --wandb-mode online
+
+set -o pipefail
+python -u -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.05 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-gating eval_dual_gate \
+  --curriculum-gate-eval-window-episodes 20 \
+  --curriculum-gate-min-eval-episodes 20 \
+  --curriculum-gate-eval-thresholds 0.30,0.30,0.05,0.10 \
+  --curriculum-gate-min-train-exposures 400,100,20,20 \
+  --curriculum-gate-lift-success-height-m 0.02 \
+  --curriculum-gate-min-stage-env-steps 10000 \
+  --curriculum-gate-consecutive-eval-passes 2 \
+  --reach-progress-stage-scales 0.5,0.25,0.05,0.0 \
+  --reach-progress-clip-m 0.01 \
+  --vertical-alignment-penalty-scale 0.02 \
+  --vertical-alignment-penalty-stages reach \
+  --vertical-alignment-deadband-m 0.04 \
+  --rotation-action-penalty-scale 0.001 \
+  --rotation-action-penalty-stages reach \
+  --lift-progress-deadband-m 0.002 \
+  --lift-progress-height-m 0.04 \
+  --grip-proxy-scale 2.0 \
+  --grip-proxy-sigma-m 0.08 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.80,0.10,0.10 \
+  --protected-replay-fraction 0.02 \
+  --protected-max-age-env-steps 100000 \
+  --protected-refresh-every-env-steps 10000 \
+  --protected-stage-local \
+  --protected-stage-grace-env-steps 50000 \
+  --protected-old-stage-retain-fraction 0.5 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 10 \
+  --save-best-by stage_aware:reach_lift_success_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture \
+  --wandb-mode online \
+  2>&1 | tee ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_stdout_stderr.log
+echo "exit_code=${PIPESTATUS[0]}"
+
 # Visualize Evaluation Learned Policy
 python -m scripts.record_gif_continuous \
   --backend isaac \
@@ -558,6 +717,67 @@ python -m scripts.record_gif_continuous \
   --save-gif ./logs/sac_franka_500k_seed0_v6_eval_dual_gate_best.gif \
   --save-mp4 ./logs/sac_franka_500k_seed0_v6_eval_dual_gate_best.mp4 \
   --save-metrics ./logs/sac_franka_500k_seed0_v6_eval_dual_gate_best_visual_metrics.json \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best.pt \
+  --save-gif ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best.gif \
+  --save-mp4 ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best.mp4 \
+  --save-metrics ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_visual_metrics.json \
+  --save-debug-frames-dir ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage0.pt \
+  --save-gif ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage0.gif \
+  --save-mp4 ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage0.mp4 \
+  --save-metrics ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage0_visual_metrics.json \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage1.pt \
+  --save-gif ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage1.gif \
+  --save-mp4 ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage1.mp4 \
+  --save-metrics ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage1_visual_metrics.json \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
+python -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage2.pt \
+  --save-gif ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage2.gif \
+  --save-mp4 ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage2.mp4 \
+  --save-metrics ./logs/sac_franka_500k_seed0_v8b_tuned_consecutive_eval2_capture_best_stage2_visual_metrics.json \
   --num-envs 1 \
   --seed 0 \
   --device cuda:0 \

@@ -550,6 +550,9 @@ def test_training_checkpoint_manager_stage_aware_best_keeps_per_stage_records(tm
         {
             "curriculum/stage_index": 0.0,
             "curriculum/gate/eval_reach_episode_rate": 0.2,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.30,
             "eval_rollout/min_ee_to_cube_m": 0.20,
             "eval_rollout/mean_return": 0.0,
         },
@@ -561,6 +564,9 @@ def test_training_checkpoint_manager_stage_aware_best_keeps_per_stage_records(tm
         {
             "curriculum/stage_index": 0.0,
             "curriculum/gate/eval_reach_episode_rate": 0.2,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.25,
             "eval_rollout/min_ee_to_cube_m": 0.10,
             "eval_rollout/mean_return": -1.0,
         },
@@ -573,7 +579,11 @@ def test_training_checkpoint_manager_stage_aware_best_keeps_per_stage_records(tm
             "curriculum/stage_index": 1.0,
             "curriculum/gate/eval_grip_effect_episode_rate": 0.1,
             "curriculum/gate/eval_grip_attempt_episode_rate": 0.3,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.50,
             "eval_rollout/min_ee_to_cube_m": 0.15,
+            "eval_rollout/mean_return": -2.0,
         },
         None,
     )
@@ -582,12 +592,60 @@ def test_training_checkpoint_manager_stage_aware_best_keeps_per_stage_records(tm
     assert (tmp_path / "sac_stage_best_stage1.pt").exists()
     stage0_payload = load_checkpoint(tmp_path / "sac_stage_best_stage0.pt", expected_agent_type="sac")
     stage1_payload = load_checkpoint(tmp_path / "sac_stage_best_stage1.pt", expected_agent_type="sac")
+    global_payload = load_checkpoint(tmp_path / "sac_stage_best.pt", expected_agent_type="sac")
     assert stage0_payload.metadata.num_env_steps == 20
     assert stage1_payload.metadata.num_env_steps == 30
+    assert global_payload.metadata.num_env_steps == 20
     assert manager.stage_best_metric_values[0] == pytest.approx((0.2, -0.10, -1.0))
     assert manager.stage_best_metric_values[1] == pytest.approx((0.1, 0.3, -0.15))
+    assert manager.best_metric_value == pytest.approx((0.0, 0.0, -0.25, -0.10, -1.0))
     assert manager.history[-1]["stage_index"] == 1
     assert manager.history[-1]["metric_key"] == STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN
+
+
+def test_training_checkpoint_manager_stage_aware_global_best_is_overall_not_highest_stage(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_global",
+        save_best_by=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        100,
+        {
+            "curriculum/stage_index": 0.0,
+            "curriculum/gate/eval_reach_episode_rate": 0.25,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.01,
+            "eval_rollout/min_cube_to_target_m": 0.20,
+            "eval_rollout/min_ee_to_cube_m": 0.04,
+            "eval_rollout/mean_return": 0.5,
+        },
+        None,
+    )
+    manager(
+        agent,
+        200,
+        {
+            "curriculum/stage_index": 2.0,
+            "curriculum/gate/eval_lift_2cm_episode_rate": 0.0,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.35,
+            "eval_rollout/min_ee_to_cube_m": 0.20,
+            "eval_rollout/mean_return": -1.0,
+        },
+        None,
+    )
+
+    assert (tmp_path / "sac_stage_global_best_stage0.pt").exists()
+    assert (tmp_path / "sac_stage_global_best_stage2.pt").exists()
+    global_payload = load_checkpoint(tmp_path / "sac_stage_global_best.pt", expected_agent_type="sac")
+    assert global_payload.metadata.num_env_steps == 100
+    assert manager.best_metric_value == pytest.approx((0.0, 0.01, -0.20, -0.04, 0.5))
 
 
 def test_training_checkpoint_manager_stage_aware_best_requires_stage_metrics(tmp_path: Path):
@@ -646,6 +704,9 @@ def test_stage_aware_checkpoint_uses_merged_same_step_eval_and_gate_metrics(tmp_
         env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
     )
     eval_rollout_metrics = {
+        "eval_rollout/success_rate": 0.0,
+        "eval_rollout/max_cube_lift_m": 0.0,
+        "eval_rollout/min_cube_to_target_m": 0.22,
         "eval_rollout/min_ee_to_cube_m": 0.03,
         "eval_rollout/mean_return": 0.18,
         "eval_rollout/window_size": 20.0,
