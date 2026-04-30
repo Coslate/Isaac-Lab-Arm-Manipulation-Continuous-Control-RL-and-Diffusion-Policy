@@ -59,12 +59,16 @@ The current code base proves the robot-learning data and evaluation loop against
 Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, live-monitor scaffolding,
 running normalization, reward diagnostics, periodic/best checkpoints, reward curriculum, and
 bucket-rarity prioritized replay, and eval-subskill dual-gated curriculum advancement. The
-latest SAC diagnostic runs still have `success_rate=0`: PR6.8 made reach/grip/lift/goal
+latest SAC v6 diagnostic run still has `success_rate=0`: PR6.8 made reach/grip/lift/goal
 events observable and replayable, PR6.9 added dense lift progress diagnostics, and PR6.10
-replaced bucket-ratio-only curriculum advancement with current-policy eval + minimum-exposure
-dual gates. The next action is a serious SAC v6 run using `--curriculum-gating eval_dual_gate`.
-The remaining research-training stack is PPO, pure
-GRPO, SAC expert demonstrations, Diffusion Policy BC, and DAgger.
+correctly held the curriculum in stage 0 because the current policy never passed the eval
+reach gate. V6 also showed an unstable reach policy: `eval_reach_episode_rate` briefly peaked
+at `0.15` near 276k env steps, then dropped as those few successful reach episodes aged out of
+the 20-episode eval window. PR6.11 is now implemented: stage-0 reach shaping, small
+vertical/rotation penalties, reach-stage best-checkpoint selection, and protected-replay refresh
+are available for the next serious SAC v7 run. The remaining
+research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
+DAgger.
 
 Runtime requirement for live Isaac commands:
 - On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
@@ -97,6 +101,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
 | PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
 | PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
+| PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `44 passed`; full pytest in `isaac_arm` -> `331 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -121,6 +126,7 @@ Current measured demo-slice results from the final live artifacts:
 Important status interpretation:
 - The stock Isaac task with `--enable_cameras` still exposes only the stock flat `policy` tensor unless the project applies its customized env cfg.
 - The current accepted live observation contract is the customized cfg plus wrapper: wrist RGB policy image and named 40D proprio.
+
 - The debug camera is only for GIFs, MP4s, sampled PNGs, and human inspection; it is not passed into `policy.act()`.
 
 ---
@@ -540,7 +546,7 @@ Isaac Lab FrankaCubeLift IK-Rel env
 Train PPO / pure GRPO / SAC / TD3
         |
         v
-Select SAC checkpoint as expert oracle
+Select checkpoint as expert oracle
         |
         v
 Collect episode-safe demonstrations
@@ -553,6 +559,21 @@ Run DAgger: student rollout -> SAC relabel -> dataset aggregation -> fine-tune
         |
         v
 Evaluate metrics + record GIFs + plot comparison
+```
+
+### Why Diffusion Policy for Imitation Learning?
+
+Diffusion Policy (Chi et al., 2023) is the current state-of-the-art for behavior cloning on robot manipulation. The key insight is that the action distribution in manipulation tasks is **multimodal** — a human can grasp an object from the left or the right, and both are valid. A unimodal Gaussian policy (standard BC) collapses to the mean between modes, which is invalid. Diffusion models naturally represent multimodal distributions without mode collapse.
+
+Comparing BC vs DAgger as the training procedure for Diffusion Policy answers: does iterative dataset aggregation (DAgger) improve over offline BC when the action distribution is captured by a diffusion model?
+
+Using an RL-trained agent (SAC checkpoint) as the DAgger oracle closes the loop between RL and IL, creating a unified pipeline:
+
+```
+Isaac Lab env → SAC pre-training → expert oracle checkpoint
+                                  → DAgger rollout + query oracle
+                                  → Diffusion Policy fine-tuning
+                                  → deployment-ready smooth policy
 ```
 
 ### 5.2 Why SAC is the oracle
@@ -922,8 +943,11 @@ Logging key contract:
 - `reward/train_shaped` when PR6.8 reward curriculum changes the reward stored in replay
 - `reward/train/grip_proxy` when PR6.8 grip proxy is enabled
 - `reward/train/lift_progress_proxy` when PR6.9 dense lift progress reward is enabled
+- `reward/train/reach_progress`, `reward/train/vertical_alignment_penalty`, and `reward/train/rotation_action_penalty` when PR6.11 reach shaping/action constraints are enabled
+- `reward/eval_rollout/reach_progress`, `reward/eval_rollout/vertical_alignment_penalty`, and `reward/eval_rollout/rotation_action_penalty` as PR6.11 deterministic eval diagnostics
 - `action/train/gripper_mean` and `action/train/gripper_close_rate` for active train lanes
 - `action/eval_rollout/gripper_mean`, `action/eval_rollout/gripper_close_rate`, and `action/eval_rollout/gripper_close_near_cube_rate` for same-env deterministic eval lanes
+- `action/train/translation_norm`, `action/train/rotation_norm`, `action/train/gripper_abs_mean`, `action/eval_rollout/translation_norm`, `action/eval_rollout/rotation_norm`, and `action/eval_rollout/gripper_abs_mean` for PR6.11 action debugging
 - `eval_rollout/max_cube_lift_m`, `eval_rollout/min_ee_to_cube_m`, `eval_rollout/min_cube_to_target_m`, and `eval_rollout/gripper_close_near_cube_rate` for PR6.9 lift-aware debugging and best-checkpoint selection
 - `train/td_error_mean` when PR6.8 TD-error priority feedback is enabled through SAC/TD3 updates
 - `priority_replay/batch_uniform`, `priority_replay/batch_priority`, `priority_replay/mean_priority_score`, and `priority_replay/protected_count` when PR6.8 prioritized replay is enabled
@@ -1052,7 +1076,7 @@ Roadmap layers:
 |---|---|---|
 | Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
 | Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
-| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.10 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is the SAC v6 dual-gated diagnostic run. |
+| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.11 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is a serious SAC v7 run using PR6.11 diagnostics, then decide whether further reward/action tuning is needed before demos or IL. |
 
 Current priority path:
 
@@ -1064,7 +1088,8 @@ PR3 done
   -> PR6.8 Curriculum reward + bucket-rarity replay
   -> PR6.9 Progress-gated lift curriculum + lift-aware diagnostics
   -> PR6.10 Eval-subskill dual-gated curriculum
-  -> SAC v6 dual-gated diagnostic run
+  -> PR6.11 Reach shaping + action constraint diagnostics
+  -> SAC v7 diagnostic run
   -> PR7 TD3 train
   -> PR11a SAC/TD3 checkpoint eval
   -> PR12a SAC/TD3 checkpoint visual rollout
@@ -3396,7 +3421,7 @@ python -m scripts.train_sac_continuous \
   --curriculum-gating eval_dual_gate \
   --curriculum-gate-eval-window-episodes 20 \
   --curriculum-gate-min-eval-episodes 20 \
-  --curriculum-gate-eval-thresholds 0.40,0.30,0.05,0.10 \
+  --curriculum-gate-eval-thresholds 0.30,0.30,0.05,0.10 \
   --curriculum-gate-min-train-exposures 400,100,20,20 \
   --curriculum-gate-lift-success-height-m 0.02 \
   --curriculum-gate-min-stage-env-steps 10000 \
@@ -3517,6 +3542,518 @@ PR6.10 is complete when:
 
 ```bash
 git commit -m "feat(train): add eval-subskill dual curriculum gates"
+```
+
+---
+
+### PR 6.11 — Reach Shaping And Action-Constraint Diagnostics
+
+**Status**
+
+Done. This PR is the direct follow-up to the SAC v6 dual-gated diagnostic run.
+
+Validation:
+
+```text
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_reward_curriculum.py tests/test_prioritized_replay.py tests/test_training_logger_and_scheduler.py
+-> 74 passed
+
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_training_logger_and_scheduler.py
+-> 44 passed
+
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+-> 331 passed, 1 skipped
+```
+
+```text
+logs/sac_franka_500k_seed0_v6_eval_dual_gate_train.jsonl
+logs/sac_franka_500k_seed0_v6_eval_dual_gate_train.json
+logs/sac_franka_500k_seed0_v6_eval_dual_gate_best_visual_metrics.json
+logs/sac_franka_500k_seed0_v6_eval_dual_gate_best.gif/mp4
+```
+
+Observed v6 facts:
+
+```text
+curriculum/stage_index                         = 0 for the whole run
+curriculum/gate/eval_gate_passed               = 0 for the whole run
+curriculum/gate/exposure_gate_passed           = 1 after ~273k env steps
+curriculum/gate/eval_reach_episode_rate max    = 0.15 at ~276k env steps
+curriculum/gate/eval_reach_episode_rate final  = 0.05
+eval_rollout/max_cube_lift_m                   = 0.0
+eval_rollout/gripper_close_near_cube_rate      = 0.0
+priority_replay/bucket_count/reach             = 476 / 200k replay slots
+priority_replay/bucket_count/grip_attempt      = 23 / 200k replay slots
+priority_replay/bucket_count/grip_effect       = 11 / 200k replay slots
+priority_replay/bucket_count/lift              = 5 / 200k replay slots
+```
+
+Interpretation:
+
+```text
+PR6.10 gate worked: it correctly refused to advance out of reach stage.
+The policy did not learn stable reach. It briefly produced 3/20 eval episodes that
+reached within 8cm, then newer eval episodes failed and the rolling rate dropped.
+The visual rollout shows upward / rotational arm motion with no cube interaction.
+```
+
+**Goal / Why**
+
+PR6.11 should not loosen the curriculum gate. The v6 failure is not that the gate is too
+strict; the failure is that stage 0 reward and action constraints do not reliably teach the
+policy to move the end effector toward the cube without wasted upward/rotational motion.
+
+This PR keeps the no-demo, no-BC, no-expert-action constraint. It adds better stage-0 shaping,
+diagnostics, and checkpoint selection so the next SAC run can answer:
+
+```text
+Is the current policy reducing EE-to-cube distance step by step?
+Is it drifting upward instead of aligning with cube height?
+Is it wasting action on wrist rotation during reach?
+Are protected transitions stale early artifacts?
+Are best checkpoints selected for true reach competence instead of noisy return?
+```
+
+**Inputs**
+
+- PR6.10 eval-dual gate and same-env eval lane subskill rates.
+- PR6.9 lift-aware eval metrics:
+  - `eval_rollout/min_ee_to_cube_m`
+  - `eval_rollout/max_cube_lift_m`
+  - `eval_rollout/gripper_close_near_cube_rate`
+- PR6.8/PR6.9 replay labels and protected replay.
+- 40D proprio contract:
+  - `proprio[:, 21:24]`: cube position in robot base frame
+  - `proprio[:, 27:30]`: `ee_to_cube`
+  - `action[:, 0:3]`: translation command
+  - `action[:, 3:6]`: rotation command
+  - `action[:, 6]`: gripper command; negative closes
+
+**Scope**
+
+PR6.11 has five implementation targets.
+
+1. Stage-weighted reach progress reward:
+
+```text
+ee_dist_t      = norm(proprio_t[:, ee_to_cube])
+ee_dist_tp1    = norm(proprio_tp1[:, ee_to_cube])
+reach_progress = clip(ee_dist_t - ee_dist_tp1, -progress_clip_m, progress_clip_m)
+```
+
+Add this as an optional reward term, enabled only when
+`--reward-curriculum reach_grip_lift_goal` is active. During stage 0, it should reward reducing
+EE-to-cube distance even before the policy crosses the 8cm reach threshold. This gives dense
+learning signal for "move toward the cube", not merely "sometimes be near the cube".
+
+Do not let this become the task's new dominant objective. Recommended per-stage scales:
+
+```text
+reach         = 0.5
+grip_pre_lift= 0.1
+lift          = 0.0
+stock_like    = 0.0
+```
+
+Interpretation: use reach progress as an early direction hint, keep it weak during
+`grip_pre_lift`, then remove it when the curriculum should focus on lift/goal behavior.
+
+2. Stage-0 vertical alignment penalty:
+
+```text
+ee_z_cube_error = abs(proprio[:, 29])
+vertical_penalty = -max(ee_z_cube_error - deadband_m, 0)
+```
+
+`proprio[:, 27:30]` is `ee_to_cube`, so `proprio[:, 29]` is the z component of the
+end-effector-to-cube vector. Use this directly; do not introduce a new EE absolute-position
+slice for PR6.11. This directly targets the v6 visual failure where the arm drifts upward.
+Default behavior should apply this penalty only in `reach` stage, with a small scale and a
+deadband.
+
+3. Rotation action penalty and action diagnostics:
+
+```text
+translation_norm = norm(action[:, 0:3])
+rotation_norm    = norm(action[:, 3:6])
+gripper_abs      = abs(action[:, 6])
+```
+
+Add an optional stage-weighted penalty for excessive `droll/dpitch/dyaw`. Default behavior
+should apply this only in `reach` stage. Do not penalize `grip_pre_lift` by default: that stage
+may need wrist orientation changes to align a real grasp. The goal is not to ban wrist rotation
+forever; it is to stop early SAC from exploiting unnecessary rotation while it has not learned
+reach.
+
+Log:
+
+```text
+action/train/translation_norm
+action/train/rotation_norm
+action/train/gripper_abs_mean
+action/eval_rollout/translation_norm
+action/eval_rollout/rotation_norm
+action/eval_rollout/gripper_abs_mean
+reward/train/reach_progress
+reward/train/vertical_alignment_penalty
+reward/train/rotation_action_penalty
+reward/eval_rollout/reach_progress
+reward/eval_rollout/vertical_alignment_penalty
+reward/eval_rollout/rotation_action_penalty
+```
+
+4. Reach-aware best checkpoint selection:
+
+The v6 best checkpoint was selected by `composite:success_lift_return`, but the fresh visual
+rollout still had:
+
+```text
+min_ee_to_cube_m = 0.419m
+max_cube_lift_m  ~= 0
+success_rate     = 0
+```
+
+Add a stage-aware selector:
+
+```text
+--save-best-by stage_aware:reach_lift_success_return
+```
+
+Selection order:
+
+```text
+if stage_index == 0:
+  maximize curriculum/gate/eval_reach_episode_rate
+  then minimize eval_rollout/min_ee_to_cube_m
+  then maximize eval_rollout/mean_return
+
+elif stage_index == 1:
+  maximize curriculum/gate/eval_grip_effect_episode_rate
+  then maximize curriculum/gate/eval_grip_attempt_episode_rate
+  then minimize eval_rollout/min_ee_to_cube_m
+
+elif stage_index == 2:
+  maximize eval_rollout/max_cube_lift_m
+  then maximize curriculum/gate/eval_lift_2cm_episode_rate
+  then maximize eval_rollout/mean_return
+
+else:
+  maximize eval_rollout/success_rate
+  then maximize eval_rollout/max_cube_lift_m
+  then maximize eval_rollout/mean_return
+```
+
+Maintain independent best checkpoints per stage:
+
+```text
+<checkpoint_name>_best_stage0.pt
+<checkpoint_name>_best_stage1.pt
+<checkpoint_name>_best_stage2.pt
+<checkpoint_name>_best_stage3.pt
+```
+
+Comparisons are only valid within the same stage. `eval_reach_episode_rate` from stage 0 must
+not be compared numerically against `max_cube_lift_m` from stage 2 or `success_rate` from stage 3.
+The generic `<checkpoint_name>_best.pt` may point to the best checkpoint from the highest stage
+reached so far, but `checkpoint_history` must keep stage id and comparator tuple so the result
+is reproducible.
+
+Checkpoint selector input contract:
+
+```text
+same-env eval rollout metrics and curriculum gate metrics must be merged before
+calling the stage-aware checkpoint selector.
+```
+
+The train loop emits `eval_rollout/*` when an eval episode completes, then updates
+`curriculum/gate/*` later in the same env step. Calling the checkpoint manager with
+those two metric dictionaries separately is not enough: `stage_aware:reach_lift_success_return`
+requires both sets at once, such as `eval_rollout/min_ee_to_cube_m`,
+`eval_rollout/mean_return`, `curriculum/stage_index`, and
+`curriculum/gate/eval_reach_episode_rate`. The implementation must merge only the
+same-step eval rollout metrics into the env/gate checkpoint metrics so stale eval
+summaries from older env steps cannot create misleading best-stage checkpoints.
+
+This keeps the best checkpoint meaningful for the current curriculum stage. It also makes PR12a
+visualization less misleading during early-stage debugging.
+
+5. Protected replay refresh / age controls:
+
+In v6, `priority_replay/protected_count` reached the cap (`4000`) very early and stayed there.
+That can preserve stale early rare transitions that are not useful after the policy distribution
+changes.
+
+Add optional age/refresh controls:
+
+```text
+--protected-max-age-env-steps INT
+--protected-refresh-every-env-steps INT
+--protected-min-score FLOAT
+--protected-stage-local
+--protected-stage-grace-env-steps INT
+--protected-old-stage-retain-fraction FLOAT
+```
+
+Behavior:
+
+```text
+protected transition stores:
+  insert_env_step
+  protected_stage_index
+  protected_score
+
+on refresh:
+  drop protected entries older than protected_max_age_env_steps
+  if protected_stage_local is enabled:
+    keep old-stage protected entries during protected_stage_grace_env_steps
+    cap old-stage entries at protected_old_stage_retain_fraction of the protected quota
+    only hard-drop old-stage entries after the grace window expires
+  recompute the protected top-K by protected_score among eligible entries
+```
+
+Defaults must preserve PR6.10 behavior unless these flags are enabled. Recommended next-run
+setting after implementation:
+
+```text
+--protected-replay-fraction 0.005
+--protected-max-age-env-steps 100000
+--protected-refresh-every-env-steps 10000
+--protected-stage-local
+--protected-stage-grace-env-steps 50000
+--protected-old-stage-retain-fraction 0.5
+```
+
+**CLI Contract**
+
+Extend SAC and TD3 train scripts:
+
+```text
+--reach-progress-stage-scales FLOAT,FLOAT,FLOAT,FLOAT
+--reach-progress-clip-m FLOAT
+--vertical-alignment-penalty-scale FLOAT
+--vertical-alignment-penalty-stages STAGE[,STAGE...]
+--vertical-alignment-deadband-m FLOAT
+--rotation-action-penalty-scale FLOAT
+--rotation-action-penalty-stages STAGE[,STAGE...]
+--save-best-by stage_aware:reach_lift_success_return
+--protected-max-age-env-steps INT
+--protected-refresh-every-env-steps INT
+--protected-min-score FLOAT
+--protected-stage-local
+--protected-stage-grace-env-steps INT
+--protected-old-stage-retain-fraction FLOAT
+```
+
+Recommended defaults:
+
+```text
+--reach-progress-stage-scales 0.5,0.1,0.0,0.0
+--reach-progress-clip-m 0.01
+--vertical-alignment-penalty-scale 0.1
+--vertical-alignment-penalty-stages reach
+--vertical-alignment-deadband-m 0.04
+--rotation-action-penalty-scale 0.005
+--rotation-action-penalty-stages reach
+--protected-max-age-env-steps 0
+--protected-refresh-every-env-steps 0
+--protected-min-score 0.0
+--protected-stage-grace-env-steps 0
+--protected-old-stage-retain-fraction 0.5
+```
+
+`0` for protected age/refresh means disabled, preserving PR6.10 behavior.
+`--reach-progress-stage-scales` order is always `reach,grip_pre_lift,lift,stock_like`.
+
+**Implementation Notes**
+
+- Keep reward shaping opt-in through `--reward-curriculum reach_grip_lift_goal`.
+- Do not change stock Isaac eval reward. PR11a/PR12a final metrics remain stock-env metrics.
+- `reward/eval_rollout/reach_progress`, `reward/eval_rollout/vertical_alignment_penalty`, and
+  `reward/eval_rollout/rotation_action_penalty` are diagnostics only; they must not change
+  `eval_rollout/mean_return`.
+- Use active train lanes only for train reward/action diagnostics.
+- Use same-env eval lanes only for `eval_rollout/*` diagnostics.
+- Keep replay storage raw; shaped reward is the reward stored into replay when curriculum is enabled.
+- Rotation penalty must operate on learner/env-normalized action dimensions consistently with the existing action normalizer. Since the public Isaac wrapper consumes normalized `[-1, 1]` actions, the penalty can be computed directly on the action sent to `env.step`.
+- Best-checkpoint comparison must be deterministic and serializable in `checkpoint_history`.
+- Add a small reward-magnitude sanity probe/test before any 500k Isaac run. Compare native and
+  shaped single-step/short-rollout magnitudes and fail on obvious scale bugs, such as
+  `reach_progress` sign reversal or shaping terms dominating stock reward by an order of
+  magnitude in the same phase.
+
+**Recommended SAC Run After PR6.11**
+
+```bash
+python -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 200000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.10 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 3000 \
+  --lr-min-lr 5e-5 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-gating eval_dual_gate \
+  --curriculum-gate-eval-window-episodes 20 \
+  --curriculum-gate-min-eval-episodes 20 \
+  --curriculum-gate-eval-thresholds 0.30,0.30,0.05,0.10 \
+  --curriculum-gate-min-train-exposures 400,100,20,20 \
+  --curriculum-gate-lift-success-height-m 0.02 \
+  --curriculum-gate-min-stage-env-steps 10000 \
+  --reach-progress-stage-scales 0.5,0.1,0.0,0.0 \
+  --reach-progress-clip-m 0.01 \
+  --vertical-alignment-penalty-scale 0.1 \
+  --vertical-alignment-penalty-stages reach \
+  --vertical-alignment-deadband-m 0.04 \
+  --rotation-action-penalty-scale 0.005 \
+  --rotation-action-penalty-stages reach \
+  --lift-progress-deadband-m 0.002 \
+  --lift-progress-height-m 0.04 \
+  --grip-proxy-scale 1.0 \
+  --grip-proxy-sigma-m 0.05 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.80,0.10,0.10 \
+  --protected-replay-fraction 0.005 \
+  --protected-max-age-env-steps 100000 \
+  --protected-refresh-every-env-steps 10000 \
+  --protected-stage-local \
+  --protected-stage-grace-env-steps 50000 \
+  --protected-old-stage-retain-fraction 0.5 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 5 \
+  --save-best-by stage_aware:reach_lift_success_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name sac_franka_500k_seed0_v7_reachshape_actiondiag \
+  --logs-dir ./logs \
+  --jsonl-log ./logs/sac_franka_500k_seed0_v7_reachshape_actiondiag_train.jsonl \
+  --progress-log ./logs/sac_franka_500k_seed0_v7_reachshape_actiondiag_progress.log \
+  --tb-log-dir ./logs/tb/sac_franka_500k_seed0_v7_reachshape_actiondiag \
+  --wandb-project isaac-arm \
+  --wandb-run-name sac_franka_500k_seed0_v7_reachshape_actiondiag \
+  --wandb-mode online
+```
+
+**What To Watch In W&B**
+
+Primary v7 questions:
+
+```text
+reward/train/reach_progress
+reward/eval_rollout/reach_progress
+reward/train/vertical_alignment_penalty
+reward/eval_rollout/vertical_alignment_penalty
+action/eval_rollout/rotation_norm
+action/eval_rollout/translation_norm
+eval_rollout/min_ee_to_cube_m
+curriculum/gate/eval_reach_episode_rate
+curriculum/gate/eval_gate_passed
+priority_replay/protected_count
+```
+
+Debug interpretation:
+
+| Observation | Meaning |
+|---|---|
+| `reach_progress` positive, `min_ee_to_cube_m` decreasing | Stage-0 shaping is doing useful work. |
+| `rotation_norm` high while `min_ee_to_cube_m` stays high | Policy still wastes action on wrist rotation; increase rotation penalty or inspect action scaling. |
+| `vertical_alignment_penalty` strongly negative | EE is drifting above/below cube height; reach stage needs stronger z alignment. |
+| `eval_reach_episode_rate` rises and stays above the configured threshold, recommended `0.30` for v7 | Stage 0 learned stable reach; dual gate can advance if exposure passes. |
+| `eval_reach_episode_rate` briefly spikes then drops | Transient reach only; keep stage and inspect periodic checkpoints around the spike. |
+| `protected_count` stays capped with old entries | Protected replay refresh is not aggressive enough. |
+
+**Tests**
+
+Add focused coverage:
+
+- `tests/test_reward_curriculum.py`
+  - verify `reach_progress` is positive when EE moves closer and negative/clipped when it moves away,
+  - verify vertical alignment penalty uses `abs(proprio[:, 29])`, has a deadband, and becomes more negative as the EE-to-cube z error grows,
+  - verify rotation penalty uses only action dimensions `3:6`,
+  - verify rotation penalty defaults to `reach` stage only and does not apply to `grip_pre_lift` unless explicitly configured,
+  - verify stage weights apply these terms only in configured stages,
+  - verify defaults preserve PR6.10 shaped reward when new scales are zero/disabled,
+  - verify reward-magnitude sanity: shaped terms remain bounded and do not dominate native reward by an order of magnitude in a short synthetic/scripted rollout.
+- `tests/test_training_logger_and_scheduler.py`
+  - SAC and TD3 log new reward/action diagnostics to logger, W&B reporter, JSONL, and progress,
+  - `stage_aware:reach_lift_success_return` keeps separate best checkpoint records for stage 0/1/2/3,
+  - same-step `eval_rollout/*` and `curriculum/gate/*` metrics are merged before stage-aware checkpoint selection, so `best_stage*.pt` is actually written,
+  - stage 0 best chooses a lower `eval_rollout/min_ee_to_cube_m` checkpoint when `eval_reach_episode_rate` ties,
+  - stage-aware selector falls back readably when required keys are missing.
+- `tests/test_prioritized_replay.py`
+  - protected transitions store `insert_env_step`, `protected_stage_index`, and `protected_score`,
+  - age-based refresh drops old protected entries,
+  - stage-local refresh keeps old-stage protected entries during the grace window,
+  - old-stage retain fraction caps how many previous-stage protected entries survive during grace,
+  - old-stage protected entries are dropped only after the grace window expires,
+  - disabled age/refresh path preserves PR6.10 protected replay behavior.
+- SAC/TD3 parser tests:
+  - all new flags parse,
+  - invalid stage names, negative scales, and malformed best-selector strings raise readable errors.
+
+Targeted verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_prioritized_replay.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py
+```
+
+Full verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Acceptance Criteria**
+
+PR6.11 is complete when:
+- reach-progress shaping, vertical alignment penalty, and rotation action penalty are implemented for SAC and TD3,
+- reach progress is stage-weighted with a small stage-0 default and disabled in lift/stock-like stages,
+- vertical alignment uses `abs(proprio[:, 29])` rather than a new EE absolute-position slice,
+- rotation action penalty defaults to `reach` stage only,
+- all new reward/action diagnostics are visible in W&B/TensorBoard/JSONL/progress logs,
+- best checkpoint selection can use `stage_aware:reach_lift_success_return` with per-stage best records,
+- protected replay can refresh by age and/or stage with a grace window and old-stage retain fraction while preserving old behavior by default,
+- reward-magnitude sanity tests/probes guard against shaping terms dominating native reward,
+- v7 run command is copy-paste ready,
+- targeted tests and full pytest pass in the `isaac_arm` environment.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add reach shaping and action diagnostics"
 ```
 
 ---

@@ -17,7 +17,11 @@ from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
 from scripts.train_sac_continuous import _FakeSACEnv, _build_fake_env, parse_args as parse_sac_args
 from scripts.train_td3_continuous import parse_args as parse_td3_args
-from train.checkpoint_manager import COMPOSITE_SUCCESS_LIFT_RETURN, TrainingCheckpointManager
+from train.checkpoint_manager import (
+    COMPOSITE_SUCCESS_LIFT_RETURN,
+    STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+    TrainingCheckpointManager,
+)
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
 from train.lr_scheduler import (
     estimate_total_update_steps,
@@ -25,7 +29,11 @@ from train.lr_scheduler import (
     make_scheduler,
 )
 from train.progress import TrainProgressReporter
-from train.sac_loop import SACTrainLoopConfig, run_sac_train_loop
+from train.sac_loop import (
+    SACTrainLoopConfig,
+    _merge_same_step_eval_checkpoint_metrics,
+    run_sac_train_loop,
+)
 from train.td3_loop import TD3TrainLoopConfig, run_td3_train_loop
 
 
@@ -525,6 +533,147 @@ def test_training_checkpoint_manager_composite_best_requires_all_eval_rollout_me
         manager(agent, 10, {"eval_rollout/mean_return": 1.0}, None)
 
 
+def test_training_checkpoint_manager_stage_aware_best_keeps_per_stage_records(tmp_path: Path):
+    torch.manual_seed(0)
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage",
+        save_best_by=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+        seed=7,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        10,
+        {
+            "curriculum/stage_index": 0.0,
+            "curriculum/gate/eval_reach_episode_rate": 0.2,
+            "eval_rollout/min_ee_to_cube_m": 0.20,
+            "eval_rollout/mean_return": 0.0,
+        },
+        None,
+    )
+    manager(
+        agent,
+        20,
+        {
+            "curriculum/stage_index": 0.0,
+            "curriculum/gate/eval_reach_episode_rate": 0.2,
+            "eval_rollout/min_ee_to_cube_m": 0.10,
+            "eval_rollout/mean_return": -1.0,
+        },
+        None,
+    )
+    manager(
+        agent,
+        30,
+        {
+            "curriculum/stage_index": 1.0,
+            "curriculum/gate/eval_grip_effect_episode_rate": 0.1,
+            "curriculum/gate/eval_grip_attempt_episode_rate": 0.3,
+            "eval_rollout/min_ee_to_cube_m": 0.15,
+        },
+        None,
+    )
+
+    assert (tmp_path / "sac_stage_best_stage0.pt").exists()
+    assert (tmp_path / "sac_stage_best_stage1.pt").exists()
+    stage0_payload = load_checkpoint(tmp_path / "sac_stage_best_stage0.pt", expected_agent_type="sac")
+    stage1_payload = load_checkpoint(tmp_path / "sac_stage_best_stage1.pt", expected_agent_type="sac")
+    assert stage0_payload.metadata.num_env_steps == 20
+    assert stage1_payload.metadata.num_env_steps == 30
+    assert manager.stage_best_metric_values[0] == pytest.approx((0.2, -0.10, -1.0))
+    assert manager.stage_best_metric_values[1] == pytest.approx((0.1, 0.3, -0.15))
+    assert manager.history[-1]["stage_index"] == 1
+    assert manager.history[-1]["metric_key"] == STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN
+
+
+def test_training_checkpoint_manager_stage_aware_best_requires_stage_metrics(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_bad",
+        save_best_by=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    with pytest.raises(ValueError, match="requires"):
+        manager(
+            agent,
+            10,
+            {
+                "curriculum/stage_index": 0.0,
+                "curriculum/gate/eval_reach_episode_rate": 0.2,
+                "eval_rollout/min_ee_to_cube_m": 0.2,
+            },
+            None,
+        )
+
+
+def test_training_checkpoint_manager_stage_aware_ignores_train_and_gate_only_logs(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_train_only",
+        save_best_by=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        10,
+        {
+            "curriculum/stage_index": 0.0,
+            "curriculum/gate/eval_reach_episode_rate": 0.0,
+            "reward/train/reach_progress": 0.01,
+            "train/update_step": 1.0,
+        },
+        None,
+    )
+
+    assert not (tmp_path / "sac_stage_train_only_best_stage0.pt").exists()
+    assert manager.history == []
+
+
+def test_stage_aware_checkpoint_uses_merged_same_step_eval_and_gate_metrics(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_merged",
+        save_best_by=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+    eval_rollout_metrics = {
+        "eval_rollout/min_ee_to_cube_m": 0.03,
+        "eval_rollout/mean_return": 0.18,
+        "eval_rollout/window_size": 20.0,
+    }
+    gate_metrics = {
+        "curriculum/stage_index": 0.0,
+        "curriculum/gate/eval_reach_episode_rate": 0.30,
+        "curriculum/gate/advanced_stage": 1.0,
+        "train/replay_size": 200000.0,
+    }
+
+    manager(agent, 198800, eval_rollout_metrics, None)
+    manager(agent, 198800, gate_metrics, None)
+
+    assert not (tmp_path / "sac_stage_merged_best_stage0.pt").exists()
+
+    merged_metrics = _merge_same_step_eval_checkpoint_metrics(gate_metrics, eval_rollout_metrics)
+    manager(agent, 198800, merged_metrics, {"actor": {"step_count": 12}})
+
+    stage0_best = tmp_path / "sac_stage_merged_best_stage0.pt"
+    assert stage0_best.exists()
+    assert (tmp_path / "sac_stage_merged_best.pt").exists()
+    payload = load_checkpoint(stage0_best, expected_agent_type="sac")
+    assert payload.metadata.num_env_steps == 198800
+    assert payload.extras["scheduler_state"]["actor"]["step_count"] == 12
+    assert manager.stage_best_metric_values[0] == pytest.approx((0.30, -0.03, 0.18))
+
+
 def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     sac_args = parse_sac_args(
         [
@@ -567,6 +716,20 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.003",
             "--lift-progress-height-m",
             "0.05",
+            "--reach-progress-stage-scales",
+            "0.5,0.1,0,0",
+            "--reach-progress-clip-m",
+            "0.01",
+            "--vertical-alignment-penalty-scale",
+            "0.1",
+            "--vertical-alignment-penalty-stages",
+            "reach",
+            "--vertical-alignment-deadband-m",
+            "0.04",
+            "--rotation-action-penalty-scale",
+            "0.005",
+            "--rotation-action-penalty-stages",
+            "reach",
             "--prioritize-replay",
             "--priority-replay-ratio",
             "0.5",
@@ -577,6 +740,17 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.2",
             "--protected-score-weights",
             "0.6,0.3,0.1",
+            "--protected-max-age-env-steps",
+            "100000",
+            "--protected-refresh-every-env-steps",
+            "10000",
+            "--protected-min-score",
+            "0.01",
+            "--protected-stage-local",
+            "--protected-stage-grace-env-steps",
+            "50000",
+            "--protected-old-stage-retain-fraction",
+            "0.5",
         ]
     )
     td3_args = parse_td3_args(
@@ -604,12 +778,37 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.003",
             "--lift-progress-height-m",
             "0.05",
+            "--reach-progress-stage-scales",
+            "0.5,0.1,0,0",
+            "--reach-progress-clip-m",
+            "0.01",
+            "--vertical-alignment-penalty-scale",
+            "0.1",
+            "--vertical-alignment-penalty-stages",
+            "reach",
+            "--vertical-alignment-deadband-m",
+            "0.04",
+            "--rotation-action-penalty-scale",
+            "0.005",
+            "--rotation-action-penalty-stages",
+            "reach",
             "--prioritize-replay",
             "--priority-replay-ratio",
             "0.5",
             "--protect-rare-transitions",
             "--protected-score-weights",
             "0.7,0.2,0.1",
+            "--protected-max-age-env-steps",
+            "100000",
+            "--protected-refresh-every-env-steps",
+            "10000",
+            "--protected-min-score",
+            "0.01",
+            "--protected-stage-local",
+            "--protected-stage-grace-env-steps",
+            "50000",
+            "--protected-old-stage-retain-fraction",
+            "0.5",
         ]
     )
 
@@ -632,12 +831,25 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.grip_proxy_scale == pytest.approx(1.25)
     assert sac_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert sac_args.lift_progress_height_m == pytest.approx(0.05)
+    assert sac_args.reach_progress_stage_scales == "0.5,0.1,0,0"
+    assert sac_args.reach_progress_clip_m == pytest.approx(0.01)
+    assert sac_args.vertical_alignment_penalty_scale == pytest.approx(0.1)
+    assert sac_args.vertical_alignment_penalty_stages == "reach"
+    assert sac_args.vertical_alignment_deadband_m == pytest.approx(0.04)
+    assert sac_args.rotation_action_penalty_scale == pytest.approx(0.005)
+    assert sac_args.rotation_action_penalty_stages == "reach"
     assert sac_args.prioritize_replay is True
     assert sac_args.priority_replay_ratio == pytest.approx(0.5)
     assert sac_args.priority_score_weights == "0.4,0.25,0.2,0.15"
     assert sac_args.protect_rare_transitions is True
     assert sac_args.protected_replay_fraction == pytest.approx(0.2)
     assert sac_args.protected_score_weights == "0.6,0.3,0.1"
+    assert sac_args.protected_max_age_env_steps == 100000
+    assert sac_args.protected_refresh_every_env_steps == 10000
+    assert sac_args.protected_min_score == pytest.approx(0.01)
+    assert sac_args.protected_stage_local is True
+    assert sac_args.protected_stage_grace_env_steps == 50000
+    assert sac_args.protected_old_stage_retain_fraction == pytest.approx(0.5)
     assert td3_args.checkpoint_every_env_steps == 50000
     assert td3_args.keep_last_checkpoints == 5
     assert td3_args.save_best_by == "eval_rollout/mean_return"
@@ -649,10 +861,23 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.curriculum_gate_min_train_exposures == "400,100,20,20"
     assert td3_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert td3_args.lift_progress_height_m == pytest.approx(0.05)
+    assert td3_args.reach_progress_stage_scales == "0.5,0.1,0,0"
+    assert td3_args.reach_progress_clip_m == pytest.approx(0.01)
+    assert td3_args.vertical_alignment_penalty_scale == pytest.approx(0.1)
+    assert td3_args.vertical_alignment_penalty_stages == "reach"
+    assert td3_args.vertical_alignment_deadband_m == pytest.approx(0.04)
+    assert td3_args.rotation_action_penalty_scale == pytest.approx(0.005)
+    assert td3_args.rotation_action_penalty_stages == "reach"
     assert td3_args.prioritize_replay is True
     assert td3_args.priority_replay_ratio == pytest.approx(0.5)
     assert td3_args.protect_rare_transitions is True
     assert td3_args.protected_score_weights == "0.7,0.2,0.1"
+    assert td3_args.protected_max_age_env_steps == 100000
+    assert td3_args.protected_refresh_every_env_steps == 10000
+    assert td3_args.protected_min_score == pytest.approx(0.01)
+    assert td3_args.protected_stage_local is True
+    assert td3_args.protected_stage_grace_env_steps == 50000
+    assert td3_args.protected_old_stage_retain_fraction == pytest.approx(0.5)
 
 
 def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
@@ -843,16 +1068,30 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("priority_replay/bucket_count/grip_effect" in logs for logs in report.log_history)
     assert any("action/train/gripper_mean" in logs for logs in report.log_history)
     assert any("action/train/gripper_close_rate" in logs for logs in report.log_history)
+    assert any("action/train/translation_norm" in logs for logs in report.log_history)
+    assert any("action/train/rotation_norm" in logs for logs in report.log_history)
+    assert any("action/train/gripper_abs_mean" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_mean" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_close_rate" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/translation_norm" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/rotation_norm" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/gripper_abs_mean" in logs for logs in report.log_history)
+    assert any("reward/train/reach_progress" in logs for logs in report.log_history)
+    assert any("reward/train/vertical_alignment_penalty" in logs for logs in report.log_history)
+    assert any("reward/train/rotation_action_penalty" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/reach_progress" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/vertical_alignment_penalty" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/rotation_action_penalty" in logs for logs in report.log_history)
     assert any("eval_rollout/max_cube_lift_m" in logs for logs in report.log_history)
     assert any("eval_rollout/min_ee_to_cube_m" in logs for logs in report.log_history)
     assert any("eval_rollout/min_cube_to_target_m" in logs for logs in report.log_history)
     assert any("eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
     assert any("action/train/gripper_mean" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/train/reach_progress" in metrics for _step, metrics in logger.scalar_calls)
     assert any("eval_rollout/max_cube_lift_m" in metrics for _step, metrics in logger.scalar_calls)
     assert any("action/eval_rollout/gripper_mean" in metrics for _step, metrics, _force in progress.calls)
+    assert any("reward/eval_rollout/reach_progress" in metrics for _step, metrics, _force in progress.calls)
 
 
 @pytest.mark.parametrize(

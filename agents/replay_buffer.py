@@ -136,6 +136,11 @@ class ReplayBuffer:
         protect_rare_transitions: bool = False,
         protected_replay_fraction: float = 0.2,
         protected_score_weights: tuple[float, float, float] = DEFAULT_PROTECTED_SCORE_WEIGHTS,
+        protected_max_age_env_steps: int = 0,
+        protected_min_score: float = 0.0,
+        protected_stage_local: bool = False,
+        protected_stage_grace_env_steps: int = 0,
+        protected_old_stage_retain_fraction: float = 0.5,
     ) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
@@ -163,6 +168,14 @@ class ReplayBuffer:
             raise ValueError("protected_score_weights must be non-negative")
         if sum(float(weight) for weight in protected_score_weights) <= 0.0:
             raise ValueError("protected_score_weights must contain at least one positive weight")
+        if protected_max_age_env_steps < 0:
+            raise ValueError("protected_max_age_env_steps must be non-negative")
+        if protected_min_score < 0.0:
+            raise ValueError("protected_min_score must be non-negative")
+        if protected_stage_grace_env_steps < 0:
+            raise ValueError("protected_stage_grace_env_steps must be non-negative")
+        if not 0.0 <= protected_old_stage_retain_fraction <= 1.0:
+            raise ValueError("protected_old_stage_retain_fraction must be in [0, 1]")
 
         estimate = estimate_replay_memory(
             capacity,
@@ -194,6 +207,11 @@ class ReplayBuffer:
         self.protected_replay_fraction = float(protected_replay_fraction)
         protected_weight_array = np.asarray(protected_score_weights, dtype=np.float32)
         self.protected_score_weights = tuple((protected_weight_array / protected_weight_array.sum()).tolist())
+        self.protected_max_age_env_steps = int(protected_max_age_env_steps)
+        self.protected_min_score = float(protected_min_score)
+        self.protected_stage_local = bool(protected_stage_local)
+        self.protected_stage_grace_env_steps = int(protected_stage_grace_env_steps)
+        self.protected_old_stage_retain_fraction = float(protected_old_stage_retain_fraction)
 
         self._images = np.zeros((capacity, *image_shape), dtype=np.uint8)
         self._next_images = np.zeros((capacity, *image_shape), dtype=np.uint8)
@@ -211,6 +229,8 @@ class ReplayBuffer:
         self._priority_scores = np.ones((capacity,), dtype=np.float32)
         self._protected_scores = np.zeros((capacity,), dtype=np.float32)
         self._protected = np.zeros((capacity,), dtype=bool)
+        self._insert_env_steps = np.zeros((capacity,), dtype=np.int64)
+        self._protected_stage_indices = np.zeros((capacity,), dtype=np.int16)
         self._bucket_counts_cache = np.zeros((len(PROGRESS_BUCKETS),), dtype=np.int64)
         self._diagnostic_counts_cache = np.zeros((len(DIAGNOSTIC_BUCKETS),), dtype=np.int64)
         self._last_mean_priority_score = 1.0
@@ -221,6 +241,9 @@ class ReplayBuffer:
         self._rng = np.random.default_rng(seed)
         self._last_sample_uniform_count = 0
         self._last_sample_priority_count = 0
+        self._last_refresh_env_steps: int | None = None
+        self._last_refresh_stage_index: int | None = None
+        self._last_refresh_stage_start_env_steps: int | None = None
 
     @property
     def size(self) -> int:
@@ -247,6 +270,8 @@ class ReplayBuffer:
         bucket_labels: np.ndarray | None = None,
         diagnostic_labels: np.ndarray | None = None,
         episode_return: float = 0.0,
+        insert_env_step: int = 0,
+        stage_index: int = 0,
     ) -> None:
         """Append a single transition. Validates dtype and shape strictly."""
 
@@ -284,6 +309,8 @@ class ReplayBuffer:
         self._priority_scores[idx] = 1.0
         self._protected_scores[idx] = 0.0
         self._protected[idx] = False
+        self._insert_env_steps[idx] = int(insert_env_step)
+        self._protected_stage_indices[idx] = int(stage_index)
         self._bucket_counts_cache += labels.astype(np.int64)
         self._diagnostic_counts_cache += diag_labels.astype(np.int64)
 
@@ -303,6 +330,8 @@ class ReplayBuffer:
         bucket_labels: np.ndarray | None = None,
         diagnostic_labels: np.ndarray | None = None,
         episode_returns: np.ndarray | None = None,
+        insert_env_step: int = 0,
+        stage_index: int = 0,
     ) -> None:
         """Append a per-lane batch of transitions from one vectorized env step."""
 
@@ -341,6 +370,8 @@ class ReplayBuffer:
                 bucket_labels=None if bucket_labels is None else bucket_labels[i],
                 diagnostic_labels=None if diagnostic_labels is None else diagnostic_labels[i],
                 episode_return=float(episode_return_array[i]),
+                insert_env_step=int(insert_env_step),
+                stage_index=int(stage_index),
             )
 
     def sample(self, batch_size: int, *, device: torch.device | str = "cpu") -> ReplayBatch:
@@ -382,6 +413,23 @@ class ReplayBuffer:
         self._td_errors[index_array[valid]] = np.maximum(np.abs(error_array[valid]), 0.0).astype(np.float32)
         if self.prioritize_replay:
             self._refresh_priority_scores()
+
+    def refresh_protected(
+        self,
+        *,
+        current_env_steps: int | None = None,
+        current_stage_index: int | None = None,
+        current_stage_start_env_steps: int | None = None,
+    ) -> None:
+        """Refresh priority/protected scores using optional age and stage context."""
+
+        if current_env_steps is not None:
+            self._last_refresh_env_steps = int(current_env_steps)
+        if current_stage_index is not None:
+            self._last_refresh_stage_index = int(current_stage_index)
+        if current_stage_start_env_steps is not None:
+            self._last_refresh_stage_start_env_steps = int(current_stage_start_env_steps)
+        self._refresh_priority_scores()
 
     def priority_logs(self) -> dict[str, float]:
         """Return replay-priority diagnostics for progress/W&B/JSONL logs."""
@@ -544,14 +592,52 @@ class ReplayBuffer:
             self._protected[: self._size] = False
             self._protected_count = 0
             return
-        threshold = np.partition(scores, -max_protected)[-max_protected]
-        self._protected[: self._size] = scores >= threshold
-        if np.count_nonzero(self._protected[: self._size]) > max_protected:
-            keep = np.argsort(scores)[-max_protected:]
+        eligible = np.ones((self._size,), dtype=bool)
+        if self.protected_min_score > 0.0:
+            eligible &= scores >= float(self.protected_min_score)
+        if self.protected_max_age_env_steps > 0 and self._last_refresh_env_steps is not None:
+            age = int(self._last_refresh_env_steps) - self._insert_env_steps[: self._size]
+            eligible &= age <= int(self.protected_max_age_env_steps)
+
+        if self.protected_stage_local and self._last_refresh_stage_index is not None:
+            eligible = self._stage_local_protected_mask(scores, eligible, max_protected)
+        else:
+            eligible_indices = np.flatnonzero(eligible)
+            keep = _top_k_indices(scores, eligible_indices, max_protected)
             mask = np.zeros((self._size,), dtype=bool)
             mask[keep] = True
             self._protected[: self._size] = mask
         self._protected_count = int(np.count_nonzero(self._protected[: self._size]))
+
+    def _stage_local_protected_mask(
+        self,
+        scores: np.ndarray,
+        eligible: np.ndarray,
+        max_protected: int,
+    ) -> np.ndarray:
+        current_stage = int(self._last_refresh_stage_index)
+        stage_indices = self._protected_stage_indices[: self._size].astype(np.int64)
+        same_stage = eligible & (stage_indices == current_stage)
+        old_stage = eligible & (stage_indices != current_stage)
+        in_grace = False
+        if (
+            self.protected_stage_grace_env_steps > 0
+            and self._last_refresh_env_steps is not None
+            and self._last_refresh_stage_start_env_steps is not None
+        ):
+            stage_age = int(self._last_refresh_env_steps) - int(self._last_refresh_stage_start_env_steps)
+            in_grace = stage_age <= int(self.protected_stage_grace_env_steps)
+
+        mask = np.zeros((self._size,), dtype=bool)
+        if in_grace and current_stage > 0:
+            old_quota = int(np.floor(max_protected * self.protected_old_stage_retain_fraction))
+            same_quota = max(max_protected - old_quota, 0)
+            mask[_top_k_indices(scores, np.flatnonzero(same_stage), same_quota)] = True
+            mask[_top_k_indices(scores, np.flatnonzero(old_stage), old_quota)] = True
+        else:
+            mask[_top_k_indices(scores, np.flatnonzero(same_stage), max_protected)] = True
+        self._protected[: self._size] = mask
+        return mask
 
     def _validate_image(self, name: str, image: np.ndarray) -> None:
         if not isinstance(image, np.ndarray):
@@ -620,6 +706,18 @@ def _unit_scores(values: np.ndarray) -> np.ndarray:
     else:
         out[finite] = (valid - lo) / (hi - lo)
     return out.astype(np.float32)
+
+
+def _top_k_indices(scores: np.ndarray, candidate_indices: np.ndarray, k: int) -> np.ndarray:
+    """Return up to ``k`` candidate indices with highest scores."""
+
+    if k <= 0 or candidate_indices.size == 0:
+        return np.empty((0,), dtype=np.int64)
+    candidate_indices = np.asarray(candidate_indices, dtype=np.int64).reshape(-1)
+    k = min(int(k), int(candidate_indices.size))
+    candidate_scores = np.asarray(scores, dtype=np.float32)[candidate_indices]
+    order = np.argsort(candidate_scores)
+    return candidate_indices[order[-k:]]
 
 
 __all__ = [

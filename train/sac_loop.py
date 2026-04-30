@@ -36,8 +36,10 @@ from train.reward_curriculum import (
     RewardCurriculumConfig,
     action_diagnostic_logs,
     assign_progress_labels,
+    compute_pr611_shaping_terms,
     compute_lift_success_labels,
     compute_progress_diagnostic_labels,
+    curriculum_stage,
     shape_rewards,
 )
 from train.rollout_metrics import (
@@ -90,6 +92,13 @@ class SACTrainLoopConfig:
     grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
     lift_progress_height_m: float = 0.04
+    reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
+    reach_progress_clip_m: float = 0.01
+    vertical_alignment_penalty_scale: float = 0.1
+    vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
+    vertical_alignment_deadband_m: float = 0.04
+    rotation_action_penalty_scale: float = 0.005
+    rotation_action_penalty_stages: tuple[str, ...] = ("reach",)
     prioritize_replay: bool = False
     priority_replay_ratio: float = 0.0
     priority_score_weights: tuple[float, float, float, float] = DEFAULT_PRIORITY_SCORE_WEIGHTS
@@ -98,6 +107,12 @@ class SACTrainLoopConfig:
     protect_rare_transitions: bool = False
     protected_replay_fraction: float = 0.2
     protected_score_weights: tuple[float, float, float] = DEFAULT_PROTECTED_SCORE_WEIGHTS
+    protected_max_age_env_steps: int = 0
+    protected_refresh_every_env_steps: int = 0
+    protected_min_score: float = 0.0
+    protected_stage_local: bool = False
+    protected_stage_grace_env_steps: int = 0
+    protected_old_stage_retain_fraction: float = 0.5
 
 
 @dataclass
@@ -253,6 +268,11 @@ def run_sac_train_loop(
         protect_rare_transitions=cfg.protect_rare_transitions,
         protected_replay_fraction=cfg.protected_replay_fraction,
         protected_score_weights=cfg.protected_score_weights,
+        protected_max_age_env_steps=cfg.protected_max_age_env_steps,
+        protected_min_score=cfg.protected_min_score,
+        protected_stage_local=cfg.protected_stage_local,
+        protected_stage_grace_env_steps=cfg.protected_stage_grace_env_steps,
+        protected_old_stage_retain_fraction=cfg.protected_old_stage_retain_fraction,
     )
 
     images, proprios = _split_per_env(obs, num_envs)
@@ -263,6 +283,13 @@ def run_sac_train_loop(
         grip_proxy_sigma_m=cfg.grip_proxy_sigma_m,
         lift_progress_deadband_m=cfg.lift_progress_deadband_m,
         lift_progress_height_m=cfg.lift_progress_height_m,
+        reach_progress_stage_scales=cfg.reach_progress_stage_scales,
+        reach_progress_clip_m=cfg.reach_progress_clip_m,
+        vertical_alignment_penalty_scale=cfg.vertical_alignment_penalty_scale,
+        vertical_alignment_penalty_stages=cfg.vertical_alignment_penalty_stages,
+        vertical_alignment_deadband_m=cfg.vertical_alignment_deadband_m,
+        rotation_action_penalty_scale=cfg.rotation_action_penalty_scale,
+        rotation_action_penalty_stages=cfg.rotation_action_penalty_stages,
     )
     curriculum_gate_tracker = CurriculumGateTracker(
         CurriculumGateConfig(
@@ -336,6 +363,11 @@ def run_sac_train_loop(
     last_per_lane_settle_note_vector_step = -_settle_note_interval(cfg.per_lane_settle_steps)
     warmup_done_reported = cfg.warmup_steps <= 0
     last_warmup_note_step = -_progress_note_interval(cfg.warmup_steps)
+    next_protected_refresh_step = (
+        cfg.protected_refresh_every_env_steps
+        if cfg.protected_refresh_every_env_steps > 0
+        else None
+    )
     if cfg.warmup_steps > 0:
         _note_progress(progress, env_steps, "warmup_start", {"warmup_steps": cfg.warmup_steps})
 
@@ -419,6 +451,22 @@ def run_sac_train_loop(
                 bucket_labels[active_train_indices] if active_train_indices.size > 0 else None,
                 env_steps=env_steps,
             )
+        stage_index_override = curriculum_gate_tracker.stage_index if curriculum_gate_tracker.config.enabled else None
+        if stage_index_override is None:
+            shaping_stage_index = curriculum_stage(
+                env_steps,
+                total_env_steps=cfg.total_env_steps,
+                stage_fracs=cfg.curriculum_stage_fracs,
+            )[0]
+        else:
+            shaping_stage_index = int(stage_index_override)
+        pr611_terms = compute_pr611_shaping_terms(
+            proprios,
+            next_proprios,
+            actions,
+            config=reward_curriculum_config,
+            stage_index=shaping_stage_index,
+        )
         shaped_rewards, curriculum_logs, grip_proxy, lift_progress_proxy = shape_rewards(
             rewards,
             reward_components,
@@ -429,9 +477,7 @@ def run_sac_train_loop(
             config=reward_curriculum_config,
             next_proprios=next_proprios,
             cube_reset_z=lane_reset_cube_z,
-            stage_index_override=(
-                curriculum_gate_tracker.stage_index if curriculum_gate_tracker.config.enabled else None
-            ),
+            stage_index_override=stage_index_override,
         )
 
         if active_train_indices.size > 0:
@@ -453,6 +499,8 @@ def run_sac_train_loop(
                 bucket_labels=bucket_labels[active_train_indices],
                 diagnostic_labels=diagnostic_labels[active_train_indices],
                 episode_returns=active_episode_returns,
+                insert_env_step=env_steps,
+                stage_index=shaping_stage_index,
             )
             lane_episode_returns[active_train_indices] = active_episode_returns
             reset_active_train_indices = active_train_indices[dones[active_train_indices] | truncs[active_train_indices]]
@@ -486,6 +534,7 @@ def run_sac_train_loop(
             )
             warmup_done_reported = True
         successes = infer_successes(_info, num_envs=num_envs, proprios=next_proprios)
+        same_step_eval_rollout_logs: dict[str, float] = {}
         train_rollout_logs = train_rollout_tracker.step(
             rewards=rewards[train_indices],
             terminated=dones[train_indices],
@@ -543,6 +592,7 @@ def run_sac_train_loop(
                 log_history,
                 force=True,
             )
+            same_step_eval_rollout_logs = dict(eval_rollout_logs)
             _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_rollout_logs, schedulers)
         else:
             eval_gate_episode_labels = None
@@ -566,6 +616,19 @@ def run_sac_train_loop(
                         "reason": "eval_dual_gate",
                     },
                 )
+        if (
+            cfg.prioritize_replay
+            and cfg.protect_rare_transitions
+            and next_protected_refresh_step is not None
+            and env_steps >= next_protected_refresh_step
+        ):
+            replay.refresh_protected(
+                current_env_steps=env_steps,
+                current_stage_index=curriculum_gate_tracker.stage_index,
+                current_stage_start_env_steps=curriculum_gate_tracker.stage_start_env_steps,
+            )
+            while next_protected_refresh_step is not None and env_steps >= next_protected_refresh_step:
+                next_protected_refresh_step += cfg.protected_refresh_every_env_steps
         reset_lanes = (dones | truncs) & ~settling_before
         if np.any(reset_lanes):
             lane_reset_cube_z[reset_lanes] = next_proprios[reset_lanes, CUBE_POS_BASE.stop - 1]
@@ -641,6 +704,8 @@ def run_sac_train_loop(
                 curriculum_logs["reward/train/lift_progress_proxy"] = float(
                     np.mean(lift_progress_proxy[active_train_indices])
                 )
+                for name, values in pr611_terms.items():
+                    curriculum_logs[f"reward/train/{name}"] = float(np.mean(values[active_train_indices]))
             if same_env_eval_tracker is not None:
                 eval_metric_indices = same_env_eval_indices[same_env_eval_metric_mask]
                 if eval_metric_indices.size > 0:
@@ -653,6 +718,10 @@ def run_sac_train_loop(
                     curriculum_logs["reward/eval_rollout/lift_progress_proxy"] = float(
                         np.mean(lift_progress_proxy[eval_metric_indices])
                     )
+                    for name, values in pr611_terms.items():
+                        curriculum_logs[f"reward/eval_rollout/{name}"] = float(
+                            np.mean(values[eval_metric_indices])
+                        )
             env_logs.update(curriculum_logs)
             reward_logs.update(curriculum_logs)
         if gate_logs:
@@ -668,7 +737,11 @@ def run_sac_train_loop(
             if logger is not None:
                 logger.log_scalars(env_steps, reward_logs)
         _update_progress(progress, env_steps, env_logs)
-        _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, env_logs, schedulers)
+        checkpoint_env_logs = _merge_same_step_eval_checkpoint_metrics(
+            env_logs,
+            same_step_eval_rollout_logs,
+        )
+        _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, checkpoint_env_logs, schedulers)
 
         if active_train_indices.size > 0 and not warming_up and replay.size >= cfg.batch_size:
             for _ in range(agent.config.utd_ratio):
@@ -781,6 +854,21 @@ def _maybe_save_checkpoint(
     if checkpoint_saver is None or not metrics:
         return
     checkpoint_saver(agent, env_steps, metrics, scheduler_collection_state(schedulers))
+
+
+def _merge_same_step_eval_checkpoint_metrics(
+    metrics: dict[str, float],
+    eval_rollout_metrics: dict[str, float],
+) -> dict[str, float]:
+    """Attach same-step eval rollout metrics to env/gate metrics for best-checkpoint selection."""
+
+    if not metrics or not eval_rollout_metrics:
+        return metrics
+    if not any(key.startswith("eval_rollout/") for key in eval_rollout_metrics):
+        return metrics
+    merged = dict(eval_rollout_metrics)
+    merged.update(metrics)
+    return merged
 
 
 def _sac_lr_logs(agent: SACAgent) -> dict[str, float]:

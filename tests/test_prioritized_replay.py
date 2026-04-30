@@ -168,3 +168,98 @@ def test_replay_buffer_logs_grip_attempt_and_effect_diagnostic_counts() -> None:
 
     assert logs["priority_replay/bucket_count/grip_attempt"] == pytest.approx(2.0)
     assert logs["priority_replay/bucket_count/grip_effect"] == pytest.approx(1.0)
+
+
+def test_replay_buffer_stores_protected_refresh_metadata() -> None:
+    rng = np.random.default_rng(5)
+    buffer = ReplayBuffer(capacity=4, ram_budget_gib=8.0, seed=0)
+
+    buffer.push(
+        **make_dummy_transition(rng=rng),
+        bucket_labels=_label("reach"),
+        insert_env_step=123,
+        stage_index=2,
+    )
+
+    assert int(buffer._insert_env_steps[0]) == 123
+    assert int(buffer._protected_stage_indices[0]) == 2
+
+
+def test_protected_refresh_drops_entries_past_max_age() -> None:
+    rng = np.random.default_rng(6)
+    buffer = ReplayBuffer(
+        capacity=4,
+        ram_budget_gib=8.0,
+        seed=0,
+        prioritize_replay=True,
+        protect_rare_transitions=True,
+        protected_replay_fraction=0.5,
+        protected_max_age_env_steps=10,
+        protected_score_weights=(0.0, 1.0, 0.0),
+    )
+
+    old_goal = make_dummy_transition(rng=rng)
+    old_goal["reward"] = 10.0
+    fresh_goal = make_dummy_transition(rng=rng)
+    fresh_goal["reward"] = 9.0
+    normal_a = make_dummy_transition(rng=rng)
+    normal_a["reward"] = 0.0
+    normal_b = make_dummy_transition(rng=rng)
+    normal_b["reward"] = 0.0
+
+    buffer.push(**old_goal, bucket_labels=_label("goal"), insert_env_step=0, stage_index=0)
+    buffer.push(**fresh_goal, bucket_labels=_label("goal"), insert_env_step=100, stage_index=0)
+    buffer.push(**normal_a, bucket_labels=_label("normal"), insert_env_step=100, stage_index=0)
+    buffer.push(**normal_b, bucket_labels=_label("normal"), insert_env_step=100, stage_index=0)
+
+    buffer.refresh_protected(current_env_steps=100, current_stage_index=0, current_stage_start_env_steps=0)
+
+    assert bool(buffer._protected[0]) is False
+    assert bool(buffer._protected[1]) is True
+
+
+def test_protected_stage_local_refresh_retains_old_stage_only_during_grace() -> None:
+    rng = np.random.default_rng(7)
+    buffer = ReplayBuffer(
+        capacity=10,
+        ram_budget_gib=8.0,
+        seed=0,
+        prioritize_replay=True,
+        protect_rare_transitions=True,
+        protected_replay_fraction=0.4,
+        protected_stage_local=True,
+        protected_stage_grace_env_steps=50,
+        protected_old_stage_retain_fraction=0.5,
+        protected_score_weights=(0.0, 1.0, 0.0),
+    )
+
+    for idx in range(5):
+        transition = make_dummy_transition(rng=rng)
+        transition["reward"] = 10.0 - idx
+        buffer.push(
+            **transition,
+            bucket_labels=_label("reach"),
+            insert_env_step=idx,
+            stage_index=0,
+        )
+    for idx in range(5):
+        transition = make_dummy_transition(rng=rng)
+        transition["reward"] = 5.0 - idx
+        buffer.push(
+            **transition,
+            bucket_labels=_label("grip"),
+            insert_env_step=100 + idx,
+            stage_index=1,
+        )
+
+    buffer.refresh_protected(current_env_steps=110, current_stage_index=1, current_stage_start_env_steps=100)
+    old_stage_protected = int(np.count_nonzero(buffer._protected[:5]))
+    current_stage_protected = int(np.count_nonzero(buffer._protected[5:10]))
+
+    assert old_stage_protected <= 2
+    assert current_stage_protected >= 1
+
+    buffer.refresh_protected(current_env_steps=200, current_stage_index=1, current_stage_start_env_steps=100)
+
+    assert int(np.count_nonzero(buffer._protected[:5])) == 0
+    assert 0 < int(np.count_nonzero(buffer._protected[5:10])) <= 4

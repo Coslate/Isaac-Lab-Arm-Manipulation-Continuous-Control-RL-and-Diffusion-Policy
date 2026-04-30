@@ -40,6 +40,8 @@ from train.reward_curriculum import (
     parse_eval_gate_thresholds,
     parse_gate_thresholds,
     parse_min_train_exposures,
+    parse_stage_names,
+    parse_stage_scales,
     parse_stage_fracs,
 )
 from train.reward_probe import probe_reward_signal
@@ -132,6 +134,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
     parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
     parser.add_argument("--lift-progress-height-m", dest="lift_progress_height_m", type=float, default=0.04)
+    parser.add_argument("--reach-progress-stage-scales", dest="reach_progress_stage_scales", default="0.5,0.1,0.0,0.0")
+    parser.add_argument("--reach-progress-clip-m", dest="reach_progress_clip_m", type=float, default=0.01)
+    parser.add_argument("--vertical-alignment-penalty-scale", dest="vertical_alignment_penalty_scale", type=float, default=0.1)
+    parser.add_argument("--vertical-alignment-penalty-stages", dest="vertical_alignment_penalty_stages", default="reach")
+    parser.add_argument("--vertical-alignment-deadband-m", dest="vertical_alignment_deadband_m", type=float, default=0.04)
+    parser.add_argument("--rotation-action-penalty-scale", dest="rotation_action_penalty_scale", type=float, default=0.005)
+    parser.add_argument("--rotation-action-penalty-stages", dest="rotation_action_penalty_stages", default="reach")
     parser.add_argument("--prioritize-replay", action="store_true")
     parser.add_argument("--priority-replay-ratio", dest="priority_replay_ratio", type=float, default=0.5)
     parser.add_argument(
@@ -148,6 +157,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="protected_score_weights",
         default="0.60,0.25,0.15",
     )
+    parser.add_argument("--protected-max-age-env-steps", dest="protected_max_age_env_steps", type=int, default=0)
+    parser.add_argument("--protected-refresh-every-env-steps", dest="protected_refresh_every_env_steps", type=int, default=0)
+    parser.add_argument("--protected-min-score", dest="protected_min_score", type=float, default=0.0)
+    parser.add_argument("--protected-stage-local", dest="protected_stage_local", action="store_true")
+    parser.add_argument("--protected-stage-grace-env-steps", dest="protected_stage_grace_env_steps", type=int, default=0)
+    parser.add_argument("--protected-old-stage-retain-fraction", dest="protected_old_stage_retain_fraction", type=float, default=0.5)
     return parser.parse_args(argv)
 
 
@@ -216,6 +231,13 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         grip_proxy_sigma_m=args.grip_proxy_sigma_m,
         lift_progress_deadband_m=args.lift_progress_deadband_m,
         lift_progress_height_m=args.lift_progress_height_m,
+        reach_progress_stage_scales=parse_stage_scales(args.reach_progress_stage_scales),
+        reach_progress_clip_m=args.reach_progress_clip_m,
+        vertical_alignment_penalty_scale=args.vertical_alignment_penalty_scale,
+        vertical_alignment_penalty_stages=parse_stage_names(args.vertical_alignment_penalty_stages),
+        vertical_alignment_deadband_m=args.vertical_alignment_deadband_m,
+        rotation_action_penalty_scale=args.rotation_action_penalty_scale,
+        rotation_action_penalty_stages=parse_stage_names(args.rotation_action_penalty_stages),
         prioritize_replay=args.prioritize_replay,
         priority_replay_ratio=args.priority_replay_ratio if args.prioritize_replay else 0.0,
         priority_score_weights=_parse_priority_score_weights(args.priority_score_weights),
@@ -224,6 +246,12 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         protect_rare_transitions=args.protect_rare_transitions,
         protected_replay_fraction=args.protected_replay_fraction,
         protected_score_weights=_parse_protected_score_weights(args.protected_score_weights),
+        protected_max_age_env_steps=args.protected_max_age_env_steps,
+        protected_refresh_every_env_steps=args.protected_refresh_every_env_steps,
+        protected_min_score=args.protected_min_score,
+        protected_stage_local=args.protected_stage_local,
+        protected_stage_grace_env_steps=args.protected_stage_grace_env_steps,
+        protected_old_stage_retain_fraction=args.protected_old_stage_retain_fraction,
     )
     logger = _build_logger(args)
     progress = _build_progress(args, description="td3 train")
@@ -393,6 +421,17 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--lift-progress-deadband-m must be non-negative")
     if args.lift_progress_height_m <= 0.0:
         raise ValueError("--lift-progress-height-m must be positive")
+    parse_stage_scales(args.reach_progress_stage_scales)
+    parse_stage_names(args.vertical_alignment_penalty_stages)
+    parse_stage_names(args.rotation_action_penalty_stages)
+    if args.reach_progress_clip_m <= 0.0:
+        raise ValueError("--reach-progress-clip-m must be positive")
+    if args.vertical_alignment_penalty_scale < 0.0:
+        raise ValueError("--vertical-alignment-penalty-scale must be non-negative")
+    if args.vertical_alignment_deadband_m < 0.0:
+        raise ValueError("--vertical-alignment-deadband-m must be non-negative")
+    if args.rotation_action_penalty_scale < 0.0:
+        raise ValueError("--rotation-action-penalty-scale must be non-negative")
     if not 0.0 <= args.priority_replay_ratio <= 1.0:
         raise ValueError("--priority-replay-ratio must be in [0, 1]")
     if args.priority_rarity_power < 0.0:
@@ -401,6 +440,16 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--priority-rarity-eps must be positive")
     if not 0.0 <= args.protected_replay_fraction <= 1.0:
         raise ValueError("--protected-replay-fraction must be in [0, 1]")
+    if args.protected_max_age_env_steps < 0:
+        raise ValueError("--protected-max-age-env-steps must be non-negative")
+    if args.protected_refresh_every_env_steps < 0:
+        raise ValueError("--protected-refresh-every-env-steps must be non-negative")
+    if args.protected_min_score < 0.0:
+        raise ValueError("--protected-min-score must be non-negative")
+    if args.protected_stage_grace_env_steps < 0:
+        raise ValueError("--protected-stage-grace-env-steps must be non-negative")
+    if not 0.0 <= args.protected_old_stage_retain_fraction <= 1.0:
+        raise ValueError("--protected-old-stage-retain-fraction must be in [0, 1]")
 
 
 def _parse_priority_score_weights(value: str) -> tuple[float, float, float, float]:

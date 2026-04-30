@@ -99,6 +99,7 @@ DEFAULT_STAGE_WEIGHTS: tuple[StageWeights, ...] = (
         joint=1.0,
     ),
 )
+STAGE_NAMES: tuple[str, ...] = tuple(stage.name for stage in DEFAULT_STAGE_WEIGHTS)
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,13 @@ class RewardCurriculumConfig:
     grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
     lift_progress_height_m: float = 0.04
+    reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
+    reach_progress_clip_m: float = 0.01
+    vertical_alignment_penalty_scale: float = 0.1
+    vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
+    vertical_alignment_deadband_m: float = 0.04
+    rotation_action_penalty_scale: float = 0.005
+    rotation_action_penalty_stages: tuple[str, ...] = ("reach",)
     stage_weights: tuple[StageWeights, StageWeights, StageWeights, StageWeights] = DEFAULT_STAGE_WEIGHTS
 
     def __post_init__(self) -> None:
@@ -125,6 +133,20 @@ class RewardCurriculumConfig:
             raise ValueError("lift_progress_deadband_m must be non-negative")
         if self.lift_progress_height_m <= 0.0:
             raise ValueError("lift_progress_height_m must be positive")
+        if len(self.reach_progress_stage_scales) != 4:
+            raise ValueError("reach_progress_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.reach_progress_stage_scales):
+            raise ValueError("reach_progress_stage_scales must be non-negative")
+        if self.reach_progress_clip_m <= 0.0:
+            raise ValueError("reach_progress_clip_m must be positive")
+        if self.vertical_alignment_penalty_scale < 0.0:
+            raise ValueError("vertical_alignment_penalty_scale must be non-negative")
+        _validate_stage_names(self.vertical_alignment_penalty_stages, "vertical_alignment_penalty_stages")
+        if self.vertical_alignment_deadband_m < 0.0:
+            raise ValueError("vertical_alignment_deadband_m must be non-negative")
+        if self.rotation_action_penalty_scale < 0.0:
+            raise ValueError("rotation_action_penalty_scale must be non-negative")
+        _validate_stage_names(self.rotation_action_penalty_stages, "rotation_action_penalty_stages")
         if len(self.stage_weights) != 4:
             raise ValueError("stage_weights must contain four stages")
 
@@ -394,6 +416,10 @@ class CurriculumGateTracker:
             "lift_2cm": float(np.mean(labels[:, EVAL_GATE_LABEL_INDEX["lift_2cm"]])),
         }
 
+    @property
+    def stage_start_env_steps(self) -> int:
+        return int(self._stage_start_env_steps)
+
     def _last_env_steps(self) -> int:
         return getattr(self, "_last_update_env_steps", self._stage_start_env_steps)
 
@@ -499,12 +525,48 @@ def parse_min_train_exposures(value: str | Sequence[int]) -> tuple[int, int, int
     return counts  # type: ignore[return-value]
 
 
+def parse_stage_scales(value: str | Sequence[float]) -> tuple[float, float, float, float]:
+    """Parse four non-negative per-stage scales in reach/grip/lift/stock-like order."""
+
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if len(parts) != 4:
+            raise ValueError("stage scales must contain exactly four comma-separated values")
+        scales = tuple(float(part) for part in parts)
+    else:
+        if len(value) != 4:
+            raise ValueError("stage scales must contain exactly four values")
+        scales = tuple(float(part) for part in value)
+    if any(scale < 0.0 for scale in scales):
+        raise ValueError("stage scales must be non-negative")
+    return scales  # type: ignore[return-value]
+
+
+def parse_stage_names(value: str | Sequence[str]) -> tuple[str, ...]:
+    """Parse a comma-separated stage-name list for stage-local PR6.11 penalties."""
+
+    if isinstance(value, str):
+        if not value.strip():
+            return ()
+        stages = tuple(part.strip() for part in value.split(",") if part.strip())
+    else:
+        stages = tuple(str(part).strip() for part in value if str(part).strip())
+    _validate_stage_names(stages, "stage names")
+    return stages
+
+
 def _validate_stage_fracs(fracs: Sequence[float]) -> None:
     if len(fracs) != 3:
         raise ValueError("stage_fracs must contain exactly three fractions")
     a, b, c = (float(x) for x in fracs)
     if not (0.0 < a < b < c < 1.0):
         raise ValueError("stage fractions must satisfy 0 < a < b < c < 1")
+
+
+def _validate_stage_names(names: Sequence[str], field_name: str) -> None:
+    invalid = [name for name in names if name not in STAGE_NAMES]
+    if invalid:
+        raise ValueError(f"{field_name} contains unsupported stages {invalid!r}; expected {STAGE_NAMES!r}")
 
 
 def curriculum_stage(
@@ -591,6 +653,109 @@ def compute_lift_success_labels(
     return (cube_z - reset_z) >= float(height_m)
 
 
+def compute_reach_progress(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    *,
+    clip_m: float = 0.01,
+) -> np.ndarray:
+    """Dense positive progress when EE-to-cube distance decreases."""
+
+    if clip_m <= 0.0:
+        raise ValueError("clip_m must be positive")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if proprio_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("proprios and next_proprios must share batch size")
+    ee_dist_t = np.linalg.norm(proprio_array[:, EE_TO_CUBE], axis=1)
+    ee_dist_tp1 = np.linalg.norm(next_proprio_array[:, EE_TO_CUBE], axis=1)
+    return np.clip(ee_dist_t - ee_dist_tp1, -float(clip_m), float(clip_m)).astype(np.float32)
+
+
+def compute_vertical_alignment_penalty(
+    proprios: np.ndarray,
+    *,
+    deadband_m: float = 0.04,
+) -> np.ndarray:
+    """Penalty for stage-0 z-axis mismatch, using proprio[:, 29] = ee_to_cube_z."""
+
+    if deadband_m < 0.0:
+        raise ValueError("deadband_m must be non-negative")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    z_error = np.abs(proprio_array[:, EE_TO_CUBE.stop - 1])
+    return (-np.maximum(z_error - float(deadband_m), 0.0)).astype(np.float32)
+
+
+def compute_rotation_action_penalty(actions: np.ndarray) -> np.ndarray:
+    """Penalty contribution for normalized wrist rotation command magnitude."""
+
+    action_array = _as_2d_float(actions, name="actions")
+    if action_array.shape[1] < 6:
+        raise ValueError("actions must have at least six dimensions")
+    return (-np.linalg.norm(action_array[:, 3:6], axis=1)).astype(np.float32)
+
+
+def compute_pr611_shaping_terms(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray | None,
+    actions: np.ndarray,
+    *,
+    config: RewardCurriculumConfig,
+    stage_index: int,
+) -> dict[str, np.ndarray]:
+    """Return scaled PR6.11 reward-shaping terms for the given curriculum stage."""
+
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    batch_size = proprio_array.shape[0]
+    if not config.enabled:
+        zeros = np.zeros((batch_size,), dtype=np.float32)
+        return {
+            "reach_progress": zeros,
+            "vertical_alignment_penalty": zeros,
+            "rotation_action_penalty": zeros,
+        }
+    if not 0 <= int(stage_index) < len(config.stage_weights):
+        raise ValueError("stage_index must be in [0, 3]")
+    stage_index = int(stage_index)
+    stage_name = config.stage_weights[stage_index].name
+    if next_proprios is None:
+        reach_progress = np.zeros((batch_size,), dtype=np.float32)
+    else:
+        reach_progress = compute_reach_progress(
+            proprio_array,
+            next_proprios,
+            clip_m=config.reach_progress_clip_m,
+        )
+    reach_progress = (
+        float(config.reach_progress_stage_scales[stage_index]) * reach_progress
+    ).astype(np.float32)
+    vertical_scale = (
+        float(config.vertical_alignment_penalty_scale)
+        if stage_name in config.vertical_alignment_penalty_stages
+        else 0.0
+    )
+    rotation_scale = (
+        float(config.rotation_action_penalty_scale)
+        if stage_name in config.rotation_action_penalty_stages
+        else 0.0
+    )
+    vertical_penalty = (
+        vertical_scale
+        * compute_vertical_alignment_penalty(
+            proprio_array,
+            deadband_m=config.vertical_alignment_deadband_m,
+        )
+    ).astype(np.float32)
+    rotation_penalty = (
+        rotation_scale * compute_rotation_action_penalty(actions)
+    ).astype(np.float32)
+    return {
+        "reach_progress": reach_progress,
+        "vertical_alignment_penalty": vertical_penalty,
+        "rotation_action_penalty": rotation_penalty,
+    }
+
+
 def shape_rewards(
     rewards: np.ndarray,
     components: Mapping[str, np.ndarray],
@@ -639,6 +804,13 @@ def shape_rewards(
             deadband_m=config.lift_progress_deadband_m,
             height_m=config.lift_progress_height_m,
         )
+    pr611_terms = compute_pr611_shaping_terms(
+        proprios,
+        next_proprios,
+        actions,
+        config=config,
+        stage_index=stage_index,
+    )
     shaped = (
         weights.reach * _component(components, "reaching_object", reward_array.shape[0])
         + weights.grip * grip_proxy
@@ -648,6 +820,9 @@ def shape_rewards(
         + weights.fine * _component(components, "object_goal_tracking_fine_grained", reward_array.shape[0])
         + weights.action * _component(components, "action_rate", reward_array.shape[0])
         + weights.joint * _component(components, "joint_vel", reward_array.shape[0])
+        + pr611_terms["reach_progress"]
+        + pr611_terms["vertical_alignment_penalty"]
+        + pr611_terms["rotation_action_penalty"]
     ).astype(np.float32)
     logs = {
         "curriculum/stage_index": float(stage_index),
@@ -655,6 +830,13 @@ def shape_rewards(
         "reward/train_shaped": float(np.mean(shaped)) if shaped.size else 0.0,
         "reward/train/grip_proxy": float(np.mean(grip_proxy)) if grip_proxy.size else 0.0,
         "reward/train/lift_progress_proxy": float(np.mean(lift_progress_proxy)) if lift_progress_proxy.size else 0.0,
+        "reward/train/reach_progress": float(np.mean(pr611_terms["reach_progress"])) if shaped.size else 0.0,
+        "reward/train/vertical_alignment_penalty": (
+            float(np.mean(pr611_terms["vertical_alignment_penalty"])) if shaped.size else 0.0
+        ),
+        "reward/train/rotation_action_penalty": (
+            float(np.mean(pr611_terms["rotation_action_penalty"])) if shaped.size else 0.0
+        ),
     }
     # Numeric mirror for logger backends; progress text can still use the hparams/config for names.
     logs[f"curriculum/stage/{stage_name}"] = 1.0
@@ -772,6 +954,9 @@ def action_diagnostic_logs(
     logs = {
         f"{prefix}/gripper_mean": float(np.mean(gripper)),
         f"{prefix}/gripper_close_rate": float(np.mean(gripper < cfg.close_command_threshold)),
+        f"{prefix}/translation_norm": float(np.mean(np.linalg.norm(action_array[:, 0:3], axis=1))),
+        f"{prefix}/rotation_norm": float(np.mean(np.linalg.norm(action_array[:, 3:6], axis=1))),
+        f"{prefix}/gripper_abs_mean": float(np.mean(np.abs(gripper))),
     }
     if proprios is not None:
         proprio_array = _as_2d_float(proprios, name="proprios")
@@ -829,17 +1014,24 @@ __all__ = [
     "SUPPORTED_CURRICULUM_GATING",
     "SUPPORTED_REWARD_CURRICULA",
     "RewardCurriculumConfig",
+    "STAGE_NAMES",
     "StageWeights",
     "action_diagnostic_logs",
     "assign_progress_labels",
     "compute_lift_success_labels",
     "compute_lift_progress_proxy",
+    "compute_pr611_shaping_terms",
+    "compute_reach_progress",
     "compute_grip_proxy",
     "compute_progress_diagnostic_labels",
+    "compute_rotation_action_penalty",
+    "compute_vertical_alignment_penalty",
     "curriculum_stage",
     "parse_eval_gate_thresholds",
     "parse_gate_thresholds",
     "parse_min_train_exposures",
+    "parse_stage_names",
+    "parse_stage_scales",
     "parse_stage_fracs",
     "shape_rewards",
 ]

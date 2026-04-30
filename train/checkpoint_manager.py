@@ -8,9 +8,16 @@ from typing import Any
 
 
 COMPOSITE_SUCCESS_LIFT_RETURN = "composite:success_lift_return"
+STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN = "stage_aware:reach_lift_success_return"
 COMPOSITE_SUCCESS_KEY = "eval_rollout/success_rate"
 COMPOSITE_LIFT_KEY = "eval_rollout/max_cube_lift_m"
 COMPOSITE_RETURN_KEY = "eval_rollout/mean_return"
+STAGE_KEY = "curriculum/stage_index"
+STAGE0_REACH_KEY = "curriculum/gate/eval_reach_episode_rate"
+STAGE1_GRIP_EFFECT_KEY = "curriculum/gate/eval_grip_effect_episode_rate"
+STAGE1_GRIP_ATTEMPT_KEY = "curriculum/gate/eval_grip_attempt_episode_rate"
+STAGE2_LIFT_2CM_KEY = "curriculum/gate/eval_lift_2cm_episode_rate"
+MIN_EE_TO_CUBE_KEY = "eval_rollout/min_ee_to_cube_m"
 
 
 class TrainingCheckpointManager:
@@ -42,6 +49,8 @@ class TrainingCheckpointManager:
         self.env_id = str(env_id)
         self.next_periodic_step = self.checkpoint_every_env_steps if self.checkpoint_every_env_steps > 0 else None
         self.best_metric_value: Any | None = None
+        self.stage_best_metric_values: dict[int, tuple[float, ...]] = {}
+        self.highest_best_stage: int | None = None
         self.periodic_paths: list[Path] = []
         self.history: list[dict[str, Any]] = []
 
@@ -68,6 +77,22 @@ class TrainingCheckpointManager:
             self._save_periodic(agent, env_steps=env_steps, scheduler_state=scheduler_state)
             while self.next_periodic_step is not None and env_steps >= self.next_periodic_step:
                 self.next_periodic_step += self.checkpoint_every_env_steps
+
+        if self.save_best_by == STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN:
+            stage_candidate = self._stage_aware_best_candidate(metrics)
+            if stage_candidate is not None:
+                stage_index, comparator = stage_candidate
+                incumbent = self.stage_best_metric_values.get(stage_index)
+                if incumbent is None or _metric_better(comparator, incumbent):
+                    self.stage_best_metric_values[stage_index] = comparator
+                    self._save_stage_best(
+                        agent,
+                        env_steps=env_steps,
+                        stage_index=stage_index,
+                        metric_value=comparator,
+                        scheduler_state=scheduler_state,
+                    )
+            return
 
         if self.save_best_by is not None:
             candidate = self._best_candidate(metrics)
@@ -104,6 +129,60 @@ class TrainingCheckpointManager:
             return None
         return metric_value
 
+    def _stage_aware_best_candidate(self, metrics: dict[str, float]) -> tuple[int, tuple[float, ...]] | None:
+        if STAGE_KEY not in metrics:
+            return None
+        stage_index = int(float(metrics[STAGE_KEY]))
+        if not 0 <= stage_index <= 3:
+            raise ValueError(f"{STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN} requires stage_index in [0, 3]")
+        if not any(key.startswith("eval_rollout/") for key in metrics):
+            return None
+        if stage_index == 0:
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    STAGE0_REACH_KEY,
+                    MIN_EE_TO_CUBE_KEY,
+                    COMPOSITE_RETURN_KEY,
+                ),
+                transform=(1.0, -1.0, 1.0),
+            )
+        elif stage_index == 1:
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    STAGE1_GRIP_EFFECT_KEY,
+                    STAGE1_GRIP_ATTEMPT_KEY,
+                    MIN_EE_TO_CUBE_KEY,
+                ),
+                transform=(1.0, 1.0, -1.0),
+            )
+        elif stage_index == 2:
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    COMPOSITE_LIFT_KEY,
+                    STAGE2_LIFT_2CM_KEY,
+                    COMPOSITE_RETURN_KEY,
+                ),
+                transform=(1.0, 1.0, 1.0),
+            )
+        else:
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    COMPOSITE_SUCCESS_KEY,
+                    COMPOSITE_LIFT_KEY,
+                    COMPOSITE_RETURN_KEY,
+                ),
+                transform=(1.0, 1.0, 1.0),
+            )
+        if not values:
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return stage_index, values
+
     def _save_periodic(self, agent: Any, *, env_steps: int, scheduler_state: dict[str, Any] | None) -> None:
         path = self.checkpoint_dir / f"{self.checkpoint_name}_step_{env_steps:09d}.pt"
         self._save(agent, path, env_steps=env_steps, scheduler_state=scheduler_state)
@@ -130,6 +209,34 @@ class TrainingCheckpointManager:
                 "metric_value": _metric_history_value(metric_value),
             }
         )
+
+    def _save_stage_best(
+        self,
+        agent: Any,
+        *,
+        env_steps: int,
+        stage_index: int,
+        metric_value: tuple[float, ...],
+        scheduler_state: dict[str, Any] | None,
+    ) -> None:
+        stage_path = self.checkpoint_dir / f"{self.checkpoint_name}_best_stage{stage_index}.pt"
+        self._save(agent, stage_path, env_steps=env_steps, scheduler_state=scheduler_state)
+        generic_path: Path | None = None
+        if self.highest_best_stage is None or stage_index >= self.highest_best_stage:
+            self.highest_best_stage = stage_index
+            generic_path = self.checkpoint_dir / f"{self.checkpoint_name}_best.pt"
+            self._save(agent, generic_path, env_steps=env_steps, scheduler_state=scheduler_state)
+        entry = {
+            "kind": "best",
+            "env_steps": env_steps,
+            "path": str(stage_path),
+            "metric_key": self.save_best_by,
+            "metric_value": _metric_history_value(metric_value),
+            "stage_index": int(stage_index),
+        }
+        if generic_path is not None:
+            entry["generic_path"] = str(generic_path)
+        self.history.append(entry)
 
     def _save(self, agent: Any, path: Path, *, env_steps: int, scheduler_state: dict[str, Any] | None) -> None:
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -158,10 +265,27 @@ def _metric_history_value(value: Any) -> Any:
     return float(value)
 
 
+def _required_metric_tuple(
+    metrics: dict[str, float],
+    keys: tuple[str, ...],
+    *,
+    transform: tuple[float, ...],
+) -> tuple[float, ...]:
+    if not any(key in metrics for key in keys):
+        return ()
+    missing = [key for key in keys if key not in metrics]
+    if missing:
+        raise ValueError(
+            f"{STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN} requires {keys}; missing {tuple(missing)}"
+        )
+    return tuple(float(metrics[key]) * float(sign) for key, sign in zip(keys, transform, strict=True))
+
+
 __all__ = [
     "COMPOSITE_LIFT_KEY",
     "COMPOSITE_RETURN_KEY",
     "COMPOSITE_SUCCESS_KEY",
     "COMPOSITE_SUCCESS_LIFT_RETURN",
+    "STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN",
     "TrainingCheckpointManager",
 ]
