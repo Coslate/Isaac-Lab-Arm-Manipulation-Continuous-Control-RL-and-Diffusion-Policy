@@ -40,6 +40,7 @@ from train.progress import TrainProgressReporter
 from train.reward_curriculum import (
     CURRICULUM_GATING_EVAL_DUAL_GATE,
     SUPPORTED_CURRICULUM_GATING,
+    SUPPORTED_REACH_GATE_METRICS,
     SUPPORTED_REWARD_CURRICULA,
     parse_eval_gate_thresholds,
     parse_gate_thresholds,
@@ -134,12 +135,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--curriculum-gate-lift-success-height-m", dest="curriculum_gate_lift_success_height_m", type=float, default=0.02)
     parser.add_argument("--curriculum-gate-min-stage-env-steps", dest="curriculum_gate_min_stage_env_steps", type=int, default=10_000)
     parser.add_argument("--curriculum-gate-consecutive-eval-passes", dest="curriculum_gate_consecutive_eval_passes", type=int, default=1)
+    parser.add_argument(
+        "--curriculum-gate-reach-metric",
+        dest="curriculum_gate_reach_metric",
+        choices=SUPPORTED_REACH_GATE_METRICS,
+        default="episode_rate",
+    )
+    parser.add_argument(
+        "--curriculum-gate-reach-min-consecutive-steps",
+        dest="curriculum_gate_reach_min_consecutive_steps",
+        type=int,
+        default=0,
+    )
     parser.add_argument("--grip-proxy-scale", dest="grip_proxy_scale", type=float, default=1.0)
     parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
     parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
     parser.add_argument("--lift-progress-height-m", dest="lift_progress_height_m", type=float, default=0.04)
     parser.add_argument("--reach-progress-stage-scales", dest="reach_progress_stage_scales", default="0.5,0.1,0.0,0.0")
     parser.add_argument("--reach-progress-clip-m", dest="reach_progress_clip_m", type=float, default=0.01)
+    parser.add_argument("--reach-dwell-stage-scales", dest="reach_dwell_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--reach-dwell-sigma-m", dest="reach_dwell_sigma_m", type=float, default=0.05)
+    parser.add_argument("--reach-dwell-threshold-m", dest="reach_dwell_threshold_m", type=float, default=0.05)
     parser.add_argument("--vertical-alignment-penalty-scale", dest="vertical_alignment_penalty_scale", type=float, default=0.1)
     parser.add_argument("--vertical-alignment-penalty-stages", dest="vertical_alignment_penalty_stages", default="reach")
     parser.add_argument("--vertical-alignment-deadband-m", dest="vertical_alignment_deadband_m", type=float, default=0.04)
@@ -242,12 +258,17 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
         curriculum_gate_lift_success_height_m=args.curriculum_gate_lift_success_height_m,
         curriculum_gate_min_stage_env_steps=args.curriculum_gate_min_stage_env_steps,
         curriculum_gate_consecutive_eval_passes=args.curriculum_gate_consecutive_eval_passes,
+        curriculum_gate_reach_metric=args.curriculum_gate_reach_metric,
+        curriculum_gate_reach_min_consecutive_steps=args.curriculum_gate_reach_min_consecutive_steps,
         grip_proxy_scale=args.grip_proxy_scale,
         grip_proxy_sigma_m=args.grip_proxy_sigma_m,
         lift_progress_deadband_m=args.lift_progress_deadband_m,
         lift_progress_height_m=args.lift_progress_height_m,
         reach_progress_stage_scales=parse_stage_scales(args.reach_progress_stage_scales),
         reach_progress_clip_m=args.reach_progress_clip_m,
+        reach_dwell_stage_scales=parse_stage_scales(args.reach_dwell_stage_scales),
+        reach_dwell_sigma_m=args.reach_dwell_sigma_m,
+        reach_dwell_threshold_m=args.reach_dwell_threshold_m,
         vertical_alignment_penalty_scale=args.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=parse_stage_names(args.vertical_alignment_penalty_stages),
         vertical_alignment_deadband_m=args.vertical_alignment_deadband_m,
@@ -430,6 +451,8 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--curriculum-gate-min-stage-env-steps must be non-negative")
     if args.curriculum_gate_consecutive_eval_passes <= 0:
         raise ValueError("--curriculum-gate-consecutive-eval-passes must be positive")
+    if args.curriculum_gate_reach_min_consecutive_steps < 0:
+        raise ValueError("--curriculum-gate-reach-min-consecutive-steps must be non-negative")
     if args.grip_proxy_scale < 0.0:
         raise ValueError("--grip-proxy-scale must be non-negative")
     if args.grip_proxy_sigma_m <= 0.0:
@@ -439,10 +462,15 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
     if args.lift_progress_height_m <= 0.0:
         raise ValueError("--lift-progress-height-m must be positive")
     parse_stage_scales(args.reach_progress_stage_scales)
+    parse_stage_scales(args.reach_dwell_stage_scales)
     parse_stage_names(args.vertical_alignment_penalty_stages)
     parse_stage_names(args.rotation_action_penalty_stages)
     if args.reach_progress_clip_m <= 0.0:
         raise ValueError("--reach-progress-clip-m must be positive")
+    if args.reach_dwell_sigma_m <= 0.0:
+        raise ValueError("--reach-dwell-sigma-m must be positive")
+    if args.reach_dwell_threshold_m <= 0.0:
+        raise ValueError("--reach-dwell-threshold-m must be positive")
     if args.vertical_alignment_penalty_scale < 0.0:
         raise ValueError("--vertical-alignment-penalty-scale must be non-negative")
     if args.vertical_alignment_deadband_m < 0.0:

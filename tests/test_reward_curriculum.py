@@ -18,6 +18,7 @@ from train.reward_curriculum import (
     EVAL_GATE_LABEL_INDEX,
     GRIPPER_ACTION_INDEX,
     PROGRESS_BUCKETS,
+    REACH_GATE_DWELL_RATE,
     REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
     RewardCurriculumConfig,
     assign_progress_labels,
@@ -26,6 +27,7 @@ from train.reward_curriculum import (
     compute_lift_progress_proxy,
     compute_grip_proxy,
     compute_progress_diagnostic_labels,
+    compute_reach_dwell_proxy,
     compute_reach_progress,
     compute_rotation_action_penalty,
     compute_vertical_alignment_penalty,
@@ -199,6 +201,22 @@ def test_reach_progress_is_signed_and_clipped() -> None:
     np.testing.assert_allclose(progress, np.array([0.01, -0.01, 0.005], dtype=np.float32), atol=1e-6)
 
 
+def test_reach_dwell_proxy_decays_with_ee_to_cube_distance() -> None:
+    proprios = np.zeros((3, 40), dtype=np.float32)
+    proprios[:, EE_TO_CUBE] = np.array(
+        [[0.0, 0.0, 0.0], [0.05, 0.0, 0.0], [0.10, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    dwell = compute_reach_dwell_proxy(proprios, sigma_m=0.05)
+
+    np.testing.assert_allclose(
+        dwell,
+        np.array([1.0, np.exp(-1.0), np.exp(-2.0)], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
 def test_vertical_alignment_penalty_uses_ee_to_cube_z_slice() -> None:
     proprios = np.zeros((3, 40), dtype=np.float32)
     proprios[:, 29] = np.array([0.02, -0.06, 0.10], dtype=np.float32)
@@ -242,6 +260,57 @@ def test_pr611_terms_are_stage_weighted_and_default_rotation_is_reach_only() -> 
     assert grip_terms["vertical_alignment_penalty"][0] == pytest.approx(0.0)
     assert grip_terms["rotation_action_penalty"][0] == pytest.approx(0.0)
     assert lift_terms["reach_progress"][0] == pytest.approx(0.0)
+
+
+def test_pr612_reach_dwell_proxy_is_stage_weighted() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    proprios[0, EE_TO_CUBE] = np.array([0.05, 0.0, 0.0], dtype=np.float32)
+    next_proprios[0, EE_TO_CUBE] = np.array([0.05, 0.0, 0.0], dtype=np.float32)
+    config = RewardCurriculumConfig(
+        mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
+        reach_progress_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        reach_dwell_stage_scales=(0.8, 0.3, 0.05, 0.0),
+        reach_dwell_sigma_m=0.05,
+    )
+    raw_dwell = float(np.exp(-1.0))
+
+    reach_terms = compute_pr611_shaping_terms(proprios, next_proprios, actions, config=config, stage_index=0)
+    grip_terms = compute_pr611_shaping_terms(proprios, next_proprios, actions, config=config, stage_index=1)
+    lift_terms = compute_pr611_shaping_terms(proprios, next_proprios, actions, config=config, stage_index=2)
+    stock_terms = compute_pr611_shaping_terms(proprios, next_proprios, actions, config=config, stage_index=3)
+
+    assert reach_terms["reach_dwell_proxy"][0] == pytest.approx(0.8 * raw_dwell)
+    assert grip_terms["reach_dwell_proxy"][0] == pytest.approx(0.3 * raw_dwell)
+    assert lift_terms["reach_dwell_proxy"][0] == pytest.approx(0.05 * raw_dwell)
+    assert stock_terms["reach_dwell_proxy"][0] == pytest.approx(0.0)
+
+
+def test_shape_rewards_logs_reach_dwell_proxy() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    config = RewardCurriculumConfig(
+        mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
+        reach_progress_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        reach_dwell_stage_scales=(1.0, 0.0, 0.0, 0.0),
+    )
+
+    shaped, logs, _grip, _lift = shape_rewards(
+        np.array([0.0], dtype=np.float32),
+        {},
+        proprios,
+        actions,
+        env_steps=0,
+        total_env_steps=100,
+        config=config,
+        next_proprios=next_proprios,
+        stage_index_override=0,
+    )
+
+    assert shaped[0] == pytest.approx(1.0)
+    assert logs["reward/train/reach_dwell_proxy"] == pytest.approx(1.0)
 
 
 def test_pr611_shape_reward_magnitude_is_bounded_for_scripted_step() -> None:
@@ -479,6 +548,74 @@ def test_eval_dual_gate_consecutive_pass_count_resets_on_failed_eval_window() ->
     assert logs["curriculum/gate/consecutive_eval_gate_passed"] == pytest.approx(0.0)
 
 
+def test_eval_dual_gate_can_use_reach_dwell_rate_and_consecutive_steps() -> None:
+    tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=CURRICULUM_GATING_EVAL_DUAL_GATE,
+            eval_window_episodes=2,
+            min_eval_episodes=2,
+            eval_thresholds=(0.5, 0.5, 0.5, 0.5),
+            min_train_exposures=(2, 0, 0, 0),
+            min_stage_env_steps=0,
+            reach_metric=REACH_GATE_DWELL_RATE,
+            reach_min_consecutive_steps=3,
+        )
+    )
+    reach = np.zeros((2, len(PROGRESS_BUCKETS)), dtype=bool)
+    reach[:, BUCKET_INDEX["reach"]] = True
+    eval_labels = np.zeros((2, 4), dtype=bool)
+    eval_reach_metrics = np.array([[0.6, 3.0], [0.7, 4.0]], dtype=np.float32)
+
+    logs = tracker.update(
+        reach,
+        eval_episode_labels=eval_labels,
+        eval_episode_reach_metrics=eval_reach_metrics,
+        env_steps=0,
+    )
+
+    assert tracker.stage_index == 1
+    assert logs["curriculum/gate/eval_reach_episode_rate"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/eval_reach_dwell_rate"] == pytest.approx(0.65)
+    assert logs["curriculum/gate/eval_reach_max_consecutive_steps"] == pytest.approx(3.5)
+    assert logs["curriculum/gate/reach_metric_dwell_rate"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/reach_consecutive_gate_passed"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(1.0)
+    assert logs["curriculum/gate/advanced_stage"] == pytest.approx(1.0)
+
+
+def test_eval_dual_gate_rejects_dwell_gate_when_consecutive_span_is_too_short() -> None:
+    tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=CURRICULUM_GATING_EVAL_DUAL_GATE,
+            eval_window_episodes=2,
+            min_eval_episodes=2,
+            eval_thresholds=(0.5, 0.5, 0.5, 0.5),
+            min_train_exposures=(2, 0, 0, 0),
+            min_stage_env_steps=0,
+            reach_metric=REACH_GATE_DWELL_RATE,
+            reach_min_consecutive_steps=4,
+        )
+    )
+    reach = np.zeros((2, len(PROGRESS_BUCKETS)), dtype=bool)
+    reach[:, BUCKET_INDEX["reach"]] = True
+    eval_labels = np.zeros((2, 4), dtype=bool)
+    eval_reach_metrics = np.array([[0.8, 1.0], [0.8, 2.0]], dtype=np.float32)
+
+    logs = tracker.update(
+        reach,
+        eval_episode_labels=eval_labels,
+        eval_episode_reach_metrics=eval_reach_metrics,
+        env_steps=0,
+    )
+
+    assert tracker.stage_index == 0
+    assert logs["curriculum/gate/eval_reach_dwell_rate"] == pytest.approx(0.8)
+    assert logs["curriculum/gate/eval_reach_max_consecutive_steps"] == pytest.approx(1.5)
+    assert logs["curriculum/gate/reach_consecutive_gate_passed"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/advanced_stage"] == pytest.approx(0.0)
+
+
 def test_lane_eval_subskill_tracker_emits_completed_episode_labels() -> None:
     tracker = LaneEvalSubskillTracker(num_lanes=1, lift_success_height_m=0.02)
     proprios = np.zeros((1, 40), dtype=np.float32)
@@ -503,6 +640,34 @@ def test_lane_eval_subskill_tracker_emits_completed_episode_labels() -> None:
     assert labels[0, EVAL_GATE_LABEL_INDEX["grip_attempt"]]
     assert labels[0, EVAL_GATE_LABEL_INDEX["grip_effect"]]
     assert labels[0, EVAL_GATE_LABEL_INDEX["lift_2cm"]]
+    assert tracker.last_completed_reach_metrics.shape == (1, 2)
+    np.testing.assert_allclose(tracker.last_completed_reach_metrics[0], np.array([1.0, 1.0]))
+
+
+def test_lane_eval_subskill_tracker_reports_reach_dwell_and_longest_span() -> None:
+    tracker = LaneEvalSubskillTracker(num_lanes=1, reach_dwell_threshold_m=0.05)
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    reset_z = np.zeros((1,), dtype=np.float32)
+    distances = [0.04, 0.03, 0.20, 0.02]
+    labels = np.zeros((0, 4), dtype=bool)
+
+    for index, distance in enumerate(distances):
+        proprios[0, EE_TO_CUBE] = np.array([distance, 0.0, 0.0], dtype=np.float32)
+        labels = tracker.step(
+            proprios=proprios,
+            next_proprios=next_proprios,
+            actions=actions,
+            terminated=np.array([index == len(distances) - 1]),
+            truncated=np.array([False]),
+            cube_reset_z=reset_z,
+        )
+
+    assert labels.shape == (1, 4)
+    assert tracker.last_completed_reach_metrics.shape == (1, 2)
+    np.testing.assert_allclose(tracker.last_completed_reach_metrics[0], np.array([0.75, 2.0]))
+
 
 
 def test_reach_bucket_uses_distance_threshold_not_positive_reach_reward() -> None:

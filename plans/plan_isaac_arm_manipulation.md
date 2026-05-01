@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-04-29. The repository has completed the interview/demo vertical slice from
+Updated 2026-04-30. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -59,14 +59,16 @@ The current code base proves the robot-learning data and evaluation loop against
 Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, live-monitor scaffolding,
 running normalization, reward diagnostics, periodic/best checkpoints, reward curriculum, and
 bucket-rarity prioritized replay, and eval-subskill dual-gated curriculum advancement. The
-latest SAC v6 diagnostic run still has `success_rate=0`: PR6.8 made reach/grip/lift/goal
-events observable and replayable, PR6.9 added dense lift progress diagnostics, and PR6.10
-correctly held the curriculum in stage 0 because the current policy never passed the eval
-reach gate. V6 also showed an unstable reach policy: `eval_reach_episode_rate` briefly peaked
-at `0.15` near 276k env steps, then dropped as those few successful reach episodes aged out of
-the 20-episode eval window. PR6.11 is now implemented: stage-0 reach shaping, small
-vertical/rotation penalties, reach-stage best-checkpoint selection, and protected-replay refresh
-are available for the next serious SAC v7 run. The remaining
+latest SAC diagnostics still have `success_rate=0`: PR6.8 made reach/grip/lift/goal
+events observable and replayable, PR6.9 added dense lift progress diagnostics, PR6.10
+added current-policy eval/exposure dual gates, PR6.11 added reach shaping/action
+diagnostics plus robust checkpoint selection, and PR6.12 added reach-dwell shaping plus a
+sustained-near-cube gate. The v8b run improved reach/grip signals
+(`bucket_reach=3837`, `bucket_grip=653`, `bucket_grip_effect=276`) and produced a best visual
+rollout with `min_ee_to_cube_m ~= 0.046`, but still did not lift (`max_cube_lift_m ~= 0.0014`,
+`success_rate=0`). The next serious SAC run should use PR6.12's dwell-mode reach gate,
+nonzero `reach_dwell_proxy`, and zeroed legacy `reach_progress` to test whether a stable
+approach policy can unlock grip/lift learning. The remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -102,6 +104,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
 | PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
 | PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt`, global overall `best.pt` selection, configurable consecutive eval-gate confirmation via `--curriculum-gate-consecutive-eval-passes` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `45 passed`; consecutive-gate slice -> `68 passed`; full pytest in `isaac_arm` -> `334 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage without advancing on one lucky eval window. |
+| PR 6.12 - Reach dwell shaping + robust-reach gate | Done | `reach_dwell_proxy = exp(-ee_to_cube_distance / sigma_m)`, dwell/consecutive reach metrics, SAC/TD3 CLI flags, stage-0 dwell-mode gate, optional consecutive near-cube gate, and small stage-decayed dwell support in grip/lift stages | PR6.12 targeted slice -> `75 passed`; full pytest in `isaac_arm` -> `340 passed, 1 skipped` | Next SAC run should set `--reach-progress-stage-scales 0.0,0.0,0.0,0.0`, enable `--reach-dwell-stage-scales 0.8,0.3,0.05,0.0`, and use `--curriculum-gate-reach-metric dwell_rate` plus a nonzero consecutive-step gate. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -945,6 +948,9 @@ Logging key contract:
 - `reward/train/lift_progress_proxy` when PR6.9 dense lift progress reward is enabled
 - `reward/train/reach_progress`, `reward/train/vertical_alignment_penalty`, and `reward/train/rotation_action_penalty` when PR6.11 reach shaping/action constraints are enabled
 - `reward/eval_rollout/reach_progress`, `reward/eval_rollout/vertical_alignment_penalty`, and `reward/eval_rollout/rotation_action_penalty` as PR6.11 deterministic eval diagnostics
+- `reward/train/reach_dwell_proxy` and `reward/eval_rollout/reach_dwell_proxy` when PR6.12 reach-dwell shaping is enabled; in the recommended PR6.12 path, this replaces `reach_progress` rather than adding a second full-strength reach reward
+- `eval_rollout/reach_dwell_rate` and `eval_rollout/reach_max_consecutive_steps` for PR6.12 robust-reach diagnostics
+- `curriculum/gate/eval_reach_dwell_rate`, `curriculum/gate/eval_reach_max_consecutive_steps`, and `curriculum/gate/reach_consecutive_gate_passed` when PR6.12 uses dwell-rate stage-0 gating
 - `action/train/gripper_mean` and `action/train/gripper_close_rate` for active train lanes
 - `action/eval_rollout/gripper_mean`, `action/eval_rollout/gripper_close_rate`, and `action/eval_rollout/gripper_close_near_cube_rate` for same-env deterministic eval lanes
 - `action/train/translation_norm`, `action/train/rotation_norm`, `action/train/gripper_abs_mean`, `action/eval_rollout/translation_norm`, `action/eval_rollout/rotation_norm`, and `action/eval_rollout/gripper_abs_mean` for PR6.11 action debugging
@@ -1076,7 +1082,7 @@ Roadmap layers:
 |---|---|---|
 | Foundation env layer | Done | PR0, PR1, PR2, and PR2.5 define the Isaac task, 7D action contract, wrist-image + 40D proprio observation contract, and live camera-enabled cfg. |
 | Demo data-loop layer | Done | PR8-pre, PR8-lite, PR11-lite, PR12-lite, and Demo PR prove rollout collection, HDF5 episodes, metrics, GIF/MP4/debug PNGs, and one-command artifacts without trained agents. |
-| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.11 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is a serious SAC v7 run using PR6.11 diagnostics, then decide whether further reward/action tuning is needed before demos or IL. |
+| Research model layer | In progress | PR3 shared backbone, PR3.5 primitives, PR6/PR7 SAC/TD3, PR6.5-PR6.11 training instrumentation/normalization/diagnostics/curriculum/replay, PR11a eval, and PR12a visuals are done. The next work item is PR6.12 reach-dwell shaping and robust-reach gating, then another serious SAC run before demos or IL. |
 
 Current priority path:
 
@@ -1089,7 +1095,8 @@ PR3 done
   -> PR6.9 Progress-gated lift curriculum + lift-aware diagnostics
   -> PR6.10 Eval-subskill dual-gated curriculum
   -> PR6.11 Reach shaping + action constraint diagnostics
-  -> SAC v7 diagnostic run
+  -> PR6.12 Reach dwell shaping + robust-reach gate
+  -> next SAC diagnostic run
   -> PR7 TD3 train
   -> PR11a SAC/TD3 checkpoint eval
   -> PR12a SAC/TD3 checkpoint visual rollout
@@ -4090,6 +4097,285 @@ PR6.11 is complete when:
 
 ```bash
 git commit -m "feat(train): add reach shaping and action diagnostics"
+```
+
+---
+
+### PR 6.12 — Reach Dwell Shaping + Robust-Reach Gate
+
+**Goal / Why**
+
+The v8b SAC run shows real progress but not a robust reach policy. The replay/gate logs
+improved substantially (`bucket_reach=3837`, `bucket_grip=653`, `bucket_grip_effect=276`),
+and the best visual rollout reached `min_ee_to_cube_m ~= 0.046`. However, the policy still
+did not lift (`max_cube_lift_m ~= 0.0014`, `success_rate=0`) and the GIF/MP4 shows the arm
+getting near the cube without reliably stabilizing there before grasp/lift.
+
+PR6.11 `reach_progress` is a one-step directional reward:
+
+```text
+reach_progress = clip(ee_dist_t - ee_dist_tp1, -clip_m, clip_m)
+```
+
+That term rewards moving closer on a single step, but it becomes near zero once the end
+effector is already near the cube and can be negative if the policy jitters around the cube.
+It is useful as a direction hint, but v8b needs a reward and gate that measure "can stay near
+the cube long enough to set up grasp/lift." PR6.12 replaces the recommended reach shaping
+path with a dwell-style reward and a dwell + consecutive-span eval gate.
+
+**Inputs**
+- PR6.8/PR6.9 reward curriculum, grip proxy, lift progress proxy, and bucket-rarity replay.
+- PR6.10 eval-dual-gate tracker and same-env deterministic eval lanes.
+- PR6.11 vertical/rotation action penalties, stage-aware/global best checkpointing, and
+  consecutive eval-gate confirmation.
+- Existing 40D proprio contract:
+  - `proprio[:, 27:30]` is `ee_to_cube`;
+  - `norm(proprio[:, 27:30])` is the end-effector-to-cube distance in meters.
+
+**Outputs**
+- New dense reach term:
+
+```text
+reach_dwell_proxy = exp(-ee_to_cube_distance / sigma_m)
+```
+
+- Recommended stage scales:
+
+```text
+reach stage:        0.8
+grip_pre_lift:      0.3
+lift:               0.05
+stock_like:         0.0
+```
+
+Interpretation:
+- Stage 0 strongly rewards getting near and staying near the cube.
+- Stage 1 keeps enough reach reward so the policy does not forget the approach while learning
+  grip attempts/effects.
+- Stage 2 keeps only a small reach anchor while lift rewards dominate.
+- Stage 3 disables reach dwell so stock-like lift/goal rewards dominate.
+
+Because `reach_dwell_proxy` is not potential-based, it can create a local optimum where the
+policy merely hovers near the cube. The stage decay above is mandatory: do not keep a large
+reach-dwell reward in lift/stock-like stages.
+
+**Anti-Stall Guardrails**
+
+`reach_dwell_proxy` is deliberately an early-skill reward, not the final task objective. PR6.12
+must avoid making "park near the cube forever" the easiest solution:
+
+- Stage 0 can use strong dwell reward because the only goal is robust approach.
+- Stage 1 must reduce dwell reward and let `grip_proxy` dominate. The policy should be
+  rewarded more for close/near-cube gripper behavior than for simply hovering.
+- Stage 2 must reduce dwell reward further and let `lift_progress_proxy`, `lifting_object`,
+  and later goal-tracking rewards dominate.
+- Stage 3 must disable dwell reward; final eval continues to use stock-native return and
+  success/lift/goal metrics.
+
+This means PR6.12 does not try to solve lift by increasing reach reward. It only makes the
+reach prerequisite stable enough that grip/lift learning has a usable starting point.
+
+**Replace, Do Not Stack**
+
+For the next serious run, `reach_dwell_proxy` replaces `reach_progress`; it should not be added
+as a second full-strength reach reward. Keep `reach_progress` available as a legacy diagnostic
+and compatibility flag, but the recommended PR6.12 command should set:
+
+```text
+--reach-progress-stage-scales 0.0,0.0,0.0,0.0
+```
+
+or equivalent implementation behavior.
+
+**CLI Contract**
+
+Extend SAC and TD3 train scripts:
+
+```text
+--reach-dwell-stage-scales FLOAT,FLOAT,FLOAT,FLOAT
+--reach-dwell-sigma-m FLOAT
+--reach-dwell-threshold-m FLOAT
+--curriculum-gate-reach-metric episode_rate|dwell_rate
+--curriculum-gate-reach-min-consecutive-steps INT
+```
+
+Recommended PR6.12 defaults for the next SAC diagnostic run:
+
+```text
+--reach-dwell-stage-scales 0.8,0.3,0.05,0.0
+--reach-dwell-sigma-m 0.05
+--reach-dwell-threshold-m 0.05
+--reach-progress-stage-scales 0.0,0.0,0.0,0.0
+--curriculum-gate-reach-metric dwell_rate
+--curriculum-gate-reach-min-consecutive-steps 20
+--curriculum-gate-eval-thresholds 0.50,0.30,0.05,0.10
+--curriculum-gate-consecutive-eval-passes 3
+--curriculum-gate-min-stage-env-steps 50000
+```
+
+The first gate threshold now applies to `curriculum/gate/eval_reach_dwell_rate` when
+`--curriculum-gate-reach-metric dwell_rate` is selected. In that mode, stage 0 advances only
+when both reach conditions pass:
+
+```text
+eval_reach_dwell_rate >= first_eval_threshold
+AND
+eval_reach_max_consecutive_steps >= curriculum_gate_reach_min_consecutive_steps
+```
+
+`--curriculum-gate-reach-min-consecutive-steps 0` disables the consecutive-span check for
+ablation/backward compatibility. The recommended SAC run should keep it enabled.
+
+The remaining thresholds keep their existing PR6.10/PR6.11 meanings:
+
+```text
+grip_attempt_episode_rate >= 0.30
+grip_effect_episode_rate  >= 0.05
+lift_2cm_episode_rate     >= 0.10
+```
+
+**Eval Metrics**
+
+Add deterministic same-env eval-lane metrics:
+
+```text
+eval_rollout/reach_dwell_rate
+eval_rollout/reach_max_consecutive_steps
+curriculum/gate/eval_reach_dwell_rate
+curriculum/gate/eval_reach_max_consecutive_steps
+curriculum/gate/reach_consecutive_gate_passed
+```
+
+Definitions per completed eval episode:
+
+```text
+near_cube_step =
+  norm(ee_to_cube) <= reach_dwell_threshold_m
+
+reach_dwell_rate =
+  count(near_cube_step) / episode_length
+
+reach_max_consecutive_steps =
+  longest consecutive run of near_cube_step=True
+```
+
+This is stricter than `eval_reach_episode_rate`. `eval_reach_episode_rate` answers "did this
+episode ever get close once?" `reach_dwell_rate` answers "what fraction of the episode stayed
+near the cube?" and `reach_max_consecutive_steps` answers "was the policy able to remain near
+the cube for a continuous span?"
+
+Why both dwell rate and consecutive steps are needed:
+- `reach_dwell_rate` alone can be fooled by many short near-cube visits distributed across the
+  episode.
+- `reach_max_consecutive_steps` alone can be fooled by one short but lucky pause.
+- Using both requires enough total near-cube time and at least one uninterrupted near-cube
+  segment, which better matches "stable approach before grasp."
+
+For W&B/TensorBoard/JSONL/progress:
+
+```text
+reward/train/reach_dwell_proxy
+reward/eval_rollout/reach_dwell_proxy
+eval_rollout/reach_dwell_rate
+eval_rollout/reach_max_consecutive_steps
+curriculum/gate/eval_reach_dwell_rate
+curriculum/gate/eval_reach_max_consecutive_steps
+curriculum/gate/reach_consecutive_gate_passed
+```
+
+`reward/eval_rollout/reach_dwell_proxy` is diagnostic only. It must not change
+`eval_rollout/mean_return`, which remains stock-native eval return.
+
+**Recommended Command Delta From v8b**
+
+Keep the v8b command structure, but change the reach/gate block to:
+
+```bash
+  --curriculum-gate-eval-thresholds 0.50,0.30,0.05,0.10 \
+  --curriculum-gate-consecutive-eval-passes 3 \
+  --curriculum-gate-min-stage-env-steps 50000 \
+  --curriculum-gate-reach-metric dwell_rate \
+  --curriculum-gate-reach-min-consecutive-steps 20 \
+  --reach-progress-stage-scales 0.0,0.0,0.0,0.0 \
+  --reach-dwell-stage-scales 0.8,0.3,0.05,0.0 \
+  --reach-dwell-sigma-m 0.05 \
+  --reach-dwell-threshold-m 0.05 \
+```
+
+Do not loosen these gates until `eval_rollout/reach_dwell_rate` and
+`eval_rollout/reach_max_consecutive_steps` show the policy can reliably stay near the cube.
+
+**Tests**
+
+Add or update tests so every behavior above is covered:
+
+- `tests/test_reward_curriculum.py`
+  - `compute_reach_dwell_proxy` returns `exp(-distance / sigma_m)` from `proprio[:, 27:30]`,
+  - values are in `(0, 1]`, decrease monotonically with distance, and validate positive
+    `sigma_m`,
+  - stage scales apply as `0.8,0.3,0.05,0.0`,
+  - recommended config can disable `reach_progress` while keeping dwell active,
+  - shaped reward includes dwell once and does not double-count full-strength
+    `reach_progress`.
+- `tests/test_rollout_metrics.py`
+  - a synthetic distance sequence computes `reach_dwell_rate` correctly,
+  - `reach_max_consecutive_steps` counts the longest contiguous near-cube span,
+  - scattered near-cube steps can produce nonzero dwell rate without satisfying the
+    consecutive-step gate,
+  - metrics reset per completed episode and aggregate across eval lanes.
+- `tests/test_training_logger_and_scheduler.py`
+  - SAC/TD3 fake runs log `reward/train/reach_dwell_proxy`,
+    `reward/eval_rollout/reach_dwell_proxy`, `eval_rollout/reach_dwell_rate`,
+    `eval_rollout/reach_max_consecutive_steps`, and
+    `curriculum/gate/eval_reach_dwell_rate`,
+    `curriculum/gate/eval_reach_max_consecutive_steps`, and
+    `curriculum/gate/reach_consecutive_gate_passed`,
+  - `--curriculum-gate-reach-metric dwell_rate` uses dwell rate for stage-0 advancement
+    instead of `eval_reach_episode_rate`,
+  - stage 0 does not advance when dwell rate passes but max consecutive near-cube steps is
+    below `--curriculum-gate-reach-min-consecutive-steps`,
+  - consecutive eval gate still requires the configured number of passing dwell windows.
+- SAC/TD3 parser tests:
+  - new CLI flags parse,
+  - malformed four-stage scale strings, non-positive sigma/threshold, and invalid
+    gate-reach metric values raise readable errors,
+  - negative `--curriculum-gate-reach-min-consecutive-steps` raises a readable error.
+
+Targeted verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_rollout_metrics.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py
+```
+
+Full verification command:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Acceptance Criteria**
+
+PR6.12 is complete when:
+- `reach_dwell_proxy` is implemented from `norm(proprio[:, 27:30])`,
+- the recommended training path uses dwell shaping instead of nonzero reach-progress shaping,
+- dwell reward decays by stage and is zero in `stock_like`,
+- eval logs include dwell rate and max consecutive near-cube steps,
+- `eval_dual_gate` can use `eval_reach_dwell_rate` plus
+  `eval_reach_max_consecutive_steps` for stage-0 advancement,
+- stage 0 cannot advance on scattered one-step near-cube contacts when the consecutive-span
+  gate is enabled,
+- PR6.12 logs appear in W&B/TensorBoard/JSONL/progress,
+- targeted tests and full pytest pass in the `isaac_arm` environment.
+
+**Suggested Commit**
+
+```bash
+git commit -m "feat(train): add reach dwell shaping and robust reach gate"
 ```
 
 ---

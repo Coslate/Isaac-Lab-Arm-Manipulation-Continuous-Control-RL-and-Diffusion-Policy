@@ -107,6 +107,7 @@ class LaneLiftDiagnosticTracker:
         window_size: int = 20,
         grip_threshold_m: float = 0.05,
         close_command_threshold: float = -0.25,
+        reach_dwell_threshold_m: float = 0.05,
     ) -> None:
         if num_lanes <= 0:
             raise ValueError("num_lanes must be positive")
@@ -114,20 +115,28 @@ class LaneLiftDiagnosticTracker:
             raise ValueError("window_size must be positive")
         if grip_threshold_m <= 0.0:
             raise ValueError("grip_threshold_m must be positive")
+        if reach_dwell_threshold_m <= 0.0:
+            raise ValueError("reach_dwell_threshold_m must be positive")
         self.num_lanes = int(num_lanes)
         self.prefix = prefix.rstrip("/")
         self.window_size = int(window_size)
         self.grip_threshold_m = float(grip_threshold_m)
         self.close_command_threshold = float(close_command_threshold)
+        self.reach_dwell_threshold_m = float(reach_dwell_threshold_m)
         self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
         self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._min_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._close_near_counts = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._reach_dwell_counts = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._max_reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._active_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._completed_max_cube_lift: deque[float] = deque(maxlen=self.window_size)
         self._completed_min_ee_to_cube: deque[float] = deque(maxlen=self.window_size)
         self._completed_min_cube_to_target: deque[float] = deque(maxlen=self.window_size)
         self._completed_close_near_rates: deque[float] = deque(maxlen=self.window_size)
+        self._completed_reach_dwell_rates: deque[float] = deque(maxlen=self.window_size)
+        self._completed_reach_max_consecutive_steps: deque[int] = deque(maxlen=self.window_size)
 
     def step(
         self,
@@ -161,11 +170,21 @@ class LaneLiftDiagnosticTracker:
             (ee_to_cube <= self.grip_threshold_m)
             & (actions[:, ACTION_GRIPPER_INDEX] < self.close_command_threshold)
         )
+        reach_near = ee_to_cube <= self.reach_dwell_threshold_m
 
         self._max_cube_lift[active] = np.maximum(self._max_cube_lift[active], cube_lift[active])
         self._min_ee_to_cube[active] = np.minimum(self._min_ee_to_cube[active], ee_to_cube[active])
         self._min_cube_to_target[active] = np.minimum(self._min_cube_to_target[active], cube_to_target[active])
         self._close_near_counts[active] += close_near[active].astype(np.int64)
+        self._reach_dwell_counts[active] += reach_near[active].astype(np.int64)
+        active_reach_near = active & reach_near
+        active_reach_far = active & ~reach_near
+        self._reach_consecutive_steps[active_reach_near] += 1
+        self._reach_consecutive_steps[active_reach_far] = 0
+        self._max_reach_consecutive_steps[active] = np.maximum(
+            self._max_reach_consecutive_steps[active],
+            self._reach_consecutive_steps[active],
+        )
         self._active_steps[active] += 1
 
         completed = active & (terminated | truncated)
@@ -178,6 +197,8 @@ class LaneLiftDiagnosticTracker:
             self._completed_min_ee_to_cube.append(float(self._min_ee_to_cube[lane]))
             self._completed_min_cube_to_target.append(float(self._min_cube_to_target[lane]))
             self._completed_close_near_rates.append(float(self._close_near_counts[lane]) / float(steps))
+            self._completed_reach_dwell_rates.append(float(self._reach_dwell_counts[lane]) / float(steps))
+            self._completed_reach_max_consecutive_steps.append(int(self._max_reach_consecutive_steps[lane]))
             self._reset_lane(lane)
         return self.summary()
 
@@ -189,6 +210,10 @@ class LaneLiftDiagnosticTracker:
             self._metric_key("min_ee_to_cube_m"): float(np.min(self._completed_min_ee_to_cube)),
             self._metric_key("min_cube_to_target_m"): float(np.min(self._completed_min_cube_to_target)),
             self._metric_key("gripper_close_near_cube_rate"): float(np.mean(self._completed_close_near_rates)),
+            self._metric_key("reach_dwell_rate"): float(np.mean(self._completed_reach_dwell_rates)),
+            self._metric_key("reach_max_consecutive_steps"): float(
+                np.mean(self._completed_reach_max_consecutive_steps)
+            ),
         }
 
     def _reset_lane(self, lane: int) -> None:
@@ -196,6 +221,9 @@ class LaneLiftDiagnosticTracker:
         self._min_ee_to_cube[lane] = np.inf
         self._min_cube_to_target[lane] = np.inf
         self._close_near_counts[lane] = 0
+        self._reach_dwell_counts[lane] = 0
+        self._reach_consecutive_steps[lane] = 0
+        self._max_reach_consecutive_steps[lane] = 0
         self._active_steps[lane] = 0
 
     def _metric_key(self, suffix: str) -> str:
@@ -217,6 +245,7 @@ class LaneEvalSubskillTracker:
         lift_progress_deadband_m: float = 0.002,
         cube_motion_effect_threshold_m: float = 0.005,
         lift_success_height_m: float = 0.02,
+        reach_dwell_threshold_m: float = 0.05,
     ) -> None:
         if num_lanes <= 0:
             raise ValueError("num_lanes must be positive")
@@ -230,6 +259,8 @@ class LaneEvalSubskillTracker:
             raise ValueError("cube_motion_effect_threshold_m must be positive")
         if lift_success_height_m <= 0.0:
             raise ValueError("lift_success_height_m must be positive")
+        if reach_dwell_threshold_m <= 0.0:
+            raise ValueError("reach_dwell_threshold_m must be positive")
         self.num_lanes = int(num_lanes)
         self.reach_threshold_m = float(reach_threshold_m)
         self.grip_threshold_m = float(grip_threshold_m)
@@ -237,10 +268,16 @@ class LaneEvalSubskillTracker:
         self.lift_progress_deadband_m = float(lift_progress_deadband_m)
         self.cube_motion_effect_threshold_m = float(cube_motion_effect_threshold_m)
         self.lift_success_height_m = float(lift_success_height_m)
+        self.reach_dwell_threshold_m = float(reach_dwell_threshold_m)
         self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._saw_grip_attempt = np.zeros((self.num_lanes,), dtype=bool)
         self._saw_grip_effect = np.zeros((self.num_lanes,), dtype=bool)
         self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
+        self._active_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._reach_dwell_counts = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._max_reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self.last_completed_reach_metrics = np.zeros((0, 2), dtype=np.float32)
 
     def step(
         self,
@@ -264,6 +301,7 @@ class LaneEvalSubskillTracker:
             if active_mask is None
             else _as_lane_array(active_mask, self.num_lanes, bool, "active_mask")
         )
+        self.last_completed_reach_metrics = np.zeros((0, 2), dtype=np.float32)
         if not np.any(active):
             return np.zeros((0, 4), dtype=bool)
 
@@ -281,18 +319,31 @@ class LaneEvalSubskillTracker:
             (cube_lift > self.lift_progress_deadband_m)
             | (cube_motion > self.cube_motion_effect_threshold_m)
         )
+        reach_near = ee_to_cube <= self.reach_dwell_threshold_m
 
         self._min_ee_to_cube[active] = np.minimum(self._min_ee_to_cube[active], ee_to_cube[active])
         self._saw_grip_attempt[active] |= grip_attempt[active]
         self._saw_grip_effect[active] |= grip_effect[active]
         self._max_cube_lift[active] = np.maximum(self._max_cube_lift[active], cube_lift[active])
+        self._active_steps[active] += 1
+        self._reach_dwell_counts[active] += reach_near[active].astype(np.int64)
+        active_reach_near = active & reach_near
+        active_reach_far = active & ~reach_near
+        self._reach_consecutive_steps[active_reach_near] += 1
+        self._reach_consecutive_steps[active_reach_far] = 0
+        self._max_reach_consecutive_steps[active] = np.maximum(
+            self._max_reach_consecutive_steps[active],
+            self._reach_consecutive_steps[active],
+        )
 
         completed = active & (terminated | truncated)
         if not np.any(completed):
             return np.zeros((0, 4), dtype=bool)
 
         labels: list[list[bool]] = []
+        reach_metrics: list[list[float]] = []
         for lane in np.flatnonzero(completed):
+            steps = max(int(self._active_steps[lane]), 1)
             labels.append(
                 [
                     bool(self._min_ee_to_cube[lane] <= self.reach_threshold_m),
@@ -301,7 +352,14 @@ class LaneEvalSubskillTracker:
                     bool(self._max_cube_lift[lane] >= self.lift_success_height_m),
                 ]
             )
+            reach_metrics.append(
+                [
+                    float(self._reach_dwell_counts[lane]) / float(steps),
+                    float(self._max_reach_consecutive_steps[lane]),
+                ]
+            )
             self._reset_lane(lane)
+        self.last_completed_reach_metrics = np.asarray(reach_metrics, dtype=np.float32)
         return np.asarray(labels, dtype=bool)
 
     def _reset_lane(self, lane: int) -> None:
@@ -309,6 +367,10 @@ class LaneEvalSubskillTracker:
         self._saw_grip_attempt[lane] = False
         self._saw_grip_effect[lane] = False
         self._max_cube_lift[lane] = -np.inf
+        self._active_steps[lane] = 0
+        self._reach_dwell_counts[lane] = 0
+        self._reach_consecutive_steps[lane] = 0
+        self._max_reach_consecutive_steps[lane] = 0
 
 
 def split_train_eval_lanes(num_envs: int, eval_lanes: int) -> tuple[np.ndarray, np.ndarray]:

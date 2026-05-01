@@ -21,6 +21,9 @@ SUPPORTED_CURRICULUM_GATING = (
     CURRICULUM_GATING_BUCKET_RATES,
     CURRICULUM_GATING_EVAL_DUAL_GATE,
 )
+REACH_GATE_EPISODE_RATE = "episode_rate"
+REACH_GATE_DWELL_RATE = "dwell_rate"
+SUPPORTED_REACH_GATE_METRICS = (REACH_GATE_EPISODE_RATE, REACH_GATE_DWELL_RATE)
 
 PROGRESS_BUCKETS = ("normal", "reach", "grip", "lift", "goal")
 BUCKET_INDEX = {name: index for index, name in enumerate(PROGRESS_BUCKETS)}
@@ -114,6 +117,8 @@ class RewardCurriculumConfig:
     lift_progress_height_m: float = 0.04
     reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
     reach_progress_clip_m: float = 0.01
+    reach_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    reach_dwell_sigma_m: float = 0.05
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -139,6 +144,12 @@ class RewardCurriculumConfig:
             raise ValueError("reach_progress_stage_scales must be non-negative")
         if self.reach_progress_clip_m <= 0.0:
             raise ValueError("reach_progress_clip_m must be positive")
+        if len(self.reach_dwell_stage_scales) != 4:
+            raise ValueError("reach_dwell_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.reach_dwell_stage_scales):
+            raise ValueError("reach_dwell_stage_scales must be non-negative")
+        if self.reach_dwell_sigma_m <= 0.0:
+            raise ValueError("reach_dwell_sigma_m must be positive")
         if self.vertical_alignment_penalty_scale < 0.0:
             raise ValueError("vertical_alignment_penalty_scale must be non-negative")
         _validate_stage_names(self.vertical_alignment_penalty_stages, "vertical_alignment_penalty_stages")
@@ -199,6 +210,8 @@ class CurriculumGateConfig:
     lift_success_height_m: float = 0.02
     min_stage_env_steps: int = 10_000
     consecutive_eval_passes: int = 1
+    reach_metric: str = REACH_GATE_EPISODE_RATE
+    reach_min_consecutive_steps: int = 0
 
     def __post_init__(self) -> None:
         if self.mode not in SUPPORTED_CURRICULUM_GATING:
@@ -229,6 +242,10 @@ class CurriculumGateConfig:
             raise ValueError("curriculum gate min stage env steps must be non-negative")
         if self.consecutive_eval_passes <= 0:
             raise ValueError("curriculum gate consecutive eval passes must be positive")
+        if self.reach_metric not in SUPPORTED_REACH_GATE_METRICS:
+            raise ValueError(f"curriculum gate reach metric must be one of {SUPPORTED_REACH_GATE_METRICS!r}")
+        if self.reach_min_consecutive_steps < 0:
+            raise ValueError("curriculum gate reach min consecutive steps must be non-negative")
 
     @property
     def enabled(self) -> bool:
@@ -251,12 +268,14 @@ class CurriculumGateTracker:
         self.stage_index = 0
         self._window: deque[np.ndarray] = deque(maxlen=int(self.config.window_transitions))
         self._eval_window: deque[np.ndarray] = deque(maxlen=int(self.config.eval_window_episodes))
+        self._eval_reach_metric_window: deque[np.ndarray] = deque(maxlen=int(self.config.eval_window_episodes))
         self._stage_exposures = np.zeros((len(EXPOSURE_GATE_LABELS),), dtype=np.int64)
         self._stage_start_env_steps = 0
         self._held_stage = 1.0 if self.config.enabled else 0.0
         self._eval_gate_passed = 0.0
         self._consecutive_eval_gate_passes = 0
         self._consecutive_eval_gate_passed = 0.0
+        self._reach_consecutive_gate_passed = 0.0
         self._exposure_gate_passed = 0.0
         self._min_stage_steps_passed = 0.0
         self._advanced_stage = 0.0
@@ -268,6 +287,7 @@ class CurriculumGateTracker:
         diagnostic_labels: np.ndarray | None = None,
         lift_success_labels: np.ndarray | None = None,
         eval_episode_labels: np.ndarray | None = None,
+        eval_episode_reach_metrics: np.ndarray | None = None,
         env_steps: int = 0,
     ) -> dict[str, float]:
         """Update curriculum gate state and return diagnostics."""
@@ -323,6 +343,23 @@ class CurriculumGateTracker:
                 new_eval_gate_observation = eval_array.shape[0] > 0
                 for row in eval_array:
                     self._eval_window.append(row.astype(bool, copy=True))
+                if eval_episode_reach_metrics is not None:
+                    reach_metric_array = np.asarray(eval_episode_reach_metrics, dtype=np.float32)
+                    if reach_metric_array.ndim == 1:
+                        reach_metric_array = reach_metric_array[None, :]
+                    if reach_metric_array.ndim != 2 or reach_metric_array.shape[1] != 2:
+                        raise ValueError(
+                            f"eval_episode_reach_metrics must have shape (N, 2); got {reach_metric_array.shape}"
+                        )
+                    if reach_metric_array.shape[0] != eval_array.shape[0]:
+                        raise ValueError(
+                            "eval_episode_reach_metrics row count must match eval_episode_labels"
+                        )
+                    for row in reach_metric_array:
+                        self._eval_reach_metric_window.append(row.astype(np.float32, copy=True))
+                else:
+                    for _ in range(eval_array.shape[0]):
+                        self._eval_reach_metric_window.append(np.zeros((2,), dtype=np.float32))
 
         rates = self.rates()
         held = 0.0
@@ -399,6 +436,7 @@ class CurriculumGateTracker:
         }
         if self.config.eval_dual_gate_enabled:
             eval_rates = self.eval_rates()
+            reach_metrics = self.eval_reach_metrics()
             logs.update(
                 {
                     "curriculum/gate/mode_eval_dual_gate": 1.0,
@@ -407,6 +445,13 @@ class CurriculumGateTracker:
                     "curriculum/gate/eval_grip_attempt_episode_rate": eval_rates["grip_attempt"],
                     "curriculum/gate/eval_grip_effect_episode_rate": eval_rates["grip_effect"],
                     "curriculum/gate/eval_lift_2cm_episode_rate": eval_rates["lift_2cm"],
+                    "curriculum/gate/eval_reach_dwell_rate": reach_metrics["reach_dwell_rate"],
+                    "curriculum/gate/eval_reach_max_consecutive_steps": reach_metrics[
+                        "reach_max_consecutive_steps"
+                    ],
+                    "curriculum/gate/reach_metric_dwell_rate": (
+                        1.0 if self.config.reach_metric == REACH_GATE_DWELL_RATE else 0.0
+                    ),
                     "curriculum/gate/exposure_reach_count": float(
                         self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["reach"]]
                     ),
@@ -424,6 +469,7 @@ class CurriculumGateTracker:
                     "curriculum/gate/consecutive_eval_passes": float(self._consecutive_eval_gate_passes),
                     "curriculum/gate/consecutive_eval_required": float(self.config.consecutive_eval_passes),
                     "curriculum/gate/consecutive_eval_gate_passed": self._consecutive_eval_gate_passed,
+                    "curriculum/gate/reach_consecutive_gate_passed": self._reach_consecutive_gate_passed,
                     "curriculum/gate/exposure_gate_passed": self._exposure_gate_passed,
                     "curriculum/gate/min_stage_steps_passed": self._min_stage_steps_passed,
                     "curriculum/gate/advanced_stage": self._advanced_stage,
@@ -442,6 +488,15 @@ class CurriculumGateTracker:
             "lift_2cm": float(np.mean(labels[:, EVAL_GATE_LABEL_INDEX["lift_2cm"]])),
         }
 
+    def eval_reach_metrics(self) -> dict[str, float]:
+        if not self._eval_reach_metric_window:
+            return {"reach_dwell_rate": 0.0, "reach_max_consecutive_steps": 0.0}
+        metrics = np.stack(tuple(self._eval_reach_metric_window), axis=0).astype(np.float32)
+        return {
+            "reach_dwell_rate": float(np.mean(metrics[:, 0])),
+            "reach_max_consecutive_steps": float(np.mean(metrics[:, 1])),
+        }
+
     @property
     def stage_start_env_steps(self) -> int:
         return int(self._stage_start_env_steps)
@@ -455,11 +510,23 @@ class CurriculumGateTracker:
         if len(self._eval_window) < int(self.config.min_eval_episodes):
             return False
         rates = self.eval_rates()
+        reach_metrics = self.eval_reach_metrics()
         reach_threshold, grip_attempt_threshold, grip_effect_threshold, lift_threshold = (
             float(value) for value in self.config.eval_thresholds
         )
+        self._reach_consecutive_gate_passed = 0.0
         if self.stage_index == 0:
-            return rates["reach"] >= reach_threshold
+            if self.config.reach_metric == REACH_GATE_DWELL_RATE:
+                metric_passed = reach_metrics["reach_dwell_rate"] >= reach_threshold
+            else:
+                metric_passed = rates["reach"] >= reach_threshold
+            consecutive_required = int(self.config.reach_min_consecutive_steps)
+            consecutive_passed = (
+                consecutive_required <= 0
+                or reach_metrics["reach_max_consecutive_steps"] >= float(consecutive_required)
+            )
+            self._reach_consecutive_gate_passed = 1.0 if consecutive_passed else 0.0
+            return bool(metric_passed and consecutive_passed)
         if self.stage_index == 1:
             return rates["grip_attempt"] >= grip_attempt_threshold and rates["grip_effect"] >= grip_effect_threshold
         if self.stage_index == 2:
@@ -698,6 +765,20 @@ def compute_reach_progress(
     return np.clip(ee_dist_t - ee_dist_tp1, -float(clip_m), float(clip_m)).astype(np.float32)
 
 
+def compute_reach_dwell_proxy(
+    proprios: np.ndarray,
+    *,
+    sigma_m: float = 0.05,
+) -> np.ndarray:
+    """Dense proximity reward for staying near the cube."""
+
+    if sigma_m <= 0.0:
+        raise ValueError("sigma_m must be positive")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    ee_distance = np.linalg.norm(proprio_array[:, EE_TO_CUBE], axis=1)
+    return np.exp(-ee_distance / float(sigma_m)).astype(np.float32)
+
+
 def compute_vertical_alignment_penalty(
     proprios: np.ndarray,
     *,
@@ -737,6 +818,7 @@ def compute_pr611_shaping_terms(
         zeros = np.zeros((batch_size,), dtype=np.float32)
         return {
             "reach_progress": zeros,
+            "reach_dwell_proxy": zeros,
             "vertical_alignment_penalty": zeros,
             "rotation_action_penalty": zeros,
         }
@@ -754,6 +836,10 @@ def compute_pr611_shaping_terms(
         )
     reach_progress = (
         float(config.reach_progress_stage_scales[stage_index]) * reach_progress
+    ).astype(np.float32)
+    reach_dwell_proxy = (
+        float(config.reach_dwell_stage_scales[stage_index])
+        * compute_reach_dwell_proxy(proprio_array, sigma_m=config.reach_dwell_sigma_m)
     ).astype(np.float32)
     vertical_scale = (
         float(config.vertical_alignment_penalty_scale)
@@ -777,6 +863,7 @@ def compute_pr611_shaping_terms(
     ).astype(np.float32)
     return {
         "reach_progress": reach_progress,
+        "reach_dwell_proxy": reach_dwell_proxy,
         "vertical_alignment_penalty": vertical_penalty,
         "rotation_action_penalty": rotation_penalty,
     }
@@ -847,6 +934,7 @@ def shape_rewards(
         + weights.action * _component(components, "action_rate", reward_array.shape[0])
         + weights.joint * _component(components, "joint_vel", reward_array.shape[0])
         + pr611_terms["reach_progress"]
+        + pr611_terms["reach_dwell_proxy"]
         + pr611_terms["vertical_alignment_penalty"]
         + pr611_terms["rotation_action_penalty"]
     ).astype(np.float32)
@@ -857,6 +945,9 @@ def shape_rewards(
         "reward/train/grip_proxy": float(np.mean(grip_proxy)) if grip_proxy.size else 0.0,
         "reward/train/lift_progress_proxy": float(np.mean(lift_progress_proxy)) if lift_progress_proxy.size else 0.0,
         "reward/train/reach_progress": float(np.mean(pr611_terms["reach_progress"])) if shaped.size else 0.0,
+        "reward/train/reach_dwell_proxy": (
+            float(np.mean(pr611_terms["reach_dwell_proxy"])) if shaped.size else 0.0
+        ),
         "reward/train/vertical_alignment_penalty": (
             float(np.mean(pr611_terms["vertical_alignment_penalty"])) if shaped.size else 0.0
         ),
@@ -1032,12 +1123,15 @@ __all__ = [
     "GRIPPER_ACTION_INDEX",
     "GRIPPER_FINGER_POS",
     "PROGRESS_BUCKETS",
+    "REACH_GATE_DWELL_RATE",
+    "REACH_GATE_EPISODE_RATE",
     "CurriculumGateConfig",
     "CurriculumGateTracker",
     "ProgressBucketConfig",
     "REWARD_CURRICULUM_NONE",
     "REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL",
     "SUPPORTED_CURRICULUM_GATING",
+    "SUPPORTED_REACH_GATE_METRICS",
     "SUPPORTED_REWARD_CURRICULA",
     "RewardCurriculumConfig",
     "STAGE_NAMES",
@@ -1047,6 +1141,7 @@ __all__ = [
     "compute_lift_success_labels",
     "compute_lift_progress_proxy",
     "compute_pr611_shaping_terms",
+    "compute_reach_dwell_proxy",
     "compute_reach_progress",
     "compute_grip_proxy",
     "compute_progress_diagnostic_labels",

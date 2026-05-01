@@ -773,6 +773,10 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "10000",
             "--curriculum-gate-consecutive-eval-passes",
             "2",
+            "--curriculum-gate-reach-metric",
+            "dwell_rate",
+            "--curriculum-gate-reach-min-consecutive-steps",
+            "20",
             "--grip-proxy-scale",
             "1.25",
             "--lift-progress-deadband-m",
@@ -783,6 +787,12 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.5,0.1,0,0",
             "--reach-progress-clip-m",
             "0.01",
+            "--reach-dwell-stage-scales",
+            "0.8,0.3,0.05,0",
+            "--reach-dwell-sigma-m",
+            "0.05",
+            "--reach-dwell-threshold-m",
+            "0.05",
             "--vertical-alignment-penalty-scale",
             "0.1",
             "--vertical-alignment-penalty-stages",
@@ -839,6 +849,10 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "400,100,20,20",
             "--curriculum-gate-consecutive-eval-passes",
             "3",
+            "--curriculum-gate-reach-metric",
+            "dwell_rate",
+            "--curriculum-gate-reach-min-consecutive-steps",
+            "12",
             "--lift-progress-deadband-m",
             "0.003",
             "--lift-progress-height-m",
@@ -847,6 +861,12 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.5,0.1,0,0",
             "--reach-progress-clip-m",
             "0.01",
+            "--reach-dwell-stage-scales",
+            "0.8,0.3,0.05,0",
+            "--reach-dwell-sigma-m",
+            "0.06",
+            "--reach-dwell-threshold-m",
+            "0.04",
             "--vertical-alignment-penalty-scale",
             "0.1",
             "--vertical-alignment-penalty-stages",
@@ -894,11 +914,16 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.curriculum_gate_lift_success_height_m == pytest.approx(0.02)
     assert sac_args.curriculum_gate_min_stage_env_steps == 10000
     assert sac_args.curriculum_gate_consecutive_eval_passes == 2
+    assert sac_args.curriculum_gate_reach_metric == "dwell_rate"
+    assert sac_args.curriculum_gate_reach_min_consecutive_steps == 20
     assert sac_args.grip_proxy_scale == pytest.approx(1.25)
     assert sac_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert sac_args.lift_progress_height_m == pytest.approx(0.05)
     assert sac_args.reach_progress_stage_scales == "0.5,0.1,0,0"
     assert sac_args.reach_progress_clip_m == pytest.approx(0.01)
+    assert sac_args.reach_dwell_stage_scales == "0.8,0.3,0.05,0"
+    assert sac_args.reach_dwell_sigma_m == pytest.approx(0.05)
+    assert sac_args.reach_dwell_threshold_m == pytest.approx(0.05)
     assert sac_args.vertical_alignment_penalty_scale == pytest.approx(0.1)
     assert sac_args.vertical_alignment_penalty_stages == "reach"
     assert sac_args.vertical_alignment_deadband_m == pytest.approx(0.04)
@@ -926,10 +951,15 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.curriculum_gate_eval_thresholds == "0.4,0.3,0.05,0.1"
     assert td3_args.curriculum_gate_min_train_exposures == "400,100,20,20"
     assert td3_args.curriculum_gate_consecutive_eval_passes == 3
+    assert td3_args.curriculum_gate_reach_metric == "dwell_rate"
+    assert td3_args.curriculum_gate_reach_min_consecutive_steps == 12
     assert td3_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert td3_args.lift_progress_height_m == pytest.approx(0.05)
     assert td3_args.reach_progress_stage_scales == "0.5,0.1,0,0"
     assert td3_args.reach_progress_clip_m == pytest.approx(0.01)
+    assert td3_args.reach_dwell_stage_scales == "0.8,0.3,0.05,0"
+    assert td3_args.reach_dwell_sigma_m == pytest.approx(0.06)
+    assert td3_args.reach_dwell_threshold_m == pytest.approx(0.04)
     assert td3_args.vertical_alignment_penalty_scale == pytest.approx(0.1)
     assert td3_args.vertical_alignment_penalty_stages == "reach"
     assert td3_args.vertical_alignment_deadband_m == pytest.approx(0.04)
@@ -1115,6 +1145,9 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
         same_env_eval_lanes=1,
         rollout_metrics_window=10,
         reward_curriculum="reach_grip_lift_goal",
+        reach_dwell_stage_scales=(0.8, 0.3, 0.05, 0.0),
+        reach_dwell_sigma_m=0.05,
+        reach_dwell_threshold_m=0.05,
         curriculum_gating="bucket_rates",
         curriculum_gate_window_transitions=8,
         curriculum_gate_thresholds=(0.0, 0.0, 0.0),
@@ -1145,20 +1178,26 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("action/eval_rollout/rotation_norm" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_abs_mean" in logs for logs in report.log_history)
     assert any("reward/train/reach_progress" in logs for logs in report.log_history)
+    assert any("reward/train/reach_dwell_proxy" in logs for logs in report.log_history)
     assert any("reward/train/vertical_alignment_penalty" in logs for logs in report.log_history)
     assert any("reward/train/rotation_action_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/reach_progress" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/reach_dwell_proxy" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/vertical_alignment_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/rotation_action_penalty" in logs for logs in report.log_history)
+    assert any("eval_rollout/reach_dwell_rate" in logs for logs in report.log_history)
+    assert any("eval_rollout/reach_max_consecutive_steps" in logs for logs in report.log_history)
     assert any("eval_rollout/max_cube_lift_m" in logs for logs in report.log_history)
     assert any("eval_rollout/min_ee_to_cube_m" in logs for logs in report.log_history)
     assert any("eval_rollout/min_cube_to_target_m" in logs for logs in report.log_history)
     assert any("eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
     assert any("action/train/gripper_mean" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/train/reach_progress" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/train/reach_dwell_proxy" in metrics for _step, metrics in logger.scalar_calls)
     assert any("eval_rollout/max_cube_lift_m" in metrics for _step, metrics in logger.scalar_calls)
     assert any("action/eval_rollout/gripper_mean" in metrics for _step, metrics, _force in progress.calls)
     assert any("reward/eval_rollout/reach_progress" in metrics for _step, metrics, _force in progress.calls)
+    assert any("eval_rollout/reach_dwell_rate" in metrics for _step, metrics, _force in progress.calls)
 
 
 @pytest.mark.parametrize(
@@ -1190,6 +1229,10 @@ def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
         curriculum_gate_min_train_exposures=(0, 0, 0, 0),
         curriculum_gate_lift_success_height_m=0.02,
         curriculum_gate_min_stage_env_steps=0,
+        curriculum_gate_reach_metric="dwell_rate",
+        curriculum_gate_reach_min_consecutive_steps=0,
+        reach_dwell_stage_scales=(0.8, 0.3, 0.05, 0.0),
+        reach_dwell_threshold_m=0.05,
     )
 
     report = runner(env, agent(), loop_config=cfg, logger=logger, progress=progress)
@@ -1197,6 +1240,10 @@ def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
     assert report.num_updates > 0
     assert any("curriculum/gate/mode_eval_dual_gate" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_reach_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_reach_dwell_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_reach_max_consecutive_steps" in logs for logs in report.log_history)
+    assert any("curriculum/gate/reach_metric_dwell_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/reach_consecutive_gate_passed" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_grip_attempt_episode_rate" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_grip_effect_episode_rate" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_lift_2cm_episode_rate" in logs for logs in report.log_history)
@@ -1208,7 +1255,12 @@ def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
     assert any("curriculum/gate/consecutive_eval_required" in logs for logs in report.log_history)
     assert any("curriculum/gate/consecutive_eval_gate_passed" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_gate_passed" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("curriculum/gate/eval_reach_dwell_rate" in metrics for _step, metrics in logger.scalar_calls)
     assert any("curriculum/gate/advanced_stage" in metrics for _step, metrics, _force in progress.calls)
+    assert any(
+        "curriculum/gate/reach_consecutive_gate_passed" in metrics
+        for _step, metrics, _force in progress.calls
+    )
     assert any(kind == "curriculum_advance" for _step, kind, _fields in progress.notes)
 
 

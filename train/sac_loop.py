@@ -89,12 +89,17 @@ class SACTrainLoopConfig:
     curriculum_gate_lift_success_height_m: float = 0.02
     curriculum_gate_min_stage_env_steps: int = 10_000
     curriculum_gate_consecutive_eval_passes: int = 1
+    curriculum_gate_reach_metric: str = "episode_rate"
+    curriculum_gate_reach_min_consecutive_steps: int = 0
     grip_proxy_scale: float = 1.0
     grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
     lift_progress_height_m: float = 0.04
     reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
     reach_progress_clip_m: float = 0.01
+    reach_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    reach_dwell_sigma_m: float = 0.05
+    reach_dwell_threshold_m: float = 0.05
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -286,6 +291,8 @@ def run_sac_train_loop(
         lift_progress_height_m=cfg.lift_progress_height_m,
         reach_progress_stage_scales=cfg.reach_progress_stage_scales,
         reach_progress_clip_m=cfg.reach_progress_clip_m,
+        reach_dwell_stage_scales=cfg.reach_dwell_stage_scales,
+        reach_dwell_sigma_m=cfg.reach_dwell_sigma_m,
         vertical_alignment_penalty_scale=cfg.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=cfg.vertical_alignment_penalty_stages,
         vertical_alignment_deadband_m=cfg.vertical_alignment_deadband_m,
@@ -304,6 +311,8 @@ def run_sac_train_loop(
             lift_success_height_m=cfg.curriculum_gate_lift_success_height_m,
             min_stage_env_steps=cfg.curriculum_gate_min_stage_env_steps,
             consecutive_eval_passes=cfg.curriculum_gate_consecutive_eval_passes,
+            reach_metric=cfg.curriculum_gate_reach_metric,
+            reach_min_consecutive_steps=cfg.curriculum_gate_reach_min_consecutive_steps,
         )
     )
     progress_bucket_config = ProgressBucketConfig()
@@ -337,6 +346,7 @@ def run_sac_train_loop(
             window_size=cfg.rollout_metrics_window,
             grip_threshold_m=progress_bucket_config.grip_threshold_m,
             close_command_threshold=progress_bucket_config.close_command_threshold,
+            reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
         )
         if same_env_eval_indices.size > 0
         else None
@@ -350,6 +360,7 @@ def run_sac_train_loop(
             lift_progress_deadband_m=progress_bucket_config.lift_progress_deadband_m,
             cube_motion_effect_threshold_m=progress_bucket_config.cube_motion_effect_threshold_m,
             lift_success_height_m=cfg.curriculum_gate_lift_success_height_m,
+            reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
         )
         if curriculum_gate_tracker.config.eval_dual_gate_enabled and same_env_eval_indices.size > 0
         else None
@@ -586,6 +597,9 @@ def run_sac_train_loop(
                     cube_reset_z=lane_reset_cube_z[same_env_eval_indices],
                     active_mask=same_env_eval_metric_mask,
                 )
+                eval_gate_episode_reach_metrics = same_env_subskill_tracker.last_completed_reach_metrics
+            else:
+                eval_gate_episode_reach_metrics = None
             _log_loop_metrics(
                 logger,
                 progress,
@@ -598,6 +612,7 @@ def run_sac_train_loop(
             _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_rollout_logs, schedulers)
         else:
             eval_gate_episode_labels = None
+            eval_gate_episode_reach_metrics = None
         if curriculum_gate_tracker.config.eval_dual_gate_enabled:
             previous_stage = curriculum_gate_tracker.stage_index
             gate_logs = curriculum_gate_tracker.update(
@@ -605,6 +620,7 @@ def run_sac_train_loop(
                 diagnostic_labels=diagnostic_labels[active_train_indices] if active_train_indices.size > 0 else None,
                 lift_success_labels=train_lift_success_labels,
                 eval_episode_labels=eval_gate_episode_labels,
+                eval_episode_reach_metrics=eval_gate_episode_reach_metrics,
                 env_steps=env_steps,
             )
             if curriculum_gate_tracker.stage_index > previous_stage:
