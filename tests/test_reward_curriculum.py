@@ -25,7 +25,6 @@ from train.reward_curriculum import (
     compute_pr611_shaping_terms,
     compute_lift_success_labels,
     compute_lift_progress_proxy,
-    compute_grip_proxy,
     compute_progress_diagnostic_labels,
     compute_reach_dwell_proxy,
     compute_reach_progress,
@@ -93,7 +92,7 @@ def test_curriculum_stage_uses_total_step_fractions() -> None:
 
 def test_shape_rewards_disabled_returns_native_reward() -> None:
     native = np.array([1.0, -2.0], dtype=np.float32)
-    shaped, logs, grip, lift_progress = shape_rewards(
+    shaped, logs, lift_progress = shape_rewards(
         native,
         {},
         np.zeros((2, 40), dtype=np.float32),
@@ -105,14 +104,12 @@ def test_shape_rewards_disabled_returns_native_reward() -> None:
 
     np.testing.assert_allclose(shaped, native)
     assert logs == {}
-    np.testing.assert_allclose(grip, np.zeros_like(native))
     np.testing.assert_allclose(lift_progress, np.zeros_like(native))
 
 
-def test_shape_rewards_uses_stage_component_multipliers_and_grip_proxy() -> None:
+def test_shape_rewards_uses_stage_component_multipliers_without_grip_proxy() -> None:
     proprios = np.zeros((1, 40), dtype=np.float32)
     actions = np.zeros((1, 7), dtype=np.float32)
-    actions[0, GRIPPER_ACTION_INDEX] = -1.0
     components = {
         "reaching_object": np.array([1.0], dtype=np.float32),
         "lifting_object": np.array([10.0], dtype=np.float32),
@@ -122,7 +119,7 @@ def test_shape_rewards_uses_stage_component_multipliers_and_grip_proxy() -> None
         "joint_vel": np.array([-4.0], dtype=np.float32),
     }
 
-    shaped, logs, grip, lift_progress = shape_rewards(
+    shaped, logs, lift_progress = shape_rewards(
         np.array([999.0], dtype=np.float32),
         components,
         proprios,
@@ -132,13 +129,12 @@ def test_shape_rewards_uses_stage_component_multipliers_and_grip_proxy() -> None
         config=RewardCurriculumConfig(mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL),
     )
 
-    # PR6.9 stage 1: 3*reach + 0.5*grip + 0*lift/lift_progress/goal/fine + 0.25*penalties.
-    assert grip[0] == pytest.approx(1.0)
+    # Stage 0: 3*reach + 0*lift/lift_progress/goal/fine + 0.25*penalties.
     assert lift_progress[0] == pytest.approx(0.0)
-    assert shaped[0] == pytest.approx(2.0)
+    assert shaped[0] == pytest.approx(1.5)
     assert logs["curriculum/stage_index"] == pytest.approx(0.0)
-    assert logs["reward/train_shaped"] == pytest.approx(2.0)
-    assert logs["reward/train/grip_proxy"] == pytest.approx(1.0)
+    assert logs["reward/train_shaped"] == pytest.approx(1.5)
+    assert "reward/train/grip_proxy" not in logs
     assert logs["reward/train/lift_progress_proxy"] == pytest.approx(0.0)
 
 
@@ -171,7 +167,7 @@ def test_shape_rewards_adds_dense_lift_progress_when_next_state_is_available() -
     next_proprios[0, CUBE_POS_BASE.stop - 1] = 0.042
     config = RewardCurriculumConfig(mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL)
 
-    shaped, logs, _grip, lift_progress = shape_rewards(
+    shaped, logs, lift_progress = shape_rewards(
         np.array([0.0], dtype=np.float32),
         {},
         proprios,
@@ -297,7 +293,7 @@ def test_shape_rewards_logs_reach_dwell_proxy() -> None:
         reach_dwell_stage_scales=(1.0, 0.0, 0.0, 0.0),
     )
 
-    shaped, logs, _grip, _lift = shape_rewards(
+    shaped, logs, _lift = shape_rewards(
         np.array([0.0], dtype=np.float32),
         {},
         proprios,
@@ -322,7 +318,7 @@ def test_pr611_shape_reward_magnitude_is_bounded_for_scripted_step() -> None:
     components = {"native_total": np.array([0.01], dtype=np.float32)}
     config = RewardCurriculumConfig(mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL)
 
-    shaped, logs, _grip, _lift = shape_rewards(
+    shaped, logs, _lift = shape_rewards(
         np.array([0.01], dtype=np.float32),
         components,
         proprios,
@@ -337,18 +333,6 @@ def test_pr611_shape_reward_magnitude_is_bounded_for_scripted_step() -> None:
 
     assert abs(float(shaped[0])) < 0.1
     assert logs["reward/train/reach_progress"] == pytest.approx(0.005)
-
-
-def test_grip_proxy_rewards_closing_only_near_cube() -> None:
-    proprios = np.zeros((2, 40), dtype=np.float32)
-    proprios[1, EE_TO_CUBE] = 1.0
-    actions = np.zeros((2, 7), dtype=np.float32)
-    actions[:, GRIPPER_ACTION_INDEX] = -1.0
-
-    grip = compute_grip_proxy(proprios, actions, sigma_m=0.05)
-
-    assert grip[0] == pytest.approx(1.0)
-    assert grip[1] < 1e-6
 
 
 def test_progress_labels_are_multilabel_without_bucket_order() -> None:

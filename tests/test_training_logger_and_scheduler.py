@@ -777,8 +777,6 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "dwell_rate",
             "--curriculum-gate-reach-min-consecutive-steps",
             "20",
-            "--grip-proxy-scale",
-            "1.25",
             "--lift-progress-deadband-m",
             "0.003",
             "--lift-progress-height-m",
@@ -916,7 +914,6 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.curriculum_gate_consecutive_eval_passes == 2
     assert sac_args.curriculum_gate_reach_metric == "dwell_rate"
     assert sac_args.curriculum_gate_reach_min_consecutive_steps == 20
-    assert sac_args.grip_proxy_scale == pytest.approx(1.25)
     assert sac_args.lift_progress_deadband_m == pytest.approx(0.003)
     assert sac_args.lift_progress_height_m == pytest.approx(0.05)
     assert sac_args.reach_progress_stage_scales == "0.5,0.1,0,0"
@@ -1110,7 +1107,6 @@ def test_train_loop_logs_eval_rollout_curriculum_diagnostics(agent, config, runn
 
     assert any("reward/eval_rollout/native_total" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/eval_shaped" in logs for logs in report.log_history)
-    assert any("reward/eval_rollout/grip_proxy" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/reaching_object" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/lifting_object" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/object_goal_tracking" in logs for logs in report.log_history)
@@ -1120,7 +1116,7 @@ def test_train_loop_logs_eval_rollout_curriculum_diagnostics(agent, config, runn
     assert any("reward/eval_rollout/action_rate" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/joint_vel" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/eval_shaped" in metrics for _step, metrics in logger.scalar_calls)
-    assert any("reward/eval_rollout/grip_proxy" in metrics for _step, metrics, _force in progress.calls)
+    assert not any("reward/eval_rollout/grip_proxy" in metrics for _step, metrics, _force in progress.calls)
 
 
 @pytest.mark.parametrize(

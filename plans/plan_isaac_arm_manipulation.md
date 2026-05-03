@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-04-30. The repository has completed the interview/demo vertical slice from
+Updated 2026-05-03. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -68,7 +68,12 @@ sustained-near-cube gate. The v8b run improved reach/grip signals
 rollout with `min_ee_to_cube_m ~= 0.046`, but still did not lift (`max_cube_lift_m ~= 0.0014`,
 `success_rate=0`). The next serious SAC run should use PR6.12's dwell-mode reach gate,
 nonzero `reach_dwell_proxy`, and zeroed legacy `reach_progress` to test whether a stable
-approach policy can unlock grip/lift learning. The remaining
+approach policy can unlock grip/lift learning. The v9b run reached stage 2 but exposed a
+reward-hacking failure mode: the old `grip_proxy` rewarded near-cube close commands without
+requiring an actual grasp or lift. That proxy reward and its CLI/log fields have been removed;
+`grip_attempt` and `grip_effect` remain as diagnostics/gates only. The next lift-focused
+reward change should teach actual grasp-lift transitions instead of adding another close-command
+reward. The remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -105,6 +110,7 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
 | PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt`, global overall `best.pt` selection, configurable consecutive eval-gate confirmation via `--curriculum-gate-consecutive-eval-passes` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `45 passed`; consecutive-gate slice -> `68 passed`; full pytest in `isaac_arm` -> `334 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage without advancing on one lucky eval window. |
 | PR 6.12 - Reach dwell shaping + robust-reach gate | Done | `reach_dwell_proxy = exp(-ee_to_cube_distance / sigma_m)`, dwell/consecutive reach metrics, SAC/TD3 CLI flags, stage-0 dwell-mode gate, optional consecutive near-cube gate, and small stage-decayed dwell support in grip/lift stages | PR6.12 targeted slice -> `75 passed`; full pytest in `isaac_arm` -> `340 passed, 1 skipped` | Next SAC run should set `--reach-progress-stage-scales 0.0,0.0,0.0,0.0`, enable `--reach-dwell-stage-scales 0.8,0.3,0.05,0.0`, and use `--curriculum-gate-reach-metric dwell_rate` plus a nonzero consecutive-step gate. |
+| Post-v9b grip-proxy cleanup | Done | Removed `grip_proxy` reward shaping, SAC/TD3 CLI flags, train/eval progress logs, and tests that treated near-cube close commands as a reward term | Full pytest in `isaac_arm` -> `339 passed, 1 skipped` | Keep `grip_attempt` / `grip_effect` as diagnostics and curriculum gates; do not reintroduce reward for close commands unless it verifies a real grasp or lift. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -4233,6 +4239,65 @@ grip_attempt_episode_rate >= 0.30
 grip_effect_episode_rate  >= 0.05
 lift_2cm_episode_rate     >= 0.10
 ```
+
+Recommended stage-gate criteria for the next PR6.12 SAC run:
+
+```text
+Command assumptions:
+  --curriculum-gate-eval-thresholds 0.50,0.30,0.05,0.10
+  --curriculum-gate-min-train-exposures 400,100,20,20
+  --curriculum-gate-min-stage-env-steps 50000
+  --curriculum-gate-consecutive-eval-passes 3
+  --curriculum-gate-reach-metric dwell_rate
+  --curriculum-gate-reach-min-consecutive-steps 20
+```
+
+Stage 0 `reach` eval gate pass:
+
+```text
+curriculum/gate/eval_reach_dwell_rate >= 0.50
+curriculum/gate/eval_reach_max_consecutive_steps >= 20
+```
+
+Stage 0 advances only after the eval gate passes for 3 consecutive eval-window updates,
+and these non-consecutive gates are also true:
+
+```text
+curriculum/gate/exposure_reach_count >= 400
+curriculum/gate/stage_env_steps >= 50000
+```
+
+Stage 1 `grip_pre_lift` eval gate pass:
+
+```text
+curriculum/gate/eval_grip_attempt_episode_rate >= 0.30
+curriculum/gate/eval_grip_effect_episode_rate  >= 0.05
+```
+
+Stage 1 advances only after the eval gate passes for 3 consecutive eval-window updates,
+and these non-consecutive gates are also true:
+
+```text
+curriculum/gate/exposure_grip_attempt_count >= 100
+curriculum/gate/exposure_grip_effect_count  >= 20
+curriculum/gate/stage_env_steps >= 50000
+```
+
+Stage 2 `lift` eval gate pass:
+
+```text
+curriculum/gate/eval_lift_2cm_episode_rate >= 0.10
+```
+
+Stage 2 advances only after the eval gate passes for 3 consecutive eval-window updates,
+and these non-consecutive gates are also true:
+
+```text
+curriculum/gate/exposure_lift_progress_count >= 20
+curriculum/gate/stage_env_steps >= 50000
+```
+
+Stage 3 `stock_like` is the final curriculum stage and has no next-stage gate.
 
 **Eval Metrics**
 

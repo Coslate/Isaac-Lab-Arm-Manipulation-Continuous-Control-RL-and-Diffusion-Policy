@@ -47,7 +47,6 @@ class StageWeights:
 
     name: str
     reach: float
-    grip: float
     lift_progress: float
     lift: float
     goal: float
@@ -60,7 +59,6 @@ DEFAULT_STAGE_WEIGHTS: tuple[StageWeights, ...] = (
     StageWeights(
         "reach",
         reach=3.0,
-        grip=0.5,
         lift_progress=0.0,
         lift=0.0,
         goal=0.0,
@@ -71,7 +69,6 @@ DEFAULT_STAGE_WEIGHTS: tuple[StageWeights, ...] = (
     StageWeights(
         "grip_pre_lift",
         reach=1.5,
-        grip=2.0,
         lift_progress=0.5,
         lift=0.25,
         goal=0.0,
@@ -82,7 +79,6 @@ DEFAULT_STAGE_WEIGHTS: tuple[StageWeights, ...] = (
     StageWeights(
         "lift",
         reach=0.75,
-        grip=1.0,
         lift_progress=2.0,
         lift=1.0,
         goal=0.5,
@@ -93,7 +89,6 @@ DEFAULT_STAGE_WEIGHTS: tuple[StageWeights, ...] = (
     StageWeights(
         "stock_like",
         reach=1.0,
-        grip=0.0,
         lift_progress=0.0,
         lift=1.0,
         goal=1.0,
@@ -111,8 +106,6 @@ class RewardCurriculumConfig:
 
     mode: str = REWARD_CURRICULUM_NONE
     stage_fracs: tuple[float, float, float] = (0.2, 0.5, 0.8)
-    grip_proxy_scale: float = 1.0
-    grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
     lift_progress_height_m: float = 0.04
     reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
@@ -130,10 +123,6 @@ class RewardCurriculumConfig:
         if self.mode not in SUPPORTED_REWARD_CURRICULA:
             raise ValueError(f"reward curriculum must be one of {SUPPORTED_REWARD_CURRICULA!r}")
         _validate_stage_fracs(self.stage_fracs)
-        if self.grip_proxy_scale < 0.0:
-            raise ValueError("grip_proxy_scale must be non-negative")
-        if self.grip_proxy_sigma_m <= 0.0:
-            raise ValueError("grip_proxy_sigma_m must be positive")
         if self.lift_progress_deadband_m < 0.0:
             raise ValueError("lift_progress_deadband_m must be non-negative")
         if self.lift_progress_height_m <= 0.0:
@@ -685,27 +674,6 @@ def curriculum_stage(
     return index, DEFAULT_STAGE_WEIGHTS[index].name, progress
 
 
-def compute_grip_proxy(
-    proprios: np.ndarray,
-    actions: np.ndarray,
-    *,
-    scale: float = 1.0,
-    sigma_m: float = 0.05,
-) -> np.ndarray:
-    """Reward near-cube gripper closing without rewarding far-away closing."""
-
-    proprio_array = _as_2d_float(proprios, name="proprios")
-    action_array = _as_2d_float(actions, name="actions")
-    if action_array.shape[0] != proprio_array.shape[0] or action_array.shape[1] <= GRIPPER_ACTION_INDEX:
-        raise ValueError("actions must have shape (N, >=7) and match proprios batch size")
-    if sigma_m <= 0.0:
-        raise ValueError("sigma_m must be positive")
-    ee_distance = np.linalg.norm(proprio_array[:, EE_TO_CUBE], axis=1)
-    near_cube = np.exp(-ee_distance / float(sigma_m))
-    close_cmd = np.clip(-action_array[:, GRIPPER_ACTION_INDEX], 0.0, 1.0)
-    return (float(scale) * near_cube * close_cmd).astype(np.float32)
-
-
 def compute_lift_progress_proxy(
     next_proprios: np.ndarray,
     cube_reset_z: np.ndarray,
@@ -881,13 +849,13 @@ def shape_rewards(
     next_proprios: np.ndarray | None = None,
     cube_reset_z: np.ndarray | None = None,
     stage_index_override: int | None = None,
-) -> tuple[np.ndarray, dict[str, float], np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, dict[str, float], np.ndarray]:
     """Return the reward stored in replay plus curriculum diagnostic logs."""
 
     reward_array = np.asarray(rewards, dtype=np.float32).reshape(-1)
     if not config.enabled:
         zeros = np.zeros_like(reward_array, dtype=np.float32)
-        return reward_array, {}, zeros, zeros
+        return reward_array, {}, zeros
 
     if stage_index_override is None:
         stage_index, stage_name, stage_progress = curriculum_stage(
@@ -902,12 +870,6 @@ def shape_rewards(
         stage_name = config.stage_weights[stage_index].name
         stage_progress = min(max(float(env_steps) / float(total_env_steps), 0.0), 1.0)
     weights = config.stage_weights[stage_index]
-    grip_proxy = compute_grip_proxy(
-        proprios,
-        actions,
-        scale=config.grip_proxy_scale,
-        sigma_m=config.grip_proxy_sigma_m,
-    )
     if next_proprios is None or cube_reset_z is None:
         lift_progress_proxy = np.zeros_like(reward_array, dtype=np.float32)
     else:
@@ -926,7 +888,6 @@ def shape_rewards(
     )
     shaped = (
         weights.reach * _component(components, "reaching_object", reward_array.shape[0])
-        + weights.grip * grip_proxy
         + weights.lift_progress * lift_progress_proxy
         + weights.lift * _component(components, "lifting_object", reward_array.shape[0])
         + weights.goal * _component(components, "object_goal_tracking", reward_array.shape[0])
@@ -942,7 +903,6 @@ def shape_rewards(
         "curriculum/stage_index": float(stage_index),
         "curriculum/stage_progress": float(stage_progress),
         "reward/train_shaped": float(np.mean(shaped)) if shaped.size else 0.0,
-        "reward/train/grip_proxy": float(np.mean(grip_proxy)) if grip_proxy.size else 0.0,
         "reward/train/lift_progress_proxy": float(np.mean(lift_progress_proxy)) if lift_progress_proxy.size else 0.0,
         "reward/train/reach_progress": float(np.mean(pr611_terms["reach_progress"])) if shaped.size else 0.0,
         "reward/train/reach_dwell_proxy": (
@@ -957,7 +917,7 @@ def shape_rewards(
     }
     # Numeric mirror for logger backends; progress text can still use the hparams/config for names.
     logs[f"curriculum/stage/{stage_name}"] = 1.0
-    return shaped, logs, grip_proxy, lift_progress_proxy
+    return shaped, logs, lift_progress_proxy
 
 
 def compute_progress_diagnostic_labels(
@@ -1143,7 +1103,6 @@ __all__ = [
     "compute_pr611_shaping_terms",
     "compute_reach_dwell_proxy",
     "compute_reach_progress",
-    "compute_grip_proxy",
     "compute_progress_diagnostic_labels",
     "compute_rotation_action_penalty",
     "compute_vertical_alignment_penalty",

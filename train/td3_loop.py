@@ -85,8 +85,6 @@ class TD3TrainLoopConfig:
     curriculum_gate_consecutive_eval_passes: int = 1
     curriculum_gate_reach_metric: str = "episode_rate"
     curriculum_gate_reach_min_consecutive_steps: int = 0
-    grip_proxy_scale: float = 1.0
-    grip_proxy_sigma_m: float = 0.05
     lift_progress_deadband_m: float = 0.002
     lift_progress_height_m: float = 0.04
     reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
@@ -274,8 +272,6 @@ def run_td3_train_loop(
     reward_curriculum_config = RewardCurriculumConfig(
         mode=cfg.reward_curriculum,
         stage_fracs=cfg.curriculum_stage_fracs,
-        grip_proxy_scale=cfg.grip_proxy_scale,
-        grip_proxy_sigma_m=cfg.grip_proxy_sigma_m,
         lift_progress_deadband_m=cfg.lift_progress_deadband_m,
         lift_progress_height_m=cfg.lift_progress_height_m,
         reach_progress_stage_scales=cfg.reach_progress_stage_scales,
@@ -469,7 +465,7 @@ def run_td3_train_loop(
             config=reward_curriculum_config,
             stage_index=shaping_stage_index,
         )
-        shaped_rewards, curriculum_logs, grip_proxy, lift_progress_proxy = shape_rewards(
+        shaped_rewards, curriculum_logs, lift_progress_proxy = shape_rewards(
             rewards,
             reward_components,
             proprios,
@@ -705,7 +701,6 @@ def run_td3_train_loop(
             if active_train_indices.size > 0:
                 curriculum_logs = dict(curriculum_logs)
                 curriculum_logs["reward/train_shaped"] = float(np.mean(shaped_rewards[active_train_indices]))
-                curriculum_logs["reward/train/grip_proxy"] = float(np.mean(grip_proxy[active_train_indices]))
                 curriculum_logs["reward/train/lift_progress_proxy"] = float(
                     np.mean(lift_progress_proxy[active_train_indices])
                 )
@@ -716,9 +711,6 @@ def run_td3_train_loop(
                 if eval_metric_indices.size > 0:
                     curriculum_logs["reward/eval_rollout/eval_shaped"] = float(
                         np.mean(shaped_rewards[eval_metric_indices])
-                    )
-                    curriculum_logs["reward/eval_rollout/grip_proxy"] = float(
-                        np.mean(grip_proxy[eval_metric_indices])
                     )
                     curriculum_logs["reward/eval_rollout/lift_progress_proxy"] = float(
                         np.mean(lift_progress_proxy[eval_metric_indices])

@@ -147,8 +147,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=0,
     )
-    parser.add_argument("--grip-proxy-scale", dest="grip_proxy_scale", type=float, default=1.0)
-    parser.add_argument("--grip-proxy-sigma-m", dest="grip_proxy_sigma_m", type=float, default=0.05)
     parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
     parser.add_argument("--lift-progress-height-m", dest="lift_progress_height_m", type=float, default=0.04)
     parser.add_argument("--reach-progress-stage-scales", dest="reach_progress_stage_scales", default="0.5,0.1,0.0,0.0")
@@ -260,8 +258,6 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
         curriculum_gate_consecutive_eval_passes=args.curriculum_gate_consecutive_eval_passes,
         curriculum_gate_reach_metric=args.curriculum_gate_reach_metric,
         curriculum_gate_reach_min_consecutive_steps=args.curriculum_gate_reach_min_consecutive_steps,
-        grip_proxy_scale=args.grip_proxy_scale,
-        grip_proxy_sigma_m=args.grip_proxy_sigma_m,
         lift_progress_deadband_m=args.lift_progress_deadband_m,
         lift_progress_height_m=args.lift_progress_height_m,
         reach_progress_stage_scales=parse_stage_scales(args.reach_progress_stage_scales),
@@ -453,10 +449,6 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--curriculum-gate-consecutive-eval-passes must be positive")
     if args.curriculum_gate_reach_min_consecutive_steps < 0:
         raise ValueError("--curriculum-gate-reach-min-consecutive-steps must be non-negative")
-    if args.grip_proxy_scale < 0.0:
-        raise ValueError("--grip-proxy-scale must be non-negative")
-    if args.grip_proxy_sigma_m <= 0.0:
-        raise ValueError("--grip-proxy-sigma-m must be positive")
     if args.lift_progress_deadband_m < 0.0:
         raise ValueError("--lift-progress-deadband-m must be non-negative")
     if args.lift_progress_height_m <= 0.0:
