@@ -791,6 +791,24 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.05",
             "--reach-dwell-threshold-m",
             "0.05",
+            "--grasp-like-stage-scales",
+            "0,0.4,0.2,0",
+            "--grasp-like-near-sigma-m",
+            "0.055",
+            "--grasp-like-empty-width-m",
+            "0.011",
+            "--grasp-like-width-band-m",
+            "0.016,0.047,0.066",
+            "--grasp-like-max-collapse-m",
+            "0.003",
+            "--tiny-lift-delta-stage-scales",
+            "0,0.5,1,0",
+            "--tiny-lift-delta-deadband-m",
+            "0.0002",
+            "--tiny-lift-delta-height-m",
+            "0.0015",
+            "--tiny-lift-delta-near-sigma-m",
+            "0.09",
             "--vertical-alignment-penalty-scale",
             "0.1",
             "--vertical-alignment-penalty-stages",
@@ -865,6 +883,24 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
             "0.06",
             "--reach-dwell-threshold-m",
             "0.04",
+            "--grasp-like-stage-scales",
+            "0,0.45,0.25,0",
+            "--grasp-like-near-sigma-m",
+            "0.056",
+            "--grasp-like-empty-width-m",
+            "0.012",
+            "--grasp-like-width-band-m",
+            "0.017,0.048,0.067",
+            "--grasp-like-max-collapse-m",
+            "0.004",
+            "--tiny-lift-delta-stage-scales",
+            "0,0.55,1.1,0",
+            "--tiny-lift-delta-deadband-m",
+            "0.0003",
+            "--tiny-lift-delta-height-m",
+            "0.0016",
+            "--tiny-lift-delta-near-sigma-m",
+            "0.091",
             "--vertical-alignment-penalty-scale",
             "0.1",
             "--vertical-alignment-penalty-stages",
@@ -921,6 +957,15 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert sac_args.reach_dwell_stage_scales == "0.8,0.3,0.05,0"
     assert sac_args.reach_dwell_sigma_m == pytest.approx(0.05)
     assert sac_args.reach_dwell_threshold_m == pytest.approx(0.05)
+    assert sac_args.grasp_like_stage_scales == "0,0.4,0.2,0"
+    assert sac_args.grasp_like_near_sigma_m == pytest.approx(0.055)
+    assert sac_args.grasp_like_empty_width_m == pytest.approx(0.011)
+    assert sac_args.grasp_like_width_band_m == "0.016,0.047,0.066"
+    assert sac_args.grasp_like_max_collapse_m == pytest.approx(0.003)
+    assert sac_args.tiny_lift_delta_stage_scales == "0,0.5,1,0"
+    assert sac_args.tiny_lift_delta_deadband_m == pytest.approx(0.0002)
+    assert sac_args.tiny_lift_delta_height_m == pytest.approx(0.0015)
+    assert sac_args.tiny_lift_delta_near_sigma_m == pytest.approx(0.09)
     assert sac_args.vertical_alignment_penalty_scale == pytest.approx(0.1)
     assert sac_args.vertical_alignment_penalty_stages == "reach"
     assert sac_args.vertical_alignment_deadband_m == pytest.approx(0.04)
@@ -957,6 +1002,15 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.reach_dwell_stage_scales == "0.8,0.3,0.05,0"
     assert td3_args.reach_dwell_sigma_m == pytest.approx(0.06)
     assert td3_args.reach_dwell_threshold_m == pytest.approx(0.04)
+    assert td3_args.grasp_like_stage_scales == "0,0.45,0.25,0"
+    assert td3_args.grasp_like_near_sigma_m == pytest.approx(0.056)
+    assert td3_args.grasp_like_empty_width_m == pytest.approx(0.012)
+    assert td3_args.grasp_like_width_band_m == "0.017,0.048,0.067"
+    assert td3_args.grasp_like_max_collapse_m == pytest.approx(0.004)
+    assert td3_args.tiny_lift_delta_stage_scales == "0,0.55,1.1,0"
+    assert td3_args.tiny_lift_delta_deadband_m == pytest.approx(0.0003)
+    assert td3_args.tiny_lift_delta_height_m == pytest.approx(0.0016)
+    assert td3_args.tiny_lift_delta_near_sigma_m == pytest.approx(0.091)
     assert td3_args.vertical_alignment_penalty_scale == pytest.approx(0.1)
     assert td3_args.vertical_alignment_penalty_stages == "reach"
     assert td3_args.vertical_alignment_deadband_m == pytest.approx(0.04)
@@ -1167,18 +1221,30 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("action/train/translation_norm" in logs for logs in report.log_history)
     assert any("action/train/rotation_norm" in logs for logs in report.log_history)
     assert any("action/train/gripper_abs_mean" in logs for logs in report.log_history)
+    assert any("action/train/finger_width_p50_m" in logs for logs in report.log_history)
+    assert any("action/train/finger_width_blocked_score" in logs for logs in report.log_history)
+    assert any("action/train/close_near_cube_finger_width_empty_closed_rate" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_mean" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_close_rate" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
     assert any("action/eval_rollout/translation_norm" in logs for logs in report.log_history)
     assert any("action/eval_rollout/rotation_norm" in logs for logs in report.log_history)
     assert any("action/eval_rollout/gripper_abs_mean" in logs for logs in report.log_history)
+    assert any("action/eval_rollout/finger_width_p50_m" in logs for logs in report.log_history)
+    assert any(
+        "action/eval_rollout/close_near_cube_finger_width_blocked_score" in logs
+        for logs in report.log_history
+    )
     assert any("reward/train/reach_progress" in logs for logs in report.log_history)
     assert any("reward/train/reach_dwell_proxy" in logs for logs in report.log_history)
+    assert any("reward/train/grasp_like_proxy" in logs for logs in report.log_history)
+    assert any("reward/train/tiny_lift_delta_proxy" in logs for logs in report.log_history)
     assert any("reward/train/vertical_alignment_penalty" in logs for logs in report.log_history)
     assert any("reward/train/rotation_action_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/reach_progress" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/reach_dwell_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/grasp_like_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/tiny_lift_delta_proxy" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/vertical_alignment_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/rotation_action_penalty" in logs for logs in report.log_history)
     assert any("eval_rollout/reach_dwell_rate" in logs for logs in report.log_history)
@@ -1188,10 +1254,16 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("eval_rollout/min_cube_to_target_m" in logs for logs in report.log_history)
     assert any("eval_rollout/gripper_close_near_cube_rate" in logs for logs in report.log_history)
     assert any("action/train/gripper_mean" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("action/train/finger_width_p50_m" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/train/reach_progress" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/train/reach_dwell_proxy" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/train/grasp_like_proxy" in metrics for _step, metrics in logger.scalar_calls)
     assert any("eval_rollout/max_cube_lift_m" in metrics for _step, metrics in logger.scalar_calls)
     assert any("action/eval_rollout/gripper_mean" in metrics for _step, metrics, _force in progress.calls)
+    assert any(
+        "action/eval_rollout/finger_width_p50_m" in metrics
+        for _step, metrics, _force in progress.calls
+    )
     assert any("reward/eval_rollout/reach_progress" in metrics for _step, metrics, _force in progress.calls)
     assert any("eval_rollout/reach_dwell_rate" in metrics for _step, metrics, _force in progress.calls)
 

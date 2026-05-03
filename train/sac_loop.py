@@ -98,6 +98,15 @@ class SACTrainLoopConfig:
     reach_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     reach_dwell_sigma_m: float = 0.05
     reach_dwell_threshold_m: float = 0.05
+    grasp_like_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    grasp_like_near_sigma_m: float = 0.05
+    grasp_like_empty_width_m: float = 0.010
+    grasp_like_width_band_m: tuple[float, float, float] = (0.015, 0.046, 0.065)
+    grasp_like_max_collapse_m: float = 0.002
+    tiny_lift_delta_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    tiny_lift_delta_deadband_m: float = 0.0001
+    tiny_lift_delta_height_m: float = 0.001
+    tiny_lift_delta_near_sigma_m: float = 0.08
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -289,6 +298,15 @@ def run_sac_train_loop(
         reach_progress_clip_m=cfg.reach_progress_clip_m,
         reach_dwell_stage_scales=cfg.reach_dwell_stage_scales,
         reach_dwell_sigma_m=cfg.reach_dwell_sigma_m,
+        grasp_like_stage_scales=cfg.grasp_like_stage_scales,
+        grasp_like_near_sigma_m=cfg.grasp_like_near_sigma_m,
+        grasp_like_empty_width_m=cfg.grasp_like_empty_width_m,
+        grasp_like_width_band_m=cfg.grasp_like_width_band_m,
+        grasp_like_max_collapse_m=cfg.grasp_like_max_collapse_m,
+        tiny_lift_delta_stage_scales=cfg.tiny_lift_delta_stage_scales,
+        tiny_lift_delta_deadband_m=cfg.tiny_lift_delta_deadband_m,
+        tiny_lift_delta_height_m=cfg.tiny_lift_delta_height_m,
+        tiny_lift_delta_near_sigma_m=cfg.tiny_lift_delta_near_sigma_m,
         vertical_alignment_penalty_scale=cfg.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=cfg.vertical_alignment_penalty_stages,
         vertical_alignment_deadband_m=cfg.vertical_alignment_deadband_m,
@@ -676,6 +694,7 @@ def run_sac_train_loop(
                 action_diagnostic_logs(
                     actions[active_train_indices],
                     prefix="action/train",
+                    proprios=proprios[active_train_indices],
                     config=progress_bucket_config,
                 )
             )

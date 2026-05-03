@@ -39,6 +39,15 @@ CUBE_POS_BASE = slice(21, 24)
 EE_TO_CUBE = slice(27, 30)
 CUBE_TO_TARGET = slice(30, 33)
 GRIPPER_ACTION_INDEX = 6
+GRASP_LIKE_EMPTY_WIDTH_M = 0.010
+GRASP_LIKE_WIDTH_BAND_M = (0.015, 0.046, 0.065)
+GRASP_LIKE_OPEN_WIDTH_M = 0.070
+GRASP_LIKE_MAX_COLLAPSE_M = 0.002
+GRASP_LIKE_NEAR_SIGMA_M = 0.05
+GRASP_LIKE_CLOSE_COMMAND_THRESHOLD = -0.25
+TINY_LIFT_DELTA_DEADBAND_M = 0.0001
+TINY_LIFT_DELTA_HEIGHT_M = 0.0010
+TINY_LIFT_DELTA_NEAR_SIGMA_M = 0.08
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,15 @@ class RewardCurriculumConfig:
     reach_progress_clip_m: float = 0.01
     reach_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     reach_dwell_sigma_m: float = 0.05
+    grasp_like_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    grasp_like_near_sigma_m: float = GRASP_LIKE_NEAR_SIGMA_M
+    grasp_like_empty_width_m: float = GRASP_LIKE_EMPTY_WIDTH_M
+    grasp_like_width_band_m: tuple[float, float, float] = GRASP_LIKE_WIDTH_BAND_M
+    grasp_like_max_collapse_m: float = GRASP_LIKE_MAX_COLLAPSE_M
+    tiny_lift_delta_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    tiny_lift_delta_deadband_m: float = TINY_LIFT_DELTA_DEADBAND_M
+    tiny_lift_delta_height_m: float = TINY_LIFT_DELTA_HEIGHT_M
+    tiny_lift_delta_near_sigma_m: float = TINY_LIFT_DELTA_NEAR_SIGMA_M
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -139,6 +157,27 @@ class RewardCurriculumConfig:
             raise ValueError("reach_dwell_stage_scales must be non-negative")
         if self.reach_dwell_sigma_m <= 0.0:
             raise ValueError("reach_dwell_sigma_m must be positive")
+        if len(self.grasp_like_stage_scales) != 4:
+            raise ValueError("grasp_like_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.grasp_like_stage_scales):
+            raise ValueError("grasp_like_stage_scales must be non-negative")
+        if self.grasp_like_near_sigma_m <= 0.0:
+            raise ValueError("grasp_like_near_sigma_m must be positive")
+        if self.grasp_like_empty_width_m <= 0.0:
+            raise ValueError("grasp_like_empty_width_m must be positive")
+        _validate_grasp_like_width_band(self.grasp_like_width_band_m)
+        if self.grasp_like_max_collapse_m < 0.0:
+            raise ValueError("grasp_like_max_collapse_m must be non-negative")
+        if len(self.tiny_lift_delta_stage_scales) != 4:
+            raise ValueError("tiny_lift_delta_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.tiny_lift_delta_stage_scales):
+            raise ValueError("tiny_lift_delta_stage_scales must be non-negative")
+        if self.tiny_lift_delta_deadband_m < 0.0:
+            raise ValueError("tiny_lift_delta_deadband_m must be non-negative")
+        if self.tiny_lift_delta_height_m <= 0.0:
+            raise ValueError("tiny_lift_delta_height_m must be positive")
+        if self.tiny_lift_delta_near_sigma_m <= 0.0:
+            raise ValueError("tiny_lift_delta_near_sigma_m must be positive")
         if self.vertical_alignment_penalty_scale < 0.0:
             raise ValueError("vertical_alignment_penalty_scale must be non-negative")
         _validate_stage_names(self.vertical_alignment_penalty_stages, "vertical_alignment_penalty_stages")
@@ -624,6 +663,22 @@ def parse_stage_scales(value: str | Sequence[float]) -> tuple[float, float, floa
     return scales  # type: ignore[return-value]
 
 
+def parse_grasp_like_width_band(value: str | Sequence[float]) -> tuple[float, float, float]:
+    """Parse low/peak/high finger-width values for the blocked-gap score."""
+
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if len(parts) != 3:
+            raise ValueError("grasp-like width band must contain exactly three comma-separated values")
+        band = tuple(float(part) for part in parts)
+    else:
+        if len(value) != 3:
+            raise ValueError("grasp-like width band must contain exactly three values")
+        band = tuple(float(part) for part in value)
+    _validate_grasp_like_width_band(band)
+    return band  # type: ignore[return-value]
+
+
 def parse_stage_names(value: str | Sequence[str]) -> tuple[str, ...]:
     """Parse a comma-separated stage-name list for stage-local PR6.11 penalties."""
 
@@ -649,6 +704,14 @@ def _validate_stage_names(names: Sequence[str], field_name: str) -> None:
     invalid = [name for name in names if name not in STAGE_NAMES]
     if invalid:
         raise ValueError(f"{field_name} contains unsupported stages {invalid!r}; expected {STAGE_NAMES!r}")
+
+
+def _validate_grasp_like_width_band(band: Sequence[float]) -> None:
+    if len(band) != 3:
+        raise ValueError("grasp_like_width_band_m must contain exactly three values")
+    low, peak, high = (float(x) for x in band)
+    if not (0.0 <= low < peak < high):
+        raise ValueError("grasp_like_width_band_m must satisfy 0 <= low < peak < high")
 
 
 def curriculum_stage(
@@ -747,6 +810,131 @@ def compute_reach_dwell_proxy(
     return np.exp(-ee_distance / float(sigma_m)).astype(np.float32)
 
 
+def compute_finger_width(proprios: np.ndarray) -> np.ndarray:
+    """Return gripper finger opening as left+right finger position in meters."""
+
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    return np.sum(np.abs(proprio_array[:, GRIPPER_FINGER_POS]), axis=1).astype(np.float32)
+
+
+def compute_blocked_finger_gap_score(
+    proprios: np.ndarray,
+    *,
+    width_band_m: Sequence[float] = GRASP_LIKE_WIDTH_BAND_M,
+) -> np.ndarray:
+    """Triangular score for finger widths consistent with a cube blocked between fingers."""
+
+    _validate_grasp_like_width_band(width_band_m)
+    low, peak, high = (float(value) for value in width_band_m)
+    width = compute_finger_width(proprios)
+    rising = (width - low) / max(peak - low, np.finfo(np.float32).eps)
+    falling = (high - width) / max(high - peak, np.finfo(np.float32).eps)
+    return np.clip(np.minimum(rising, falling), 0.0, 1.0).astype(np.float32)
+
+
+def compute_not_empty_collapse(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    *,
+    empty_width_m: float = GRASP_LIKE_EMPTY_WIDTH_M,
+    max_collapse_m: float = GRASP_LIKE_MAX_COLLAPSE_M,
+) -> np.ndarray:
+    """Detect non-empty, non-collapsing finger closure from actual next-state width."""
+
+    if empty_width_m <= 0.0:
+        raise ValueError("empty_width_m must be positive")
+    if max_collapse_m < 0.0:
+        raise ValueError("max_collapse_m must be non-negative")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if proprio_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("proprios and next_proprios must share batch size")
+    finger_width = compute_finger_width(proprio_array)
+    next_finger_width = compute_finger_width(next_proprio_array)
+    collapse_tolerance = float(max_collapse_m) + 1e-7
+    return ((next_finger_width >= float(empty_width_m)) & (
+        (finger_width - next_finger_width) <= collapse_tolerance
+    )).astype(np.float32)
+
+
+def compute_grasp_like_proxy(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    actions: np.ndarray,
+    *,
+    near_sigma_m: float = GRASP_LIKE_NEAR_SIGMA_M,
+    empty_width_m: float = GRASP_LIKE_EMPTY_WIDTH_M,
+    width_band_m: Sequence[float] = GRASP_LIKE_WIDTH_BAND_M,
+    max_collapse_m: float = GRASP_LIKE_MAX_COLLAPSE_M,
+    close_command_threshold: float = GRASP_LIKE_CLOSE_COMMAND_THRESHOLD,
+) -> np.ndarray:
+    """Dense grasp evidence: near cube, closing, blocked-width band, and not empty-collapsing."""
+
+    if near_sigma_m <= 0.0:
+        raise ValueError("near_sigma_m must be positive")
+    if not -1.0 < close_command_threshold < 0.0:
+        raise ValueError("close_command_threshold must be in (-1, 0)")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    action_array = _as_2d_float(actions, name="actions")
+    if action_array.shape[1] <= GRIPPER_ACTION_INDEX:
+        raise ValueError("actions must have at least seven dimensions")
+    if (
+        proprio_array.shape[0] != next_proprio_array.shape[0]
+        or action_array.shape[0] != proprio_array.shape[0]
+    ):
+        raise ValueError("proprios, next_proprios, and actions must share batch size")
+
+    ee_distance = np.linalg.norm(proprio_array[:, EE_TO_CUBE], axis=1)
+    near_cube = np.exp(-ee_distance / float(near_sigma_m)).astype(np.float32)
+    close_threshold_abs = abs(float(close_command_threshold))
+    close_cmd = np.clip(
+        (-action_array[:, GRIPPER_ACTION_INDEX] - close_threshold_abs) / (1.0 - close_threshold_abs),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    blocked_gap = compute_blocked_finger_gap_score(next_proprio_array, width_band_m=width_band_m)
+    not_empty = compute_not_empty_collapse(
+        proprio_array,
+        next_proprio_array,
+        empty_width_m=empty_width_m,
+        max_collapse_m=max_collapse_m,
+    )
+    return (near_cube * close_cmd * blocked_gap * not_empty).astype(np.float32)
+
+
+def compute_tiny_lift_delta_proxy(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    *,
+    deadband_m: float = TINY_LIFT_DELTA_DEADBAND_M,
+    height_m: float = TINY_LIFT_DELTA_HEIGHT_M,
+    near_sigma_m: float = TINY_LIFT_DELTA_NEAR_SIGMA_M,
+) -> np.ndarray:
+    """Dense per-step reward for the first millimeters of upward cube motion."""
+
+    if deadband_m < 0.0:
+        raise ValueError("deadband_m must be non-negative")
+    if height_m <= 0.0:
+        raise ValueError("height_m must be positive")
+    if near_sigma_m <= 0.0:
+        raise ValueError("near_sigma_m must be positive")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if proprio_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("proprios and next_proprios must share batch size")
+    cube_z = proprio_array[:, CUBE_POS_BASE.stop - 1]
+    next_cube_z = next_proprio_array[:, CUBE_POS_BASE.stop - 1]
+    delta_proxy = np.clip(
+        (next_cube_z - cube_z - float(deadband_m)) / float(height_m),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    ee_distance = np.linalg.norm(proprio_array[:, EE_TO_CUBE], axis=1)
+    near_lift_context = np.exp(-ee_distance / float(near_sigma_m)).astype(np.float32)
+    return (near_lift_context * delta_proxy).astype(np.float32)
+
+
 def compute_vertical_alignment_penalty(
     proprios: np.ndarray,
     *,
@@ -787,6 +975,8 @@ def compute_pr611_shaping_terms(
         return {
             "reach_progress": zeros,
             "reach_dwell_proxy": zeros,
+            "grasp_like_proxy": zeros,
+            "tiny_lift_delta_proxy": zeros,
             "vertical_alignment_penalty": zeros,
             "rotation_action_penalty": zeros,
         }
@@ -796,11 +986,29 @@ def compute_pr611_shaping_terms(
     stage_name = config.stage_weights[stage_index].name
     if next_proprios is None:
         reach_progress = np.zeros((batch_size,), dtype=np.float32)
+        grasp_like_proxy = np.zeros((batch_size,), dtype=np.float32)
+        tiny_lift_delta_proxy = np.zeros((batch_size,), dtype=np.float32)
     else:
         reach_progress = compute_reach_progress(
             proprio_array,
             next_proprios,
             clip_m=config.reach_progress_clip_m,
+        )
+        grasp_like_proxy = compute_grasp_like_proxy(
+            proprio_array,
+            next_proprios,
+            actions,
+            near_sigma_m=config.grasp_like_near_sigma_m,
+            empty_width_m=config.grasp_like_empty_width_m,
+            width_band_m=config.grasp_like_width_band_m,
+            max_collapse_m=config.grasp_like_max_collapse_m,
+        )
+        tiny_lift_delta_proxy = compute_tiny_lift_delta_proxy(
+            proprio_array,
+            next_proprios,
+            deadband_m=config.tiny_lift_delta_deadband_m,
+            height_m=config.tiny_lift_delta_height_m,
+            near_sigma_m=config.tiny_lift_delta_near_sigma_m,
         )
     reach_progress = (
         float(config.reach_progress_stage_scales[stage_index]) * reach_progress
@@ -808,6 +1016,12 @@ def compute_pr611_shaping_terms(
     reach_dwell_proxy = (
         float(config.reach_dwell_stage_scales[stage_index])
         * compute_reach_dwell_proxy(proprio_array, sigma_m=config.reach_dwell_sigma_m)
+    ).astype(np.float32)
+    grasp_like_proxy = (
+        float(config.grasp_like_stage_scales[stage_index]) * grasp_like_proxy
+    ).astype(np.float32)
+    tiny_lift_delta_proxy = (
+        float(config.tiny_lift_delta_stage_scales[stage_index]) * tiny_lift_delta_proxy
     ).astype(np.float32)
     vertical_scale = (
         float(config.vertical_alignment_penalty_scale)
@@ -832,6 +1046,8 @@ def compute_pr611_shaping_terms(
     return {
         "reach_progress": reach_progress,
         "reach_dwell_proxy": reach_dwell_proxy,
+        "grasp_like_proxy": grasp_like_proxy,
+        "tiny_lift_delta_proxy": tiny_lift_delta_proxy,
         "vertical_alignment_penalty": vertical_penalty,
         "rotation_action_penalty": rotation_penalty,
     }
@@ -896,6 +1112,8 @@ def shape_rewards(
         + weights.joint * _component(components, "joint_vel", reward_array.shape[0])
         + pr611_terms["reach_progress"]
         + pr611_terms["reach_dwell_proxy"]
+        + pr611_terms["grasp_like_proxy"]
+        + pr611_terms["tiny_lift_delta_proxy"]
         + pr611_terms["vertical_alignment_penalty"]
         + pr611_terms["rotation_action_penalty"]
     ).astype(np.float32)
@@ -907,6 +1125,12 @@ def shape_rewards(
         "reward/train/reach_progress": float(np.mean(pr611_terms["reach_progress"])) if shaped.size else 0.0,
         "reward/train/reach_dwell_proxy": (
             float(np.mean(pr611_terms["reach_dwell_proxy"])) if shaped.size else 0.0
+        ),
+        "reward/train/grasp_like_proxy": (
+            float(np.mean(pr611_terms["grasp_like_proxy"])) if shaped.size else 0.0
+        ),
+        "reward/train/tiny_lift_delta_proxy": (
+            float(np.mean(pr611_terms["tiny_lift_delta_proxy"])) if shaped.size else 0.0
         ),
         "reward/train/vertical_alignment_penalty": (
             float(np.mean(pr611_terms["vertical_alignment_penalty"])) if shaped.size else 0.0
@@ -1040,9 +1264,77 @@ def action_diagnostic_logs(
         if proprio_array.shape[0] != action_array.shape[0]:
             raise ValueError("proprios and actions must share batch size")
         ee_distance = np.linalg.norm(proprio_array[:, EE_TO_CUBE], axis=1)
-        logs[f"{prefix}/gripper_close_near_cube_rate"] = float(
-            np.mean((ee_distance <= cfg.grip_threshold_m) & (gripper < cfg.close_command_threshold))
+        close_near_cube = (ee_distance <= cfg.grip_threshold_m) & (gripper < cfg.close_command_threshold)
+        logs[f"{prefix}/gripper_close_near_cube_rate"] = float(np.mean(close_near_cube))
+        logs.update(_finger_width_diagnostic_logs(prefix, proprio_array, close_near_cube=close_near_cube))
+    return logs
+
+
+def _finger_width_diagnostic_logs(
+    prefix: str,
+    proprios: np.ndarray,
+    *,
+    close_near_cube: np.ndarray,
+) -> dict[str, float]:
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    close_mask = np.asarray(close_near_cube, dtype=bool).reshape(-1)
+    if close_mask.shape != (proprio_array.shape[0],):
+        raise ValueError(f"close_near_cube must have shape ({proprio_array.shape[0]},); got {close_mask.shape}")
+    width = compute_finger_width(proprio_array)
+    blocked_score = compute_blocked_finger_gap_score(proprio_array)
+    logs = _finger_width_stats(f"{prefix}/finger_width", width, blocked_score)
+    close_key = f"{prefix}/close_near_cube_finger_width"
+    if np.any(close_mask):
+        logs.update(_finger_width_stats(close_key, width[close_mask], blocked_score[close_mask], include_p10_p90=False))
+    else:
+        logs.update(
+            {
+                f"{close_key}_p50_m": 0.0,
+                f"{close_key}_empty_closed_rate": 0.0,
+                f"{close_key}_blocked_band_rate": 0.0,
+                f"{close_key}_blocked_score": 0.0,
+                f"{close_key}_open_rate": 0.0,
+            }
         )
+    return logs
+
+
+def _finger_width_stats(
+    prefix: str,
+    width: np.ndarray,
+    blocked_score: np.ndarray,
+    *,
+    include_p10_p90: bool = True,
+) -> dict[str, float]:
+    if width.size == 0:
+        logs = {f"{prefix}_p50_m": 0.0}
+        if include_p10_p90:
+            logs[f"{prefix}_p10_m"] = 0.0
+            logs[f"{prefix}_p90_m"] = 0.0
+        logs.update(
+            {
+                f"{prefix}_empty_closed_rate": 0.0,
+                f"{prefix}_blocked_band_rate": 0.0,
+                f"{prefix}_blocked_score": 0.0,
+                f"{prefix}_open_rate": 0.0,
+            }
+        )
+        return logs
+
+    logs = {f"{prefix}_p50_m": float(np.percentile(width, 50.0))}
+    if include_p10_p90:
+        logs[f"{prefix}_p10_m"] = float(np.percentile(width, 10.0))
+        logs[f"{prefix}_p90_m"] = float(np.percentile(width, 90.0))
+    logs.update(
+        {
+            f"{prefix}_empty_closed_rate": float(np.mean(width <= GRASP_LIKE_EMPTY_WIDTH_M)),
+            f"{prefix}_blocked_band_rate": float(
+                np.mean((width >= GRASP_LIKE_WIDTH_BAND_M[0]) & (width <= GRASP_LIKE_WIDTH_BAND_M[2]))
+            ),
+            f"{prefix}_blocked_score": float(np.mean(blocked_score)),
+            f"{prefix}_open_rate": float(np.mean(width >= GRASP_LIKE_OPEN_WIDTH_M)),
+        }
+    )
     return logs
 
 
@@ -1082,6 +1374,11 @@ __all__ = [
     "EXPOSURE_GATE_LABEL_INDEX",
     "GRIPPER_ACTION_INDEX",
     "GRIPPER_FINGER_POS",
+    "GRASP_LIKE_EMPTY_WIDTH_M",
+    "GRASP_LIKE_MAX_COLLAPSE_M",
+    "GRASP_LIKE_NEAR_SIGMA_M",
+    "GRASP_LIKE_OPEN_WIDTH_M",
+    "GRASP_LIKE_WIDTH_BAND_M",
     "PROGRESS_BUCKETS",
     "REACH_GATE_DWELL_RATE",
     "REACH_GATE_EPISODE_RATE",
@@ -1098,17 +1395,23 @@ __all__ = [
     "StageWeights",
     "action_diagnostic_logs",
     "assign_progress_labels",
+    "compute_blocked_finger_gap_score",
+    "compute_finger_width",
+    "compute_grasp_like_proxy",
     "compute_lift_success_labels",
     "compute_lift_progress_proxy",
+    "compute_not_empty_collapse",
     "compute_pr611_shaping_terms",
     "compute_reach_dwell_proxy",
     "compute_reach_progress",
     "compute_progress_diagnostic_labels",
     "compute_rotation_action_penalty",
+    "compute_tiny_lift_delta_proxy",
     "compute_vertical_alignment_penalty",
     "curriculum_stage",
     "parse_eval_gate_thresholds",
     "parse_gate_thresholds",
+    "parse_grasp_like_width_band",
     "parse_min_train_exposures",
     "parse_stage_names",
     "parse_stage_scales",

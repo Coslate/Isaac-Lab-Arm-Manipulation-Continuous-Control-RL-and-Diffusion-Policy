@@ -44,6 +44,7 @@ from train.reward_curriculum import (
     SUPPORTED_REWARD_CURRICULA,
     parse_eval_gate_thresholds,
     parse_gate_thresholds,
+    parse_grasp_like_width_band,
     parse_min_train_exposures,
     parse_stage_names,
     parse_stage_scales,
@@ -154,6 +155,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reach-dwell-stage-scales", dest="reach_dwell_stage_scales", default="0.0,0.0,0.0,0.0")
     parser.add_argument("--reach-dwell-sigma-m", dest="reach_dwell_sigma_m", type=float, default=0.05)
     parser.add_argument("--reach-dwell-threshold-m", dest="reach_dwell_threshold_m", type=float, default=0.05)
+    parser.add_argument("--grasp-like-stage-scales", dest="grasp_like_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--grasp-like-near-sigma-m", dest="grasp_like_near_sigma_m", type=float, default=0.05)
+    parser.add_argument("--grasp-like-empty-width-m", dest="grasp_like_empty_width_m", type=float, default=0.010)
+    parser.add_argument("--grasp-like-width-band-m", dest="grasp_like_width_band_m", default="0.015,0.046,0.065")
+    parser.add_argument("--grasp-like-max-collapse-m", dest="grasp_like_max_collapse_m", type=float, default=0.002)
+    parser.add_argument("--tiny-lift-delta-stage-scales", dest="tiny_lift_delta_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--tiny-lift-delta-deadband-m", dest="tiny_lift_delta_deadband_m", type=float, default=0.0001)
+    parser.add_argument("--tiny-lift-delta-height-m", dest="tiny_lift_delta_height_m", type=float, default=0.001)
+    parser.add_argument("--tiny-lift-delta-near-sigma-m", dest="tiny_lift_delta_near_sigma_m", type=float, default=0.08)
     parser.add_argument("--vertical-alignment-penalty-scale", dest="vertical_alignment_penalty_scale", type=float, default=0.1)
     parser.add_argument("--vertical-alignment-penalty-stages", dest="vertical_alignment_penalty_stages", default="reach")
     parser.add_argument("--vertical-alignment-deadband-m", dest="vertical_alignment_deadband_m", type=float, default=0.04)
@@ -265,6 +275,15 @@ def run_with_env(env: Any, agent: SACAgent, args: argparse.Namespace) -> dict[st
         reach_dwell_stage_scales=parse_stage_scales(args.reach_dwell_stage_scales),
         reach_dwell_sigma_m=args.reach_dwell_sigma_m,
         reach_dwell_threshold_m=args.reach_dwell_threshold_m,
+        grasp_like_stage_scales=parse_stage_scales(args.grasp_like_stage_scales),
+        grasp_like_near_sigma_m=args.grasp_like_near_sigma_m,
+        grasp_like_empty_width_m=args.grasp_like_empty_width_m,
+        grasp_like_width_band_m=parse_grasp_like_width_band(args.grasp_like_width_band_m),
+        grasp_like_max_collapse_m=args.grasp_like_max_collapse_m,
+        tiny_lift_delta_stage_scales=parse_stage_scales(args.tiny_lift_delta_stage_scales),
+        tiny_lift_delta_deadband_m=args.tiny_lift_delta_deadband_m,
+        tiny_lift_delta_height_m=args.tiny_lift_delta_height_m,
+        tiny_lift_delta_near_sigma_m=args.tiny_lift_delta_near_sigma_m,
         vertical_alignment_penalty_scale=args.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=parse_stage_names(args.vertical_alignment_penalty_stages),
         vertical_alignment_deadband_m=args.vertical_alignment_deadband_m,
@@ -455,6 +474,9 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--lift-progress-height-m must be positive")
     parse_stage_scales(args.reach_progress_stage_scales)
     parse_stage_scales(args.reach_dwell_stage_scales)
+    parse_stage_scales(args.grasp_like_stage_scales)
+    parse_grasp_like_width_band(args.grasp_like_width_band_m)
+    parse_stage_scales(args.tiny_lift_delta_stage_scales)
     parse_stage_names(args.vertical_alignment_penalty_stages)
     parse_stage_names(args.rotation_action_penalty_stages)
     if args.reach_progress_clip_m <= 0.0:
@@ -463,6 +485,18 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--reach-dwell-sigma-m must be positive")
     if args.reach_dwell_threshold_m <= 0.0:
         raise ValueError("--reach-dwell-threshold-m must be positive")
+    if args.grasp_like_near_sigma_m <= 0.0:
+        raise ValueError("--grasp-like-near-sigma-m must be positive")
+    if args.grasp_like_empty_width_m <= 0.0:
+        raise ValueError("--grasp-like-empty-width-m must be positive")
+    if args.grasp_like_max_collapse_m < 0.0:
+        raise ValueError("--grasp-like-max-collapse-m must be non-negative")
+    if args.tiny_lift_delta_deadband_m < 0.0:
+        raise ValueError("--tiny-lift-delta-deadband-m must be non-negative")
+    if args.tiny_lift_delta_height_m <= 0.0:
+        raise ValueError("--tiny-lift-delta-height-m must be positive")
+    if args.tiny_lift_delta_near_sigma_m <= 0.0:
+        raise ValueError("--tiny-lift-delta-near-sigma-m must be positive")
     if args.vertical_alignment_penalty_scale < 0.0:
         raise ValueError("--vertical-alignment-penalty-scale must be non-negative")
     if args.vertical_alignment_deadband_m < 0.0:

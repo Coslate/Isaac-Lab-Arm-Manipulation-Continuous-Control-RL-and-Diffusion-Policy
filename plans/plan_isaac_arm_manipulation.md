@@ -70,7 +70,8 @@ rollout with `min_ee_to_cube_m ~= 0.046`, but still did not lift (`max_cube_lift
 nonzero `reach_dwell_proxy`, and zeroed legacy `reach_progress` to test whether a stable
 approach policy can unlock grip/lift learning. The v9b run reached stage 2 but exposed a
 reward-hacking failure mode: the old `grip_proxy` rewarded near-cube close commands without
-requiring an actual grasp or lift. That proxy reward and its CLI/log fields have been removed;
+requiring an actual grasp or lift. On 2026-05-03, immediately after the v9b review, that
+proxy reward and its CLI/log fields were removed from the current code path;
 `grip_attempt` and `grip_effect` remain as diagnostics/gates only. The next lift-focused
 reward change should teach actual grasp-lift transitions instead of adding another close-command
 reward. The remaining
@@ -83,6 +84,19 @@ Runtime requirement for live Isaac commands:
 - Missing X authority can cause `Authorization required`, `eglInitialize failed`, or `xcb_connection_has_error()` even when Isaac is launched headless.
 
 This is the single source of truth for implementation status. Do not maintain a second PR roadmap table elsewhere in this plan.
+
+Implementation permission rule:
+- If the user has not explicitly asked to implement, fix code, or edit implementation files, do not write or modify code.
+- Analysis, diagnosis, reward-design discussion, W&B/log review, and next-run recommendations are plan-only work unless the user clearly asks for code changes.
+- When the user asks to record a decision without implementation, update this plan and leave implementation files untouched.
+
+`grip_proxy` deprecation rule:
+- As of 2026-05-03, after the v9b run review, `grip_proxy` is removed from the active code contract.
+- Removed surfaces include `RewardCurriculumConfig`, `StageWeights`, reward shaping, SAC/TD3 train CLI flags, RUN commands, train/eval rollout logs, and tests that rewarded near-cube close commands.
+- New SAC/TD3 training commands must not include `--grip-proxy-scale` or `--grip-proxy-sigma-m`.
+- Missing `reward/train/grip_proxy` and `reward/eval_rollout/grip_proxy` logs are expected and correct in post-v9b runs.
+- Older PR6.8/PR6.9 sections below may still describe the original historical `grip_proxy` design; treat those references as obsolete history, not current implementation guidance.
+- Do not reintroduce a close-command-only grip reward. Future grasp/lift reward shaping must verify actual grasp-like evidence or cube lift/motion.
 
 | PR / Area | Status | What it provides | Test / evidence | Next / notes |
 |---|---|---|---|---|
@@ -105,12 +119,13 @@ This is the single source of truth for implementation status. Do not maintain a 
 | PR 6.5 - Training logger + LR scheduler + live monitors | Done | TensorBoard/wandb/JSONL logger contract from §8.3, console/file progress for SAC/TD3, scheduler hooks, fake-env separate periodic `eval/*`, training rollout metrics (`train_rollout/*`), same-Isaac-env deterministic eval rollout lanes (`eval_rollout/*`) with delayed clean-episode start, initial and per-lane settle steps, checkpointed `scheduler_state` | `tests/test_training_logger_and_scheduler.py` -> `28 passed`; full pytest at PR6.5 commit -> `244 passed, 1 skipped` (superseded by PR6.7 row below for current full-suite count) | For live Isaac, use `--eval-every-env-steps 0`, `--same-env-eval-lanes N`, and `--same-env-eval-start-env-steps K` for train-time monitoring; PR11a remains the final checkpoint eval path. |
 | PR 6.6 - Running obs/action normalization | Done | `agents.normalization` running per-dimension proprio mean/std, optional channel-wise image running mean/std (`--image-normalization none|per_channel_running_mean_std`, default off), explicit `bidirectional_env_learner_affine` action normalizer, checkpointed `normalizer_state`, SAC/TD3 train/eval/checkpoint policy consistency, optional angle sin/cos primitive only for true wrap-around angle features | `tests/test_normalization.py` + SAC/TD3 checks -> `47 passed`; full pytest -> `259 passed, 1 skipped` | Serious SAC/TD3 training can now use normalized proprio inputs, optional train-lane-only image channel stats, and stable learner-action/env-action conversion; replay still stores raw env observations/actions. |
 | PR 6.7 - Training diagnostics + checkpoint controls | Done | Per-step visual reward trace in `record_gif_continuous` metrics, SAC/TD3 reward component logging under `reward/train/*` and `reward/eval_rollout/*`, periodic/best checkpoint manager, `--disable-reward-curriculum`, SAC `--alpha-min` floor | Targeted PR6.7 slice -> `70 passed`; full pytest -> `283 passed, 1 skipped` | Use this before the next serious SAC/TD3 run so failed runs leave reward traces, stock reward breakdown, intermediate checkpoints, and best-by-eval checkpoints for debugging. |
-| PR 6.8 - Curriculum reward + bucket-rarity replay | Done | Opt-in `reach_grip_lift_goal` training reward curriculum, grip proxy bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | This is not vanilla SAC. It is a task-aware RL improvement that uses no demos, no BC, and no expert actions; final PR11a/PR12a eval remains stock-env evaluation. |
+| PR 6.8 - Curriculum reward + bucket-rarity replay | Done, with post-v9b deprecation | Opt-in `reach_grip_lift_goal` training reward curriculum, historical pre-v9b `grip_proxy` bridge reward, task-progress bucket labels, frequency-based bucket rarity, mixed uniform/priority replay sampling, protected rare-transition retention, W&B/JSONL/progress diagnostics, TD-error priority feedback | PR6.8 targeted slice -> `97 passed`; full pytest in `isaac_arm` -> `294 passed, 1 skipped` | The original `grip_proxy` part of PR6.8 was removed on 2026-05-03 after v9b showed reward hacking. Keep the rest of the curriculum/replay machinery. |
 | PR 6.9 - Progress-gated lift curriculum + lift-aware diagnostics | Done | Progress-gated curriculum advancement, dense `lift_progress_proxy`, grip-attempt/effect diagnostics, lift-aware eval metrics, composite best-checkpoint selection, action gripper diagnostics, lower protected-replay defaults for the next run | PR6.9 targeted slice -> `79 passed`; full pytest in `isaac_arm` -> `310 passed, 1 skipped` | Use this before the next SAC run; it is designed to answer whether the policy is failing to reach, failing to close near the cube, failing to convert grip attempts into lift, or merely being hidden by the wrong best metric. |
 | PR 6.10 - Eval-subskill dual-gated curriculum | Done | `eval_dual_gate` curriculum mode for SAC/TD3, current-policy deterministic eval episode subskill tracker, stage-local train exposure counters, strict stage advancement only when eval + exposure + min-stage-step gates all pass, W&B/JSONL/progress logs for why stages hold/advance | Targeted PR6.10 slice (`tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`) -> `56 passed`; full pytest in `isaac_arm` -> `318 passed, 1 skipped` | Use this for the next serious SAC run so stage transitions mean "the current policy can do the subskill", not merely "the replay buffer has seen a few matching transitions." |
 | PR 6.11 - Reach shaping + action constraint diagnostics | Done | Stage-0 reach progress reward, vertical alignment penalty, rotational action penalty/logs, reach-aware best checkpoint selector, protected replay refresh/age controls, same-step eval/gate metric merge for `best_stage*.pt`, global overall `best.pt` selection, configurable consecutive eval-gate confirmation via `--curriculum-gate-consecutive-eval-passes` | PR6.11 targeted slice -> `74 passed`; checkpoint regression file -> `45 passed`; consecutive-gate slice -> `68 passed`; full pytest in `isaac_arm` -> `334 passed, 1 skipped` | Use this before the next SAC run to measure whether stage-0 reach improves without upward/rotational waste, and whether best/protected checkpoints track the current curriculum stage without advancing on one lucky eval window. |
 | PR 6.12 - Reach dwell shaping + robust-reach gate | Done | `reach_dwell_proxy = exp(-ee_to_cube_distance / sigma_m)`, dwell/consecutive reach metrics, SAC/TD3 CLI flags, stage-0 dwell-mode gate, optional consecutive near-cube gate, and small stage-decayed dwell support in grip/lift stages | PR6.12 targeted slice -> `75 passed`; full pytest in `isaac_arm` -> `340 passed, 1 skipped` | Next SAC run should set `--reach-progress-stage-scales 0.0,0.0,0.0,0.0`, enable `--reach-dwell-stage-scales 0.8,0.3,0.05,0.0`, and use `--curriculum-gate-reach-metric dwell_rate` plus a nonzero consecutive-step gate. |
-| Post-v9b grip-proxy cleanup | Done | Removed `grip_proxy` reward shaping, SAC/TD3 CLI flags, train/eval progress logs, and tests that treated near-cube close commands as a reward term | Full pytest in `isaac_arm` -> `339 passed, 1 skipped` | Keep `grip_attempt` / `grip_effect` as diagnostics and curriculum gates; do not reintroduce reward for close commands unless it verifies a real grasp or lift. |
+| Post-v9b grip-proxy cleanup | Done on 2026-05-03 | Removed `grip_proxy` reward shaping, SAC/TD3 CLI flags, train/eval progress logs, RUN command flags, and tests that treated near-cube close commands as a reward term | Full pytest in `isaac_arm` -> `339 passed, 1 skipped` | Keep `grip_attempt` / `grip_effect` as diagnostics and curriculum gates; do not reintroduce reward for close commands unless it verifies a real grasp or lift. |
+| PR 6.13 - Post-v9b grasp-like + tiny-lift shaping | Done on 2026-05-03 | Replaces close-command reward hacking with opt-in grasp-like finger-width evidence, opt-in tiny step-to-step cube-lift reward, finger-width W&B diagnostics, and a recommended next-run stage-2 dwell removal | Targeted PR6.13 slice -> `118 passed`; full pytest in `isaac_arm` -> `346 passed, 1 skipped` | Tuned/improvement PR, not a controlled rerun. Intended to teach "near cube -> stable non-empty grasp-like closure -> first millimeters of cube lift" without reintroducing `grip_proxy`. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -943,14 +958,14 @@ Logging key contract:
 - `reward/eval_rollout/native_total`
 - `reward/eval_rollout/<stock_reward_term>` with the same term names for same-env deterministic eval lanes
 - `reward/eval_rollout/eval_shaped` as a PR6.8 diagnostic only; it does not feed `eval_rollout/mean_return`
-- `reward/eval_rollout/grip_proxy` as a PR6.8 deterministic eval diagnostic
+- Historical only: `reward/eval_rollout/grip_proxy` was a PR6.8 deterministic eval diagnostic before the 2026-05-03 post-v9b cleanup; post-v9b runs should not emit it.
 - `reward/eval_rollout/lift_progress_proxy` as a PR6.9 deterministic eval diagnostic
 - `curriculum/stage_index` and `curriculum/stage/<stage_name>` when PR6.8 reward curriculum is enabled
 - `curriculum/stage_progress` when PR6.8 reward curriculum is enabled
 - `curriculum/gate/reach_rate`, `curriculum/gate/grip_rate`, and `curriculum/gate/lift_rate` when PR6.9 progress-gated curriculum is enabled
 - `curriculum/gate/held_stage` when PR6.9 progress-gated curriculum keeps the current stage because the next gate is not yet met
 - `reward/train_shaped` when PR6.8 reward curriculum changes the reward stored in replay
-- `reward/train/grip_proxy` when PR6.8 grip proxy is enabled
+- Historical only: `reward/train/grip_proxy` existed only before the 2026-05-03 post-v9b cleanup; post-v9b runs should not emit it.
 - `reward/train/lift_progress_proxy` when PR6.9 dense lift progress reward is enabled
 - `reward/train/reach_progress`, `reward/train/vertical_alignment_penalty`, and `reward/train/rotation_action_penalty` when PR6.11 reach shaping/action constraints are enabled
 - `reward/eval_rollout/reach_progress`, `reward/eval_rollout/vertical_alignment_penalty`, and `reward/eval_rollout/rotation_action_penalty` as PR6.11 deterministic eval diagnostics
@@ -2186,6 +2201,16 @@ git commit -m "feat(train): add reward diagnostics and checkpoint controls"
 
 ### PR 6.8 — Curriculum Reward And Bucket-Rarity Replay
 
+Post-v9b status note:
+- This section records the original PR6.8 design history.
+- The `grip_proxy` reward, `--grip-proxy-*` CLI flags, and `reward/*/grip_proxy`
+  logs described below were removed from the active code path on 2026-05-03 after the
+  v9b run showed near-cube close-command reward hacking.
+- Keep the non-`grip_proxy` parts: staged curriculum machinery, task-progress buckets,
+  bucket-rarity replay, protected replay, and TD-error priority feedback.
+- Do not copy PR6.8 commands containing `--grip-proxy-scale` or
+  `--grip-proxy-sigma-m` for any post-v9b run.
+
 **Goal / Why**
 
 Two 500k SAC diagnostic runs reached `success_rate=0`. PR6.7 reward breakdowns showed
@@ -2194,10 +2219,11 @@ reliably enter the `lifting_object` or `object_goal_tracking` regions. The next 
 SAC/TD3 training improvement should make sparse manipulation progress easier to learn
 without demonstrations, behavior cloning, expert actions, or heuristic labels.
 
-PR6.8 adds:
+Historically, PR6.8 added:
 - staged training reward curriculum for reach -> grip -> lift -> goal,
-- a small grip-proxy bridge reward because the stock reward has reach and lift terms but
-  no immediate "close the gripper near the cube" bridge,
+- a small `grip_proxy` bridge reward because the stock reward had reach and lift terms but
+  no immediate "close the gripper near the cube" bridge; this bridge was removed on
+  2026-05-03 after v9b,
 - bucket-rarity prioritized replay so rare task-progress transitions found by the agent
   are sampled more often and retained longer.
 
@@ -2229,8 +2255,8 @@ Final comparison still uses PR11a/PR12a stock-env evaluation with deterministic 
   - `--reward-curriculum none|reach_grip_lift_goal`, default `none`.
   - `--curriculum-stage-fracs 0.2,0.5,0.8`, interpreted as fractions of
     `total_env_steps`, not absolute env-step numbers.
-  - `--grip-proxy-scale FLOAT`, default `1.0`.
-  - `--grip-proxy-sigma-m FLOAT`, default `0.05`.
+  - Historical/removed on 2026-05-03: `--grip-proxy-scale FLOAT`, default `1.0`.
+  - Historical/removed on 2026-05-03: `--grip-proxy-sigma-m FLOAT`, default `0.05`.
   - `--prioritize-replay`, default off.
   - `--priority-replay-ratio FLOAT`, default `0.5` when enabled.
   - `--priority-score-weights rarity,reward,return,td_error`, default
@@ -2246,8 +2272,9 @@ Final comparison still uses PR11a/PR12a stock-env evaluation with deterministic 
   - `curriculum/stage_index`, `curriculum/stage_progress`, and
     `curriculum/stage/<stage_name>` numeric mirrors for logger backends.
   - `reward/train_shaped`, the exact reward stored in replay when curriculum is enabled.
-  - `reward/train/grip_proxy`.
-  - `reward/eval_rollout/eval_shaped` and `reward/eval_rollout/grip_proxy` as same-env deterministic eval diagnostics; `eval_rollout/mean_return` remains stock reward.
+  - Historical/removed on 2026-05-03: `reward/train/grip_proxy`.
+  - `reward/eval_rollout/eval_shaped` as a same-env deterministic eval diagnostic; `eval_rollout/mean_return` remains stock reward.
+  - Historical/removed on 2026-05-03: `reward/eval_rollout/grip_proxy`.
   - `train/td_error_mean` from SAC/TD3 critic updates.
   - `priority_replay/batch_uniform`, `priority_replay/batch_priority`,
     `priority_replay/mean_priority_score`, `priority_replay/protected_count`.
@@ -2279,7 +2306,7 @@ When `--reward-curriculum reach_grip_lift_goal`, compute:
 ```text
 train_reward =
   w_reach(stage)  * reaching_object
-+ w_grip(stage)   * grip_proxy
++ historical_pre_v9b_w_grip(stage) * grip_proxy   # removed on 2026-05-03
 + w_lift(stage)   * lifting_object
 + w_goal(stage)   * object_goal_tracking
 + w_fine(stage)   * object_goal_tracking_fine_grained
@@ -2309,7 +2336,7 @@ Default multipliers:
 | 3 lift | `0.75` | `1.0` | `2.0` | `1.0` | `0.5` | `0.75` | `0.75` |
 | 4 stock-like | `1.0` | `0.0` | `1.0` | `1.0` | `1.0` | `1.0` | `1.0` |
 
-Grip proxy:
+Historical pre-v9b grip proxy, removed on 2026-05-03:
 
 ```text
 ee_to_cube = proprio[:, 27:30]
@@ -2438,7 +2465,10 @@ statement that one progress bucket is more important than another.
 
 **How To Use**
 
-Recommended SAC v3 run after implementing PR6.8:
+Historical pre-v9b SAC v3 run after implementing PR6.8:
+- Do not run this command as-is after 2026-05-03.
+- The `--grip-proxy-scale` and `--grip-proxy-sigma-m` flags shown in this historical
+  command were removed by the post-v9b cleanup.
 
 ```bash
 python -m scripts.train_sac_continuous \
@@ -2525,7 +2555,8 @@ Primary signals to watch:
 - `priority_replay/bucket_count/lift` and `priority_replay/bucket_count/goal`; if these
   remain zero, prioritized replay cannot invent progress that exploration never finds.
 - `eval_rollout/success_rate`, `eval_rollout/mean_return`, and final PR11a metrics.
-- `reward/eval_rollout/eval_shaped` and `reward/eval_rollout/grip_proxy` to debug whether the deterministic eval policy is improving under the same curriculum objective, without replacing stock eval return.
+- `reward/eval_rollout/eval_shaped` to debug whether the deterministic eval policy is improving under the same curriculum objective, without replacing stock eval return.
+- Historical only, removed on 2026-05-03: `reward/eval_rollout/grip_proxy`.
 
 **How To Test**
 
@@ -2535,11 +2566,11 @@ Add focused tests before live Isaac runs:
   - parses stage fractions as proportions of `total_env_steps`,
   - returns stock reward unchanged when curriculum is `none`,
   - applies the default stage multiplier table exactly,
-  - computes `grip_proxy = scale * exp(-||ee_to_cube|| / sigma) * clip(-gripper_action, 0, 1)`,
-  - gives near-zero grip proxy when the end effector is far from the cube,
+  - historical pre-v9b only: computed `grip_proxy = scale * exp(-||ee_to_cube|| / sigma) * clip(-gripper_action, 0, 1)`,
+  - historical pre-v9b only: gave near-zero grip proxy when the end effector was far from the cube,
   - assigns multi-label progress buckets without bucket importance ordering,
   - assigns `normal` only when no progress label applies,
-  - logs `curriculum/*`, `reward/train_shaped`, and `reward/train/grip_proxy`.
+  - logs `curriculum/*` and `reward/train_shaped`; pre-v9b tests also logged `reward/train/grip_proxy`, which was removed on 2026-05-03.
 - `tests/test_prioritized_replay.py`
   - stores multi-label bucket metadata and bucket counts,
   - computes bucket rarity from observed counts with `1 / (count + eps) ** power`,
@@ -2553,7 +2584,7 @@ Add focused tests before live Isaac runs:
   - verify same-env eval lanes and settle cooldown transitions do not enter replay,
   - verify curriculum reward, not stock reward, is stored when curriculum is enabled,
   - verify stock reward and stock reward components are still logged,
-  - verify same-env eval logs include `reward/eval_rollout/native_total`, `reward/eval_rollout/eval_shaped`, `reward/eval_rollout/grip_proxy`, and the stock component terms,
+  - verify same-env eval logs include `reward/eval_rollout/native_total`, `reward/eval_rollout/eval_shaped`, and the stock component terms; pre-v9b tests also expected `reward/eval_rollout/grip_proxy`, which was removed on 2026-05-03,
   - verify JSONL/progress/W&B logger shims emit curriculum and priority-replay metrics.
 
 Targeted verification command:
@@ -2615,7 +2646,9 @@ reach cube -> close gripper near cube -> make cube height increase -> move lifte
 ```
 
 **Inputs**
-- PR6.8 reward curriculum, grip proxy, bucket labels, bucket-rarity replay, and protected replay.
+- PR6.8 reward curriculum, bucket labels, bucket-rarity replay, and protected replay.
+- Historical context only: PR6.8's `grip_proxy` existed when PR6.9 was designed, but it
+  was removed on 2026-05-03 after v9b and is not part of the active code path.
 - PR6.7 stock reward component extraction and checkpoint manager.
 - PR6.5 same-Isaac-env deterministic eval lanes.
 - 40D proprio contract:
@@ -2630,7 +2663,7 @@ reach cube -> close gripper near cube -> make cube height increase -> move lifte
 |---|---|
 | 1. Progress-gated curriculum | Add opt-in bucket-rate gates. The stage no longer advances only because env steps crossed a fraction. |
 | 2. Dense lift proxy | Add `lift_progress_proxy = clip((next_cube_z - cube_reset_z - 0.002) / 0.04, 0, 1)`. Do not multiply it by gripper action. If the cube really moves upward, that is useful progress by itself. |
-| 3. Proposed hyperparameter changes | The important PR code change is gating + lift proxy + better best metric. `--curriculum-stage-fracs 0.45,0.75,0.95` is not required once gates are active. Keep `--grip-proxy-scale`/`--grip-proxy-sigma-m` configurable but do not change defaults just to compensate for missing lift. Lower protected replay is recommended for the next run. `--alpha-min 0.10` is a run-level exploration knob, not a required PR6.9 code path. |
+| 3. Proposed hyperparameter changes | The important PR code change is gating + lift proxy + better best metric. `--curriculum-stage-fracs 0.45,0.75,0.95` is not required once gates are active. Historical pre-v9b note: this row originally said to keep `--grip-proxy-scale`/`--grip-proxy-sigma-m` configurable; those flags were removed on 2026-05-03 after v9b. Lower protected replay is recommended for the next run. `--alpha-min 0.10` is a run-level exploration knob, not a required PR6.9 code path. |
 | 4. Lift-aware metrics | Add `eval_rollout/max_cube_lift_m`, `eval_rollout/min_ee_to_cube_m`, `eval_rollout/min_cube_to_target_m`, and `eval_rollout/gripper_close_near_cube_rate`. |
 | 5. Grip bucket weakness | Keep the existing `grip` bucket for replay, but add diagnostic counts for `grip_attempt` and `grip_effect` so W&B shows whether the policy closes near the cube but fails to move it. |
 | 6. Lift-aware best selection | Add composite best selection: success first, max lift second, mean return third. Do not use `max_lifting_object`; `max_cube_lift_m` is clearer and less redundant. |
@@ -2681,9 +2714,13 @@ return breaks the tie.
 
 **Reward Design**
 
-Keep PR6.8's grip proxy. Do not add a second finger-closed reward to the main training
-objective in PR6.9: finger gap can shrink during an empty close, so it is not reliable
-evidence that the cube is grasped.
+Post-v9b status note:
+- This PR6.9 reward-design subsection was written before v9b.
+- The lines below that include `grip_proxy` are historical and were invalidated by the
+  2026-05-03 post-v9b cleanup.
+- The active post-v9b reward design keeps `lift_progress_proxy` and the diagnostics/gates,
+  but removes close-command-only `grip_proxy` reward.
+- The warning that finger gap alone is unreliable remains valid.
 
 Add a dense lift progress proxy:
 
@@ -2709,7 +2746,7 @@ When `--reward-curriculum reach_grip_lift_goal` is enabled in PR6.9, compute:
 ```text
 train_reward =
   w_reach(stage)         * reaching_object
-+ w_grip(stage)          * grip_proxy
++ historical_pre_v9b_w_grip(stage) * grip_proxy   # removed on 2026-05-03
 + w_lift_progress(stage) * lift_progress_proxy
 + w_lift_stock(stage)    * lifting_object
 + w_goal(stage)          * object_goal_tracking
@@ -2885,7 +2922,10 @@ protected set becomes mostly old normal/reach transitions.
 
 **How To Use**
 
-Recommended SAC v5 run after PR6.9:
+Historical pre-v9b SAC v5 run after PR6.9:
+- Do not run this command as-is after 2026-05-03.
+- The `--grip-proxy-scale` and `--grip-proxy-sigma-m` flags shown below were removed
+  by the post-v9b cleanup.
 
 ```bash
 python -m scripts.train_sac_continuous \
@@ -2958,7 +2998,7 @@ curriculum/gate/grip_rate
 curriculum/gate/lift_rate
 curriculum/gate/held_stage
 
-reward/train/grip_proxy
+historical_pre_v9b_only_reward/train/grip_proxy
 reward/train/lift_progress_proxy
 reward/train/native_total
 reward/train_shaped
@@ -3002,7 +3042,8 @@ Add or extend focused tests:
   - computes `lift_progress_proxy = clip((next_cube_z - cube_reset_z - deadband) / height, 0, 1)`,
   - returns zero lift progress for jitter below the deadband,
   - applies the PR6.9 stage table with `w_lift_progress` and `w_lift_stock`,
-  - keeps `grip_proxy` unchanged from PR6.8,
+  - historical pre-v9b only: kept `grip_proxy` unchanged from PR6.8; this was removed
+    on 2026-05-03,
   - advances a gated curriculum only when the relevant recent bucket rate meets the threshold,
   - holds a stage and logs `curriculum/gate/held_stage` when the threshold is not met,
   - logs `curriculum/gate/reach_rate`, `curriculum/gate/grip_rate`, and `curriculum/gate/lift_rate`.
@@ -3410,7 +3451,10 @@ Keep PR6.9:
 Do not use `eval_rollout/mean_return` alone while curriculum reward is shaped. The best
 checkpoint should prefer actual success, then cube lift, then return.
 
-**Recommended SAC Run After PR6.10**
+**Historical Pre-v9b Recommended SAC Run After PR6.10**
+
+Do not run this command as-is after 2026-05-03. It still contains removed
+`--grip-proxy-scale` and `--grip-proxy-sigma-m` flags.
 
 ```bash
 python -m scripts.train_sac_continuous \
@@ -3928,7 +3972,10 @@ Recommended defaults:
   `reach_progress` sign reversal or shaping terms dominating stock reward by an order of
   magnitude in the same phase.
 
-**Recommended SAC Run After PR6.11**
+**Historical Pre-v9b Recommended SAC Run After PR6.11**
+
+Do not run this command as-is after 2026-05-03. It still contains removed
+`--grip-proxy-scale` and `--grip-proxy-sigma-m` flags.
 
 ```bash
 python -m scripts.train_sac_continuous \
@@ -4130,7 +4177,9 @@ the cube long enough to set up grasp/lift." PR6.12 replaces the recommended reac
 path with a dwell-style reward and a dwell + consecutive-span eval gate.
 
 **Inputs**
-- PR6.8/PR6.9 reward curriculum, grip proxy, lift progress proxy, and bucket-rarity replay.
+- PR6.8/PR6.9 reward curriculum, lift progress proxy, and bucket-rarity replay.
+- Historical context only: `grip_proxy` was still present when PR6.12 was written, but it
+  was removed from the active code path on 2026-05-03 after v9b.
 - PR6.10 eval-dual-gate tracker and same-env deterministic eval lanes.
 - PR6.11 vertical/rotation action penalties, stage-aware/global best checkpointing, and
   consecutive eval-gate confirmation.
@@ -4171,8 +4220,10 @@ reach-dwell reward in lift/stock-like stages.
 must avoid making "park near the cube forever" the easiest solution:
 
 - Stage 0 can use strong dwell reward because the only goal is robust approach.
-- Stage 1 must reduce dwell reward and let `grip_proxy` dominate. The policy should be
-  rewarded more for close/near-cube gripper behavior than for simply hovering.
+- Historical pre-v9b text said stage 1 should reduce dwell reward and let `grip_proxy`
+  dominate. Post-v9b, do not use `grip_proxy`; stage 1 should instead rely on valid
+  grip-attempt/effect diagnostics and any future grasp-like reward that verifies real
+  grasp/lift evidence.
 - Stage 2 must reduce dwell reward further and let `lift_progress_proxy`, `lifting_object`,
   and later goal-tracking rewards dominate.
 - Stage 3 must disable dwell reward; final eval continues to use stock-native return and
@@ -4441,6 +4492,555 @@ PR6.12 is complete when:
 
 ```bash
 git commit -m "feat(train): add reach dwell shaping and robust reach gate"
+```
+
+---
+
+### PR 6.13 — Post-v9b Grasp-Like + Tiny-Lift Shaping
+
+**Status**
+
+Implemented on 2026-05-03 after the user explicitly asked for code changes. This is a
+tuned/improvement PR, not a controlled rerun.
+
+**Why This PR Exists**
+
+The v9b SAC run reached stage 2 (`lift`) but did not learn the missing behavior:
+
+```text
+reach cube -> actually grasp/block cube -> lift cube
+```
+
+The run did learn pieces of the earlier curriculum:
+- robust reach/dwell behavior improved;
+- gripper close rate near the cube became high;
+- `grip_attempt` and `grip_effect` gates could pass;
+- stage 2 was reached and held for a long time.
+
+But the run still had:
+- `eval_rollout/success_rate = 0`;
+- `eval_rollout/max_cube_lift_m = 0`;
+- `eval_lift_2cm_episode_rate = 0`;
+- no useful `lift`/`goal` replay bucket growth at the end;
+- videos showing near-cube close/upward behavior without the cube actually being carried.
+
+The important postmortem is that the removed `grip_proxy` rewarded:
+
+```text
+near_cube * close_command
+```
+
+That was not evidence of grasp. It let SAC become good at closing near the cube without
+learning "cube is trapped between fingers" or "cube starts moving upward." PR6.13 must
+therefore reward **verified intermediate consequences**, not another close-command shortcut.
+
+**Design Position**
+
+Keep these ideas:
+- keep `lift_progress_proxy`; it measures accumulated cube height above reset and remains the
+  sustained-lift signal;
+- keep `grip_attempt` and `grip_effect` as diagnostics/gates, not reward terms;
+- keep PR6.12 reach dwell for early stages, but remove stage-2 dwell in the next run;
+- use finger gap only as **grasp-like evidence**, not as proof of success;
+- use actual `next_proprios` from the transition, not future prediction.
+
+Do not add these yet:
+- do not reintroduce `grip_proxy`;
+- do not add `lift_action_bridge = grasp_like * max(action_dz, 0)` in this PR. v9b already
+  showed the policy can move upward without lifting the cube, so rewarding upward action may
+  strengthen the wrong behavior unless grasp/lift evidence is already reliable.
+
+**Signal 1: Finger-Width Diagnostics**
+
+Use raw gripper finger positions from the existing 40D proprio contract:
+
+```text
+left_finger  = proprio[:, 14]
+right_finger = proprio[:, 15]
+finger_width = abs(left_finger) + abs(right_finger)
+```
+
+Known physical/reference values:
+
+```text
+closed: left ~= 0.00, right ~= 0.00, width ~= 0.00
+open:   left ~= 0.04, right ~= 0.04, width ~= 0.08
+heuristic "closed enough": mean(finger_pos) <= 0.025, width <= 0.050
+existing heuristic blocked-cube test: (0.023, 0.023), width ~= 0.046
+```
+
+Default diagnostic thresholds:
+
+```text
+empty_closed_width_m = 0.010
+blocked_width_low_m  = 0.015
+blocked_width_peak_m = 0.046
+blocked_width_high_m = 0.065
+open_width_m         = 0.070
+```
+
+Add scalar logs for active train lanes and same-env deterministic eval lanes:
+
+```text
+action/train/finger_width_p10_m
+action/train/finger_width_p50_m
+action/train/finger_width_p90_m
+action/train/finger_width_empty_closed_rate
+action/train/finger_width_blocked_band_rate
+action/train/finger_width_blocked_score
+action/train/finger_width_open_rate
+
+action/train/close_near_cube_finger_width_p50_m
+action/train/close_near_cube_finger_width_empty_closed_rate
+action/train/close_near_cube_finger_width_blocked_band_rate
+action/train/close_near_cube_finger_width_blocked_score
+action/train/close_near_cube_finger_width_open_rate
+```
+
+Mirror the same keys under `action/eval_rollout/*`.
+
+Definitions:
+
+```text
+close_near_cube =
+  norm(ee_to_cube) <= grip_threshold_m
+  and action[:, 6] < close_command_threshold
+```
+
+Interpretation:
+- `p10/p50/p90` show the gripper-width distribution.
+- `empty_closed_rate` shows empty-close collapse.
+- `blocked_band_rate` shows how often width falls into the plausible cube-blocked interval.
+- `blocked_score` is a soft triangular score centered on the heuristic blocked-cube width.
+- the `close_near_cube_*` metrics are the most important because they answer what happens
+  specifically when the policy is near the cube and sending close commands.
+
+This is diagnostic first. It makes the next training run explainable even if the reward still
+fails.
+
+**Signal 2: Blocked Finger Gap Score**
+
+Define a soft triangular score:
+
+```text
+blocked_gap_score =
+  min(
+    clip((finger_width - blocked_width_low_m)
+         / (blocked_width_peak_m - blocked_width_low_m), 0, 1),
+    clip((blocked_width_high_m - finger_width)
+         / (blocked_width_high_m - blocked_width_peak_m), 0, 1)
+  )
+```
+
+With the defaults:
+
+```text
+finger_width <= 1.5cm -> 0.0
+1.5cm -> 4.6cm       -> rises linearly from 0.0 to 1.0
+4.6cm                -> 1.0
+4.6cm -> 6.5cm       -> falls linearly from 1.0 to 0.0
+finger_width >= 6.5cm -> 0.0
+```
+
+Why this shape:
+- below `1.5cm` is too close to empty closed;
+- around `4.6cm` matches the existing heuristic blocked-cube example;
+- above `6.5cm` is too open to count as grasp-like;
+- the soft slope avoids brittle threshold jumps and gives SAC a smoother gradient-like signal
+  in replay reward targets.
+
+This is not "true grasp." It is only "finger state looks compatible with an object blocking
+closure."
+
+**Signal 3: Not-Empty-Collapse Check**
+
+Use the transition's actual next observation:
+
+```text
+finger_width_next =
+  abs(next_proprio[:, 14]) + abs(next_proprio[:, 15])
+```
+
+This is not prediction or future leakage. SAC/TD3 already stores transitions as:
+
+```text
+obs_t, action_t, reward_t, obs_{t+1}, done
+```
+
+Reward shaping happens after `env.step(action)` returns `obs_{t+1}`, before pushing into replay.
+This is the same data path already used by `lift_progress_proxy`, which reads `next_cube_z`.
+
+Define:
+
+```text
+not_empty_collapse =
+  (finger_width_next >= empty_closed_width_m)
+  and ((finger_width - finger_width_next) <= max_collapse_m)
+```
+
+Recommended:
+
+```text
+empty_closed_width_m = 0.010
+max_collapse_m       = 0.002
+```
+
+Why:
+- empty close can pass through the blocked band for one step while collapsing toward zero;
+- if `finger_width_next < 1cm`, it is basically empty closed;
+- if width shrinks by more than `2mm` in one step, it is still collapsing, not stably blocked.
+
+Examples:
+
+```text
+blocked-like:
+  finger_width      = 0.046
+  finger_width_next = 0.045
+  next >= 0.010 and shrink = 0.001 <= 0.002 -> pass
+
+empty-collapse:
+  finger_width      = 0.046
+  finger_width_next = 0.020
+  shrink = 0.026 > 0.002 -> fail
+
+empty-closed:
+  finger_width      = 0.020
+  finger_width_next = 0.005
+  next < 0.010 -> fail
+```
+
+This prevents a reward hack where the policy earns grasp-like reward merely because the
+fingers briefly pass through the blocked-width interval during an empty close.
+
+**Signal 4: Grasp-Like Proxy**
+
+Define a new reward term:
+
+```text
+near_cube = exp(-norm(ee_to_cube) / grasp_like_near_sigma_m)
+close_cmd = clip((-action[:, 6] - close_command_threshold_abs)
+                 / (1.0 - close_command_threshold_abs), 0, 1)
+
+grasp_like_proxy =
+  near_cube
+  * close_cmd
+  * blocked_gap_score
+  * not_empty_collapse
+```
+
+Recommended defaults:
+
+```text
+grasp_like_near_sigma_m = 0.05
+close_command_threshold_abs = 0.25   # same magnitude as close_command_threshold=-0.25
+```
+
+Recommended stage scales:
+
+```text
+reach:         0.0
+grip_pre_lift: 0.4
+lift:          0.2
+stock_like:    0.0
+```
+
+Why low scales:
+- the signal is better than old `grip_proxy`, but still not success;
+- the policy should not learn to hover near the cube with a blocked-looking gripper forever;
+- stage 2 should be dominated by actual lift terms, not grasp-like appearance.
+
+Expected improvement:
+- old `grip_proxy` rewarded close command near cube even with empty closure;
+- `grasp_like_proxy` requires near cube, close command, nonzero blocked-looking finger width,
+  and no immediate empty-collapse evidence.
+
+Main risk:
+- a policy might learn a finger-width posture near the cube without lifting. This is why the
+term is small, stage-limited, and paired with tiny-lift reward plus stage-2 dwell removal.
+
+**Signal 5: Tiny Lift Delta Proxy**
+
+Keep existing `lift_progress_proxy`:
+
+```text
+lift_progress_proxy =
+  clip((next_cube_z - cube_reset_z - lift_progress_deadband_m)
+       / lift_progress_height_m, 0, 1)
+```
+
+This measures accumulated cube height above reset and remains useful once the cube is already
+moving upward. The v9b issue is earlier: the first `1mm`/`2mm` of cube motion rarely became a
+strong enough learning signal.
+
+Add step-to-step upward cube movement:
+
+```text
+cube_z_delta = next_cube_z - cube_z
+
+tiny_lift_delta_proxy =
+  near_lift_context
+  * clip((cube_z_delta - tiny_lift_delta_deadband_m)
+         / tiny_lift_delta_height_m, 0, 1)
+```
+
+Recommended defaults:
+
+```text
+tiny_lift_delta_deadband_m = 0.0001
+tiny_lift_delta_height_m   = 0.0010
+near_lift_context          = exp(-norm(ee_to_cube) / 0.08)
+```
+
+Why the deadband is not making it sparse:
+- `0.1mm` is intended only to suppress physics/contact jitter;
+- `0.5mm` upward motion already produces meaningful reward;
+- `1.1mm` upward motion is near max for this one-step proxy.
+
+Do not multiply this by gripper action. If the cube really moves upward, that is useful
+progress regardless of which action dimension caused it. The gripper-state signal is handled
+separately by `grasp_like_proxy`.
+
+Recommended stage scales:
+
+```text
+reach:         0.0
+grip_pre_lift: 0.5
+lift:          1.0
+stock_like:    0.0
+```
+
+Expected improvement:
+- gives SAC dense credit for the first real upward cube motion;
+- bridges the gap between "close near cube" and the existing absolute-height
+  `lift_progress_proxy`;
+- helps priority replay see early lift transitions sooner.
+
+Main risk:
+- noisy cube bumps may be rewarded. Mitigations are the tiny deadband, near-lift context,
+  logging `eval_rollout/max_cube_lift_m`, and keeping `lift_progress_proxy` as the sustained
+  lift signal.
+
+**Stage-2 Dwell Change**
+
+For the next run after PR6.13, set:
+
+```text
+--reach-dwell-stage-scales 0.8,0.3,0.0,0.0
+```
+
+This changes v9b's lift-stage dwell from `0.1` to `0.0`.
+
+Why this should not erase reach:
+- stage 2 is `StageWeights("lift")`, not a no-reach stage;
+- it still has `reach=0.75`, so `0.75 * reaching_object` remains a reach anchor;
+- removing stage-2 dwell only removes the extra "park near cube" reward that can compete
+  with lift learning.
+
+The intended stage-2 objective becomes:
+
+```text
+stay near enough to interact
+but earn most reward by making cube height increase
+```
+
+**CLI Contract**
+
+Add SAC and TD3 train flags. Defaults must preserve current post-v9b behavior unless the user
+opts in:
+
+```text
+--grasp-like-stage-scales FLOAT,FLOAT,FLOAT,FLOAT      default: 0.0,0.0,0.0,0.0
+--grasp-like-near-sigma-m FLOAT                       default: 0.05
+--grasp-like-empty-width-m FLOAT                      default: 0.010
+--grasp-like-width-band-m low,peak,high               default: 0.015,0.046,0.065
+--grasp-like-max-collapse-m FLOAT                     default: 0.002
+--tiny-lift-delta-stage-scales FLOAT,FLOAT,FLOAT,FLOAT default: 0.0,0.0,0.0,0.0
+--tiny-lift-delta-deadband-m FLOAT                    default: 0.0001
+--tiny-lift-delta-height-m FLOAT                      default: 0.0010
+--tiny-lift-delta-near-sigma-m FLOAT                  default: 0.08
+```
+
+Validation:
+- all widths/sigmas/heights must be positive;
+- `low < peak < high`;
+- stage scales must contain exactly four nonnegative values;
+- `max_collapse_m` must be nonnegative.
+
+**Reward Logs**
+
+Add train/eval rollout diagnostics:
+
+```text
+reward/train/grasp_like_proxy
+reward/train/tiny_lift_delta_proxy
+reward/eval_rollout/grasp_like_proxy
+reward/eval_rollout/tiny_lift_delta_proxy
+```
+
+Do not add `reward/*/grip_proxy`.
+
+**Expected W&B Interpretation**
+
+Useful signs:
+- `action/*/close_near_cube_finger_width_empty_closed_rate` decreases;
+- `action/*/close_near_cube_finger_width_blocked_score` rises;
+- `reward/*/tiny_lift_delta_proxy` rises before `lift_progress_proxy`;
+- `eval_rollout/max_cube_lift_m` becomes nonzero;
+- `curriculum/gate/eval_lift_2cm_episode_rate` eventually rises from zero.
+
+Bad signs:
+- `grasp_like_proxy` rises but `tiny_lift_delta_proxy` and `max_cube_lift_m` stay zero:
+  policy may be learning blocked-looking posture without lift;
+- `tiny_lift_delta_proxy` rises but `max_cube_lift_m` stays near zero:
+  reward may be dominated by jitter/bumping;
+- `close_near_cube_finger_width_open_rate` stays high:
+  close commands are not producing actual closure quickly enough;
+- `close_near_cube_finger_width_empty_closed_rate` stays high:
+  policy still empty-closes near the cube.
+
+**Recommended Use After Implementation**
+
+This next run is a tuned/improvement run compared with v9b, not a controlled rerun.
+
+Changed reward/curriculum flags from v9b:
+
+```text
+remove historical flags:
+  --grip-proxy-scale
+  --grip-proxy-sigma-m
+
+change:
+  --reach-dwell-stage-scales 0.8,0.3,0.1,0.0
+  -> --reach-dwell-stage-scales 0.8,0.3,0.0,0.0
+
+add:
+  --grasp-like-stage-scales 0.0,0.4,0.2,0.0
+  --grasp-like-near-sigma-m 0.05
+  --grasp-like-empty-width-m 0.010
+  --grasp-like-width-band-m 0.015,0.046,0.065
+  --grasp-like-max-collapse-m 0.002
+  --tiny-lift-delta-stage-scales 0.0,0.5,1.0,0.0
+  --tiny-lift-delta-deadband-m 0.0001
+  --tiny-lift-delta-height-m 0.0010
+  --tiny-lift-delta-near-sigma-m 0.08
+```
+
+Keep from v9b unless a later analysis changes it:
+
+```text
+--reward-curriculum reach_grip_lift_goal
+--curriculum-gating eval_dual_gate
+--curriculum-gate-reach-metric dwell_rate
+--curriculum-gate-reach-min-consecutive-steps 20
+--reach-progress-stage-scales 0.0,0.0,0.0,0.0
+--lift-progress-deadband-m 0.002
+--lift-progress-height-m 0.02
+--curriculum-gate-lift-success-height-m 0.02
+--priority-replay-ratio 0.5
+--protected-replay-fraction 0.02
+```
+
+Use a new aligned run/checkpoint/log name, for example:
+
+```text
+sac_franka_1m5_seed0_v10_grasplike_tinylift
+```
+
+Do not write the final full training command until the implementation PR lands and the actual
+CLI names have been verified by parser tests. When presenting that final command, follow the
+Training Command Accountability rule and include every changed flag listed above.
+
+**Tests To Cover The PR**
+
+`tests/test_reward_curriculum.py`:
+- `compute_finger_width` uses total raw left+right finger opening.
+- `compute_blocked_finger_gap_score` is zero below low, one at peak, zero above high, and
+  soft on both slopes.
+- invalid width bands fail validation.
+- `not_empty_collapse` passes for stable blocked width and fails for empty-closed / fast
+  collapse cases.
+- `grasp_like_proxy` is positive only when near cube, close command is active, blocked score
+  is positive, and not-empty-collapse passes.
+- `grasp_like_proxy` is zero for far cube, open gripper, empty collapse, missing close command,
+  or invalid next-proprio shape.
+- `tiny_lift_delta_proxy` is zero for downward motion and jitter below `0.1mm`, positive for
+  `0.5mm`, and clipped by `1.1mm`.
+- `tiny_lift_delta_proxy` uses `next_cube_z - cube_z`, not `next_cube_z - cube_reset_z`.
+- disabled reward curriculum returns native reward unchanged and zero new proxies.
+- stage weighting adds `grasp_like_proxy`, `tiny_lift_delta_proxy`, existing
+  `lift_progress_proxy`, and no `grip_proxy`.
+- logs include `reward/train/grasp_like_proxy` and `reward/train/tiny_lift_delta_proxy`.
+
+`tests/test_training_logger_and_scheduler.py`:
+- SAC and TD3 CLI parser tests accept the new flags and reject invalid values.
+- loop/logger tests emit action finger-width diagnostics for train and eval rollout lanes.
+- loop/logger tests emit new reward diagnostics for train and eval rollout lanes.
+- progress reporter display mapping includes the high-signal new keys without requiring every
+  histogram/bin key to be shown.
+- old `reward/train/grip_proxy`, `reward/eval_rollout/grip_proxy`, `--grip-proxy-scale`, and
+  `--grip-proxy-sigma-m` remain absent.
+
+SAC/TD3 smoke tests:
+- fake-env SAC and TD3 train loops still complete with default new scales all zero.
+- checkpoint metadata includes new reward-curriculum hparams when nonzero flags are passed.
+
+**Test Commands**
+
+Targeted verification:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest \
+  tests/test_reward_curriculum.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py \
+  -q
+```
+
+Full verification:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+Do not require the live Isaac runtime smoke test for this PR. The official live smoke remains
+opt-in through `RUN_ISAAC_RUNTIME_SMOKE=1`.
+
+Verification run on 2026-05-03:
+
+```text
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest \
+  tests/test_reward_curriculum.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py \
+  -q
+-> 118 passed in 185.80s
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+-> 346 passed, 1 skipped in 240.93s
+```
+
+**Suggested Commit Messages**
+
+For the plan-only PR description commit:
+
+```text
+docs(plan): specify post-v9b grasp-lift shaping PR
+```
+
+For the later implementation commit:
+
+```text
+feat(rl): add grasp-like and tiny-lift reward shaping
+```
+
+Implementation commit body:
+
+```text
+Add finger-width diagnostics, grasp-like blocked-gap shaping with empty-collapse rejection,
+and tiny step-to-step cube-lift reward. Keep lift_progress_proxy as sustained-lift signal,
+remove stage-2 dwell in the recommended run, and keep grip_proxy removed.
 ```
 
 ---

@@ -17,22 +17,31 @@ from train.reward_curriculum import (
     EE_TO_CUBE,
     EVAL_GATE_LABEL_INDEX,
     GRIPPER_ACTION_INDEX,
+    GRIPPER_FINGER_POS,
+    GRASP_LIKE_WIDTH_BAND_M,
     PROGRESS_BUCKETS,
     REACH_GATE_DWELL_RATE,
     REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
     RewardCurriculumConfig,
+    action_diagnostic_logs,
     assign_progress_labels,
+    compute_blocked_finger_gap_score,
+    compute_finger_width,
+    compute_grasp_like_proxy,
     compute_pr611_shaping_terms,
     compute_lift_success_labels,
     compute_lift_progress_proxy,
+    compute_not_empty_collapse,
     compute_progress_diagnostic_labels,
     compute_reach_dwell_proxy,
     compute_reach_progress,
     compute_rotation_action_penalty,
+    compute_tiny_lift_delta_proxy,
     compute_vertical_alignment_penalty,
     curriculum_stage,
     parse_eval_gate_thresholds,
     parse_gate_thresholds,
+    parse_grasp_like_width_band,
     parse_min_train_exposures,
     parse_stage_names,
     parse_stage_scales,
@@ -80,6 +89,14 @@ def test_parse_pr611_stage_controls_validate_values() -> None:
         parse_stage_scales("0.5,-0.1,0,0")
     with pytest.raises(ValueError, match="unsupported"):
         parse_stage_names("reach,bogus")
+
+
+def test_parse_grasp_like_width_band_requires_ordered_low_peak_high() -> None:
+    assert parse_grasp_like_width_band("0.015,0.046,0.065") == pytest.approx(GRASP_LIKE_WIDTH_BAND_M)
+    with pytest.raises(ValueError, match="exactly three"):
+        parse_grasp_like_width_band("0.015,0.046")
+    with pytest.raises(ValueError, match="low < peak < high"):
+        parse_grasp_like_width_band("0.015,0.065,0.046")
 
 
 def test_curriculum_stage_uses_total_step_fractions() -> None:
@@ -211,6 +228,129 @@ def test_reach_dwell_proxy_decays_with_ee_to_cube_distance() -> None:
         np.array([1.0, np.exp(-1.0), np.exp(-2.0)], dtype=np.float32),
         atol=1e-6,
     )
+
+
+def test_finger_width_and_blocked_gap_score_track_nonzero_cube_band() -> None:
+    proprios = np.zeros((6, 40), dtype=np.float32)
+    widths = np.array([0.010, 0.015, 0.046, 0.0555, 0.065, 0.070], dtype=np.float32)
+    proprios[:, GRIPPER_FINGER_POS] = (widths / 2.0)[:, None]
+
+    finger_width = compute_finger_width(proprios)
+    blocked = compute_blocked_finger_gap_score(proprios)
+
+    np.testing.assert_allclose(finger_width, widths, atol=1e-6)
+    np.testing.assert_allclose(
+        blocked,
+        np.array([0.0, 0.0, 1.0, 0.5, 0.0, 0.0], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def test_not_empty_collapse_uses_actual_next_finger_width() -> None:
+    proprios = np.zeros((4, 40), dtype=np.float32)
+    next_proprios = np.zeros((4, 40), dtype=np.float32)
+    proprios[:, GRIPPER_FINGER_POS] = (np.array([0.020, 0.020, 0.050, 0.050]) / 2.0)[:, None]
+    next_proprios[:, GRIPPER_FINGER_POS] = (np.array([0.009, 0.018, 0.046, 0.070]) / 2.0)[:, None]
+
+    stable = compute_not_empty_collapse(next_proprios=next_proprios, proprios=proprios)
+
+    np.testing.assert_allclose(stable, np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32))
+
+
+def test_grasp_like_proxy_requires_near_close_blocked_and_not_empty() -> None:
+    proprios = np.zeros((4, 40), dtype=np.float32)
+    next_proprios = np.zeros((4, 40), dtype=np.float32)
+    actions = np.zeros((4, 7), dtype=np.float32)
+    actions[:, GRIPPER_ACTION_INDEX] = -1.0
+    proprios[:, GRIPPER_FINGER_POS] = 0.023
+    next_proprios[:, GRIPPER_FINGER_POS] = 0.023
+
+    actions[1, GRIPPER_ACTION_INDEX] = 0.0
+    next_proprios[2, GRIPPER_FINGER_POS] = 0.004
+    next_proprios[3, GRIPPER_FINGER_POS] = 0.040
+
+    grasp_like = compute_grasp_like_proxy(proprios, next_proprios, actions)
+
+    assert grasp_like[0] == pytest.approx(1.0)
+    assert grasp_like[1] == pytest.approx(0.0)
+    assert grasp_like[2] == pytest.approx(0.0)
+    assert grasp_like[3] == pytest.approx(0.0)
+
+
+def test_tiny_lift_delta_proxy_rewards_first_millimeters_of_upward_motion() -> None:
+    proprios = np.zeros((3, 40), dtype=np.float32)
+    next_proprios = np.zeros((3, 40), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.00005, 0.0006, 0.0020], dtype=np.float32)
+    proprios[2, EE_TO_CUBE] = np.array([0.08, 0.0, 0.0], dtype=np.float32)
+
+    tiny_lift = compute_tiny_lift_delta_proxy(proprios, next_proprios)
+
+    np.testing.assert_allclose(
+        tiny_lift,
+        np.array([0.0, 0.5, np.exp(-1.0)], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def test_pr613_grasp_like_and_tiny_lift_terms_are_stage_weighted() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    proprios[0, GRIPPER_FINGER_POS] = 0.023
+    next_proprios[0, GRIPPER_FINGER_POS] = 0.023
+    next_proprios[0, CUBE_POS_BASE.stop - 1] = 0.0011
+    actions[0, GRIPPER_ACTION_INDEX] = -1.0
+    config = RewardCurriculumConfig(
+        mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
+        reach_progress_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        reach_dwell_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        grasp_like_stage_scales=(0.0, 0.0, 0.5, 0.0),
+        tiny_lift_delta_stage_scales=(0.0, 0.0, 2.0, 0.0),
+    )
+
+    terms = compute_pr611_shaping_terms(proprios, next_proprios, actions, config=config, stage_index=2)
+    shaped, logs, lift_progress = shape_rewards(
+        np.array([0.0], dtype=np.float32),
+        {},
+        proprios,
+        actions,
+        env_steps=60,
+        total_env_steps=100,
+        config=config,
+        next_proprios=next_proprios,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+        stage_index_override=2,
+    )
+
+    assert terms["grasp_like_proxy"][0] == pytest.approx(0.5)
+    assert terms["tiny_lift_delta_proxy"][0] == pytest.approx(2.0)
+    assert lift_progress[0] == pytest.approx(0.0)
+    assert shaped[0] == pytest.approx(2.5)
+    assert logs["reward/train/grasp_like_proxy"] == pytest.approx(0.5)
+    assert logs["reward/train/tiny_lift_delta_proxy"] == pytest.approx(2.0)
+
+
+def test_action_diagnostics_log_finger_width_distribution_and_close_near_slice() -> None:
+    actions = np.zeros((3, 7), dtype=np.float32)
+    proprios = np.zeros((3, 40), dtype=np.float32)
+    actions[:, GRIPPER_ACTION_INDEX] = np.array([-1.0, -1.0, 0.0], dtype=np.float32)
+    proprios[:, GRIPPER_FINGER_POS] = (np.array([0.008, 0.046, 0.080], dtype=np.float32) / 2.0)[:, None]
+    proprios[1, EE_TO_CUBE] = np.array([0.10, 0.0, 0.0], dtype=np.float32)
+
+    logs = action_diagnostic_logs(actions, prefix="action/train", proprios=proprios)
+
+    assert logs["action/train/finger_width_p10_m"] == pytest.approx(0.0156)
+    assert logs["action/train/finger_width_p50_m"] == pytest.approx(0.046)
+    assert logs["action/train/finger_width_p90_m"] == pytest.approx(0.0732)
+    assert logs["action/train/finger_width_empty_closed_rate"] == pytest.approx(1.0 / 3.0)
+    assert logs["action/train/finger_width_blocked_band_rate"] == pytest.approx(1.0 / 3.0)
+    assert logs["action/train/finger_width_blocked_score"] == pytest.approx(1.0 / 3.0)
+    assert logs["action/train/finger_width_open_rate"] == pytest.approx(1.0 / 3.0)
+    assert logs["action/train/close_near_cube_finger_width_p50_m"] == pytest.approx(0.008)
+    assert logs["action/train/close_near_cube_finger_width_empty_closed_rate"] == pytest.approx(1.0)
+    assert logs["action/train/close_near_cube_finger_width_blocked_band_rate"] == pytest.approx(0.0)
+    assert logs["action/train/close_near_cube_finger_width_blocked_score"] == pytest.approx(0.0)
+    assert logs["action/train/close_near_cube_finger_width_open_rate"] == pytest.approx(0.0)
 
 
 def test_vertical_alignment_penalty_uses_ee_to_cube_z_slice() -> None:
