@@ -5045,6 +5045,655 @@ remove stage-2 dwell in the recommended run, and keep grip_proxy removed.
 
 ---
 
+### PR 6.14 - Post-v10 Target-Approach Shaping + Stage-Aware LR Restart
+
+**Status**
+
+Planned after the v10 `sac_franka_1m5_seed0_v10_grasplike_tinylift` run completed on
+2026-05-04. This is a tuned/improvement PR, not a controlled rerun.
+
+This PR is documentation-first until the user explicitly asks for implementation.
+
+**Why This PR Exists**
+
+PR6.13 fixed the previous missing behavior:
+
+```text
+reach cube -> close with grasp-like finger state -> begin lifting cube
+```
+
+The v10 run shows that the policy can now discover reach/grip/lift behavior in same-env eval:
+
+```text
+stage0: 28 -> 982255
+stage1: 982279 -> 1032260
+stage2: 1032284 -> 1408664
+stage3: 1408689 -> 1500021
+
+eval_rollout/max_cube_lift_m:
+  best = 1.1176m at env_step ~= 1451283
+  final = 0.9948m at env_step ~= 1499263
+
+curriculum/gate/eval_lift_2cm_episode_rate:
+  final = 0.55
+
+eval_rollout/success_rate:
+  final = 0.0
+  max   = 0.0
+
+eval_rollout/min_cube_to_target_m:
+  best  = 0.0688m
+  final = 0.1185m
+  success_threshold = 0.0200m
+```
+
+The stage3 GIF/MP4 produced from `best_stage3.pt` is weaker on a fresh visual rollout:
+
+```text
+checkpoint env_steps = 1460801
+visual_rollout_source = fresh_env_reset
+success_rate = 0.0
+max_cube_lift_m = 0.0389
+min_cube_to_target_m = 0.4058
+gripper_close_near_cube_rate = 0.045
+mean_return = 3.252
+```
+
+Interpretation:
+- v10 learned useful reach/grip/lift subskills in the training/same-env eval stream;
+- the selected stage3 checkpoint is not robust on fresh reset visual rollout;
+- the objective and checkpoint ranking still prefer "lift high" over "move cube toward target";
+- stage3 received only about `91k` env steps, and the LR was already at `5e-5`;
+- `success_rate=0` is primarily a target-approach failure, not a reach/grip/lift failure.
+
+**Non-Goals**
+
+Do not add a stage max cap. Do not force stage advancement after a fixed number of env steps.
+Curriculum advancement must remain ability-based: the agent advances only when eval evidence says
+the current curriculum skill is learned.
+
+Do not solve this by weakening the final success definition. The task success threshold remains
+the environment/eval definition based on cube-to-target distance.
+
+**Design Position**
+
+Keep:
+- PR6.13 `grasp_like_proxy` and `tiny_lift_delta_proxy`;
+- PR6.12 reach dwell as an early-stage reach skill signal;
+- eval-dual-gate curriculum advancement;
+- same-env eval lanes for online gating diagnostics;
+- fresh visual rollout as a separate robustness check after checkpoint selection.
+
+Change:
+- add target-directed reward shaping for stage2/stage3;
+- add target-aware checkpoint ranking so stage3 best does not select only by max lift;
+- add an opt-in LR scheduler restart when curriculum eval gates advance to a new stage;
+- refine eval gate scoring with more ability-specific metrics, without forced advancement.
+
+**Code Change 1: Stage-Aware LR Restart**
+
+Add an opt-in SAC/TD3 CLI flag:
+
+```text
+--lr-restart-on-curriculum-advance
+--lr-restart-warmup-updates INT   default: 500
+--lr-restart-cycle-updates INT    default: 10000
+```
+
+Default: disabled. Defaults must preserve PR6.13 behavior.
+
+When enabled, the train loop restarts all configured optimizer LR schedulers after the curriculum
+gate advances from one stage to the next:
+
+```text
+stage0 -> stage1
+stage1 -> stage2
+stage2 -> stage3
+```
+
+This must be triggered by actual curriculum advancement, not by elapsed env steps. In the current
+eval-dual-gate mode, the trigger is equivalent to:
+
+```text
+curriculum/gate/advanced_stage == 1
+```
+
+Implementation contract:
+- restart actor, critic, and alpha schedulers together;
+- do not reset optimizer state, replay buffer, actor/critic weights, target networks, or alpha;
+- do not restart when the stage is merely held;
+- save restart state in checkpoint scheduler metadata;
+- resumed checkpoints continue with the correct scheduler state;
+- if `--lr-scheduler constant`, the flag is accepted but has no behavioral effect beyond logs.
+
+Recommended scheduler behavior:
+
+```text
+restart scheduler.step_count to 0
+reuse each scheduler's original base LR
+use --lr-restart-warmup-updates for restart warmup
+use --lr-restart-cycle-updates as the restart cosine cycle length
+reuse existing --lr-min-lr
+```
+
+Do not reuse the run-level `--lr-warmup-updates` for curriculum restarts. In v10 that value was
+`9000`, which is about `288k` env steps at `num_envs=32, utd_ratio=1`; stage3 only had about
+`91k` env steps, so reusing the original warmup would leave most or all of stage3 in warmup.
+Restart warmup must be short enough that short but important stages still reach usable LR.
+
+Add logs:
+
+```text
+train/lr_restart_count
+train/lr_updates_since_restart
+train/lr_last_restart_stage
+train/lr_restart_on_curriculum_advance
+```
+
+Why this is better than only raising `--lr-min-lr`:
+- v10 reached stage3 around `1.409M/1.5M`, when warmup-cosine was already at the LR floor;
+- stage3 introduced the hardest target-directed behavior but had the least remaining optimizer
+  energy;
+- restarting on proven stage advancement keeps early-stage training stable while giving later
+  stages fresh learning rate.
+
+**Code Change 2: Target-Progress Proxy**
+
+Add target-directed progress shaping based on the existing proprio cube-to-target vector.
+
+Use the 40D proprio contract:
+
+```text
+cube_to_target_vec = proprio[:, 30:33]       # target_pos_base - cube_pos_base
+cube_to_target_dist = norm(cube_to_target_vec)
+```
+
+Define:
+
+```text
+prev_dist = norm(proprio[:, 30:33])
+next_dist = norm(next_proprio[:, 30:33])
+
+lift_context =
+  clip((next_cube_z - cube_reset_z - target_progress_lift_gate_m)
+       / target_progress_lift_gate_band_m, 0, 1)
+
+target_progress_proxy =
+  lift_context
+  * clip((prev_dist - next_dist - target_progress_deadband_m)
+         / target_progress_clip_m, 0, 1)
+```
+
+Recommended defaults:
+
+```text
+target_progress_lift_gate_m = 0.020
+target_progress_lift_gate_band_m = 0.020
+target_progress_deadband_m = 0.0002
+target_progress_clip_m = 0.010
+```
+
+Recommended stage scales:
+
+```text
+reach:         0.0
+grip_pre_lift: 0.0
+lift:          0.3
+stock_like:    1.0
+```
+
+Rationale:
+- do not reward pushing the cube on the table before grasp/lift;
+- reward actual decrease in 3D cube-to-target distance;
+- give stage2 a small target preview while keeping lift as the main objective;
+- make stage3 explicitly optimize the missing approach behavior.
+
+**Code Change 3: Target-Dwell Proxy**
+
+Add a dense proximity signal once the cube is lifted:
+
+```text
+target_dwell_proxy =
+  lift_context * exp(-next_cube_to_target_dist / target_dwell_sigma_m)
+```
+
+Recommended defaults:
+
+```text
+target_dwell_sigma_m = 0.08
+```
+
+Recommended stage scales:
+
+```text
+reach:         0.0
+grip_pre_lift: 0.0
+lift:          0.2
+stock_like:    0.8
+```
+
+Why this is paired with progress:
+- progress rewards moving closer step by step;
+- dwell rewards ending and staying near the target;
+- progress alone can stop giving reward near a local plateau;
+- dwell alone may be too weak when the cube is far from target.
+
+**Code Change 4: Target Over-Lift Penalty**
+
+v10 can lift very high without solving target approach. Add an optional stage-local penalty:
+
+```text
+next_cube_to_target_vec = next_proprio[:, 30:33]
+next_target_z = next_cube_z + next_cube_to_target_vec[:, 2]
+
+target_overlift_penalty =
+  -max(next_cube_z - next_target_z - target_overlift_margin_m, 0)
+```
+
+Recommended defaults:
+
+```text
+target_overlift_margin_m = 0.05
+target_overlift_penalty_scale = 0.05
+target_overlift_penalty_stages = stock_like
+```
+
+This penalty should be small. It is a guardrail against the "lift forever" solution, not the
+main teaching signal.
+
+**CLI Contract**
+
+Add SAC and TD3 train flags:
+
+```text
+--lr-restart-on-curriculum-advance
+--lr-restart-warmup-updates INT                      default: 500
+--lr-restart-cycle-updates INT                       default: 10000
+
+--target-progress-stage-scales FLOAT,FLOAT,FLOAT,FLOAT default: 0.0,0.0,0.0,0.0
+--target-progress-clip-m FLOAT                         default: 0.010
+--target-progress-deadband-m FLOAT                     default: 0.0002
+--target-progress-lift-gate-m FLOAT                    default: 0.020
+--target-progress-lift-gate-band-m FLOAT               default: 0.020
+
+--target-dwell-stage-scales FLOAT,FLOAT,FLOAT,FLOAT    default: 0.0,0.0,0.0,0.0
+--target-dwell-sigma-m FLOAT                           default: 0.08
+
+--target-overlift-penalty-scale FLOAT                  default: 0.0
+--target-overlift-penalty-stages STAGE[,STAGE...]      default: empty
+--target-overlift-margin-m FLOAT                       default: 0.05
+```
+
+Validation:
+- all stage scales contain exactly four nonnegative values;
+- `lr_restart_warmup_updates` must be nonnegative;
+- `lr_restart_cycle_updates` must be positive;
+- `lr_restart_warmup_updates < lr_restart_cycle_updates` when LR restart is enabled;
+- `clip_m`, `sigma_m`, `lift_gate_band_m`, and `margin_m` must be positive;
+- `deadband_m`, `lift_gate_m`, and penalty scale must be nonnegative;
+- stage names must be one or more of `reach`, `grip_pre_lift`, `lift`, `stock_like`;
+- target terms require `next_proprios` and `cube_reset_z`; missing transition data yields zeros
+  rather than shape errors in disabled/default paths.
+
+**Reward Formula Update**
+
+The shaped reward becomes:
+
+```text
+shaped =
+  existing PR6.13 shaped reward
+  + target_progress_stage_scale[stage] * target_progress_proxy
+  + target_dwell_stage_scale[stage] * target_dwell_proxy
+  + target_overlift_penalty_scale_if_enabled * target_overlift_penalty
+```
+
+Add logs:
+
+```text
+reward/train/target_progress_proxy
+reward/train/target_dwell_proxy
+reward/train/target_overlift_penalty
+reward/eval_rollout/target_progress_proxy
+reward/eval_rollout/target_dwell_proxy
+reward/eval_rollout/target_overlift_penalty
+```
+
+Do not remove existing stock `object_goal_tracking` and `object_goal_tracking_fine_grained`.
+PR6.14 adds dense target approach hints around them.
+
+**Code Change 5: Target-Aware Best Checkpoint Selection**
+
+Add a new `--save-best-by` mode:
+
+```text
+stage_aware:reach_grip_lift_target_return
+```
+
+Keep the existing `stage_aware:reach_lift_success_return` for backward compatibility.
+
+New stage-specific comparator:
+
+```text
+stage0:
+  eval reach quality first
+  then -min_ee_to_cube_m
+  then mean_return
+
+stage1:
+  eval blocked-grasp/grip-effect quality first
+  then grip_attempt quality
+  then -min_ee_to_cube_m
+
+stage2:
+  eval_lift_2cm_episode_rate or max_cube_lift_m first
+  then -min_cube_to_target_m
+  then mean_return
+
+stage3:
+  success_rate
+  then -min_cube_to_target_m
+  then max_cube_lift_m
+  then mean_return
+```
+
+The important change is stage3. In v10, success was always zero, so the old comparator selected
+by max lift and return. The new comparator should prefer the checkpoint that gets closest to the
+target before preferring higher lift.
+
+Global best comparator for this mode:
+
+```text
+success_rate
+then -min_cube_to_target_m
+then max_cube_lift_m
+then -min_ee_to_cube_m
+then mean_return
+```
+
+**Code Change 6: Ability-Based Eval Gate Refinement**
+
+Keep eval-gated curriculum advancement. Do not add forced max-step advancement.
+
+Add optional stricter scoring metrics that are still ability-based:
+
+```text
+curriculum/gate/eval_blocked_grasp_episode_rate
+curriculum/gate/eval_target_approach_episode_rate
+```
+
+`eval_blocked_grasp_episode_rate` should use the PR6.13 finger-width evidence:
+
+```text
+episode counts as blocked_grasp if:
+  close_near_cube occurs
+  and close_near_cube_finger_width_blocked_score >= threshold
+  and close_near_cube_finger_width_empty_closed_rate is low
+```
+
+`eval_target_approach_episode_rate` should count episodes that reduce cube-to-target distance
+after the cube is lifted:
+
+```text
+episode counts as target_approach if:
+  max_cube_lift_m >= target_progress_lift_gate_m
+  and initial_cube_to_target_m - min_cube_to_target_m >= target_approach_min_delta_m
+```
+
+Add optional CLI switches rather than changing old behavior by default:
+
+```text
+--curriculum-gate-grip-metric grip_effect|blocked_grasp
+--curriculum-gate-target-approach-threshold FLOAT
+--curriculum-gate-target-approach-min-delta-m FLOAT
+```
+
+Recommended next-run position:
+- keep no forced advance;
+- use ability-based eval gates;
+- consider `--curriculum-gate-grip-metric blocked_grasp` if stage1 still passes with
+  empty-close artifacts;
+- consider stage0 reach threshold tuning only as an eval ability criterion, not as a time cap.
+
+**V10 Interpretation For Next W&B Review**
+
+High-signal metrics by question:
+
+Actor/critic stability:
+
+```text
+train/actor_loss
+train/q_mean
+train/td_error_mean
+train/entropy
+train/alpha
+train/learning_rate_actor
+```
+
+Curriculum timing:
+
+```text
+curriculum/stage_index
+curriculum/gate/stage_env_steps
+curriculum/gate/eval_gate_passed
+curriculum/gate/consecutive_eval_passes
+curriculum/gate/eval_reach_dwell_rate
+curriculum/gate/eval_reach_max_consecutive_steps
+curriculum/gate/eval_grip_effect_episode_rate
+curriculum/gate/eval_lift_2cm_episode_rate
+```
+
+Target failure:
+
+```text
+eval_rollout/success_rate
+eval_rollout/min_cube_to_target_m
+eval_rollout/max_cube_lift_m
+reward/eval_rollout/object_goal_tracking
+reward/eval_rollout/object_goal_tracking_fine_grained
+reward/eval_rollout/target_progress_proxy
+reward/eval_rollout/target_dwell_proxy
+```
+
+Fresh-checkpoint robustness:
+
+```text
+visual metrics:
+  success_rate
+  max_cube_lift_m
+  min_cube_to_target_m
+  min_ee_to_cube_m
+  gripper_close_near_cube_rate
+```
+
+**Recommended Use After Implementation**
+
+This next run is:
+
+```text
+tuned/improvement run with no forced curriculum advance
+```
+
+Do not present the final long command until implementation lands and parser tests verify the
+actual CLI names. When presenting the command, follow Training Command Accountability and list
+all changed flags against v10.
+
+Expected changed flags from v10:
+
+```text
+add:
+  --lr-restart-on-curriculum-advance
+  --lr-restart-warmup-updates 500
+  --lr-restart-cycle-updates 10000
+
+  --target-progress-stage-scales 0.0,0.0,0.3,1.0
+  --target-progress-clip-m 0.010
+  --target-progress-deadband-m 0.0002
+  --target-progress-lift-gate-m 0.020
+  --target-progress-lift-gate-band-m 0.020
+
+  --target-dwell-stage-scales 0.0,0.0,0.2,0.8
+  --target-dwell-sigma-m 0.08
+
+  --target-overlift-penalty-scale 0.05
+  --target-overlift-penalty-stages stock_like
+  --target-overlift-margin-m 0.05
+
+change:
+  --save-best-by stage_aware:reach_lift_success_return
+  -> --save-best-by stage_aware:reach_grip_lift_target_return
+
+optional, if budget allows:
+  --total-env-steps 1500000
+  -> --total-env-steps 2500000
+```
+
+Keep from v10 unless a later analysis changes it:
+
+```text
+--curriculum-gating eval_dual_gate
+--curriculum-gate-reach-metric dwell_rate
+--curriculum-gate-reach-min-consecutive-steps 20
+--curriculum-gate-consecutive-eval-passes 3
+--curriculum-gate-min-stage-env-steps 50000
+--reach-dwell-stage-scales 0.8,0.3,0.0,0.0
+--grasp-like-stage-scales 0.0,0.4,0.2,0.0
+--tiny-lift-delta-stage-scales 0.0,0.5,1.0,0.0
+--lift-progress-deadband-m 0.0005
+--lift-progress-height-m 0.02
+```
+
+Use aligned names, for example:
+
+```text
+sac_franka_2m5_seed0_v11_targetlr_targetapproach
+```
+
+After training, record at least:
+
+```text
+best.pt
+best_stage3.pt
+final.pt
+```
+
+with PR12a visual metrics, and compare same-env eval against fresh visual rollout metrics.
+
+**Tests To Cover The PR**
+
+`tests/test_reward_curriculum.py`:
+- `target_progress_proxy` is zero when the cube-to-target distance increases.
+- `target_progress_proxy` is zero for changes below `target_progress_deadband_m`.
+- `target_progress_proxy` is positive when lifted cube distance to target decreases.
+- `target_progress_proxy` clips at `target_progress_clip_m`.
+- `target_progress_proxy` is gated off before the cube reaches the lift gate.
+- `target_dwell_proxy` equals `lift_context * exp(-distance / sigma)`.
+- `target_dwell_proxy` is larger for closer target distances.
+- `target_overlift_penalty` is zero below target height plus margin and negative above it.
+- disabled target stage scales preserve PR6.13 shaped reward exactly.
+- invalid target CLI/config values fail validation.
+- train reward logs include `target_progress_proxy`, `target_dwell_proxy`, and
+  `target_overlift_penalty`.
+
+`tests/test_training_logger_and_scheduler.py`:
+- SAC and TD3 parsers accept `--lr-restart-on-curriculum-advance`.
+- SAC and TD3 parsers accept `--lr-restart-warmup-updates` and
+  `--lr-restart-cycle-updates`.
+- parser validation rejects negative restart warmup, nonpositive restart cycle length, and
+  restart warmup greater than or equal to restart cycle length.
+- SAC and TD3 parsers accept and validate all target-progress/dwell/overlift flags.
+- fake eval-dual-gate stage advancement restarts LR only when the flag is enabled.
+- LR is not restarted when the stage is held or when the curriculum is disabled.
+- restart uses `--lr-restart-warmup-updates`, not the run-level `--lr-warmup-updates`.
+- restart cosine reaches post-warmup behavior within the configured restart cycle.
+- restart logs are emitted and restart count increments exactly once per stage advance.
+- scheduler state round-trips through checkpoint metadata after a restart.
+- default flags keep old LR schedule and old reward values.
+
+`tests/test_sac_continuous.py` and `tests/test_td3_continuous.py`:
+- fake backend smoke train still completes with default PR6.14 flags disabled.
+- fake backend smoke train completes with target shaping enabled.
+- fake backend smoke train completes with LR restart enabled.
+
+`tests/test_checkpoint_manager.py` or `tests/test_training_logger_and_scheduler.py`:
+- new `stage_aware:reach_grip_lift_target_return` mode rejects missing required metrics.
+- stage3 comparator prefers smaller `eval_rollout/min_cube_to_target_m` over larger
+  `eval_rollout/max_cube_lift_m` when success ties at zero.
+- global comparator prefers success first, target distance second, then lift/return.
+- old `stage_aware:reach_lift_success_return` behavior remains unchanged.
+
+Eval-gate tests:
+- `eval_blocked_grasp_episode_rate` counts blocked-looking close-near-cube episodes.
+- empty-close episodes do not count as blocked grasp.
+- `eval_target_approach_episode_rate` requires lift plus improved min cube-to-target distance.
+- no test path advances curriculum solely because stage env steps exceeded a cap.
+
+**Test Commands**
+
+Targeted verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py
+```
+
+If checkpoint comparator tests are placed in a new file, include it:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_checkpoint_manager.py
+```
+
+Full verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+Live Isaac smoke remains opt-in and is not required for PR6.14 unit completion:
+
+```bash
+RUN_ISAAC_RUNTIME_SMOKE=1 timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_isaac_runtime_smoke.py
+```
+
+**Definition Of Done**
+
+PR6.14 is complete when:
+- target progress/dwell/overlift shaping is implemented for SAC and TD3 with defaults disabled;
+- LR restart on curriculum advance is implemented and defaults disabled;
+- no forced stage advancement or stage max cap is introduced;
+- new target-aware checkpoint ranking is implemented without changing old ranking modes;
+- all new logs appear in JSONL, progress/W&B/TensorBoard where appropriate;
+- targeted tests and full pytest pass in the `isaac_arm` environment;
+- a new training command can be written with exact changed flags from v10.
+
+**Suggested Commit Messages**
+
+For the plan-only PR description commit:
+
+```text
+docs(plan): specify post-v10 target approach PR
+```
+
+For the later implementation commit:
+
+```text
+feat(rl): add target approach shaping and stage LR restarts
+```
+
+Implementation commit body:
+
+```text
+Add target progress/dwell reward shaping, a small target over-lift guardrail, target-aware
+stage best checkpoint ranking, and opt-in LR scheduler restarts on curriculum advancement.
+Keep curriculum advancement ability-based and avoid any forced stage max cap.
+```
+
+---
+
 ### PR 11a — SAC/TD3 Checkpoint Evaluation
 
 **Goal / Why**

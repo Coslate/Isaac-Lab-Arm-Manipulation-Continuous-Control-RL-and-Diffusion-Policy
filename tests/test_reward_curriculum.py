@@ -15,7 +15,9 @@ from train.reward_curriculum import (
     CurriculumGateTracker,
     DIAGNOSTIC_BUCKET_INDEX,
     EE_TO_CUBE,
+    EVAL_ABILITY_LABEL_INDEX,
     EVAL_GATE_LABEL_INDEX,
+    GRIP_GATE_METRIC_BLOCKED_GRASP,
     GRIPPER_ACTION_INDEX,
     GRIPPER_FINGER_POS,
     GRASP_LIKE_WIDTH_BAND_M,
@@ -28,6 +30,7 @@ from train.reward_curriculum import (
     compute_blocked_finger_gap_score,
     compute_finger_width,
     compute_grasp_like_proxy,
+    compute_lift_context,
     compute_pr611_shaping_terms,
     compute_lift_success_labels,
     compute_lift_progress_proxy,
@@ -36,6 +39,9 @@ from train.reward_curriculum import (
     compute_reach_dwell_proxy,
     compute_reach_progress,
     compute_rotation_action_penalty,
+    compute_target_dwell_proxy,
+    compute_target_overlift_penalty,
+    compute_target_progress_proxy,
     compute_tiny_lift_delta_proxy,
     compute_vertical_alignment_penalty,
     curriculum_stage,
@@ -328,6 +334,153 @@ def test_pr613_grasp_like_and_tiny_lift_terms_are_stage_weighted() -> None:
     assert shaped[0] == pytest.approx(2.5)
     assert logs["reward/train/grasp_like_proxy"] == pytest.approx(0.5)
     assert logs["reward/train/tiny_lift_delta_proxy"] == pytest.approx(2.0)
+
+
+def test_target_progress_proxy_rewards_lifted_cube_distance_reduction_only() -> None:
+    proprios = np.zeros((5, 40), dtype=np.float32)
+    next_proprios = np.zeros((5, 40), dtype=np.float32)
+    reset_z = np.zeros((5,), dtype=np.float32)
+    proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.10, 0.0, 0.0]] * 5,
+        dtype=np.float32,
+    )
+    next_proprios[:, CUBE_TO_TARGET] = np.array(
+        [
+            [0.090, 0.0, 0.0],
+            [0.110, 0.0, 0.0],
+            [0.0999, 0.0, 0.0],
+            [0.050, 0.0, 0.0],
+            [0.050, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.05, 0.05, 0.05, 0.05, 0.01], dtype=np.float32)
+
+    progress = compute_target_progress_proxy(
+        proprios,
+        next_proprios,
+        reset_z,
+        deadband_m=0.0002,
+        clip_m=0.010,
+        lift_gate_m=0.020,
+        lift_gate_band_m=0.020,
+    )
+
+    np.testing.assert_allclose(
+        progress,
+        np.array([0.98, 0.0, 0.0, 1.0, 0.0], dtype=np.float32),
+        atol=1e-5,
+    )
+
+
+def test_target_dwell_proxy_uses_lift_context_and_target_distance() -> None:
+    next_proprios = np.zeros((3, 40), dtype=np.float32)
+    reset_z = np.zeros((3,), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.03, 0.04, 0.01], dtype=np.float32)
+    next_proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.0, 0.0, 0.0], [0.08, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    context = compute_lift_context(next_proprios, reset_z, lift_gate_m=0.02, lift_gate_band_m=0.02)
+    dwell = compute_target_dwell_proxy(
+        next_proprios,
+        reset_z,
+        sigma_m=0.08,
+        lift_gate_m=0.02,
+        lift_gate_band_m=0.02,
+    )
+
+    np.testing.assert_allclose(context, np.array([0.5, 1.0, 0.0], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(
+        dwell,
+        np.array([0.5, np.exp(-1.0), 0.0], dtype=np.float32),
+        atol=1e-6,
+    )
+    assert dwell[0] > dwell[1]
+
+
+def test_target_overlift_penalty_only_applies_above_target_plus_margin() -> None:
+    next_proprios = np.zeros((3, 40), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = 0.10
+    next_proprios[:, CUBE_TO_TARGET.stop - 1] = np.array([-0.04, -0.10, 0.02], dtype=np.float32)
+
+    penalty = compute_target_overlift_penalty(next_proprios, margin_m=0.05)
+
+    np.testing.assert_allclose(penalty, np.array([0.0, -0.05, 0.0], dtype=np.float32), atol=1e-6)
+
+
+def test_target_terms_are_stage_weighted_and_logged() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    proprios[0, CUBE_TO_TARGET] = np.array([0.10, 0.0, 0.0], dtype=np.float32)
+    next_proprios[0, CUBE_TO_TARGET] = np.array([0.09, 0.0, -0.01], dtype=np.float32)
+    next_proprios[0, CUBE_POS_BASE.stop - 1] = 0.10
+    config = RewardCurriculumConfig(
+        mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
+        reach_progress_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        reach_dwell_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        target_progress_stage_scales=(0.0, 0.0, 0.3, 1.0),
+        target_dwell_stage_scales=(0.0, 0.0, 0.2, 0.8),
+        target_dwell_sigma_m=0.08,
+        target_overlift_penalty_scale=0.05,
+        target_overlift_penalty_stages=("stock_like",),
+        target_overlift_margin_m=0.005,
+    )
+
+    terms = compute_pr611_shaping_terms(
+        proprios,
+        next_proprios,
+        actions,
+        config=config,
+        stage_index=3,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+    )
+    shaped, logs, _lift = shape_rewards(
+        np.array([0.0], dtype=np.float32),
+        {},
+        proprios,
+        actions,
+        env_steps=90,
+        total_env_steps=100,
+        config=config,
+        next_proprios=next_proprios,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+        stage_index_override=3,
+    )
+
+    expected_progress = (0.10 - float(np.linalg.norm(next_proprios[0, CUBE_TO_TARGET])) - 0.0002) / 0.010
+    expected_progress = max(expected_progress, 0.0)
+    expected_dwell = 0.8 * np.exp(-float(np.linalg.norm(next_proprios[0, CUBE_TO_TARGET])) / 0.08)
+    assert terms["target_progress_proxy"][0] == pytest.approx(expected_progress)
+    assert terms["target_dwell_proxy"][0] == pytest.approx(expected_dwell)
+    assert terms["target_overlift_penalty"][0] == pytest.approx(-0.00025)
+    assert shaped[0] == pytest.approx(
+        terms["target_progress_proxy"][0] + terms["target_dwell_proxy"][0] + terms["target_overlift_penalty"][0]
+    )
+    assert logs["reward/train/target_progress_proxy"] == pytest.approx(terms["target_progress_proxy"][0])
+    assert logs["reward/train/target_dwell_proxy"] == pytest.approx(terms["target_dwell_proxy"][0])
+    assert logs["reward/train/target_overlift_penalty"] == pytest.approx(-0.00025)
+
+
+def test_target_reward_config_validates_new_values() -> None:
+    with pytest.raises(ValueError, match="target_progress_stage_scales"):
+        RewardCurriculumConfig(target_progress_stage_scales=(0.0, 0.0, 0.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target_progress_clip_m"):
+        RewardCurriculumConfig(target_progress_clip_m=0.0)
+    with pytest.raises(ValueError, match="target_progress_deadband_m"):
+        RewardCurriculumConfig(target_progress_deadband_m=-1e-4)
+    with pytest.raises(ValueError, match="target_progress_lift_gate_band_m"):
+        RewardCurriculumConfig(target_progress_lift_gate_band_m=0.0)
+    with pytest.raises(ValueError, match="target_dwell_sigma_m"):
+        RewardCurriculumConfig(target_dwell_sigma_m=0.0)
+    with pytest.raises(ValueError, match="target_overlift_penalty_scale"):
+        RewardCurriculumConfig(target_overlift_penalty_scale=-0.1)
+    with pytest.raises(ValueError, match="target_overlift_penalty_stages"):
+        RewardCurriculumConfig(target_overlift_penalty_stages=("bogus",))
+    with pytest.raises(ValueError, match="target_overlift_margin_m"):
+        RewardCurriculumConfig(target_overlift_margin_m=0.0)
 
 
 def test_action_diagnostics_log_finger_width_distribution_and_close_near_slice() -> None:
@@ -670,6 +823,111 @@ def test_eval_dual_gate_consecutive_pass_count_resets_on_failed_eval_window() ->
     assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(0.0)
     assert logs["curriculum/gate/consecutive_eval_passes"] == pytest.approx(0.0)
     assert logs["curriculum/gate/consecutive_eval_gate_passed"] == pytest.approx(0.0)
+
+
+def test_eval_dual_gate_can_use_blocked_grasp_and_target_approach_ability_metrics() -> None:
+    tracker = CurriculumGateTracker(
+        CurriculumGateConfig(
+            mode=CURRICULUM_GATING_EVAL_DUAL_GATE,
+            eval_window_episodes=2,
+            min_eval_episodes=2,
+            eval_thresholds=(0.5, 0.5, 0.5, 0.5),
+            min_train_exposures=(0, 1, 1, 1),
+            min_stage_env_steps=0,
+            grip_metric=GRIP_GATE_METRIC_BLOCKED_GRASP,
+            target_approach_threshold=0.5,
+        )
+    )
+    eval_reach = np.zeros((2, 4), dtype=bool)
+    eval_reach[:, EVAL_GATE_LABEL_INDEX["reach"]] = True
+    tracker.update(eval_episode_labels=eval_reach, env_steps=0)
+    assert tracker.stage_index == 1
+
+    grip_diag = np.ones((1, 2), dtype=bool)
+    eval_grip = np.zeros((2, 4), dtype=bool)
+    eval_grip[:, EVAL_GATE_LABEL_INDEX["grip_attempt"]] = True
+    eval_grip[:, EVAL_GATE_LABEL_INDEX["grip_effect"]] = True
+    ability_empty_close = np.zeros((2, 2), dtype=bool)
+    logs = tracker.update(
+        diagnostic_labels=grip_diag,
+        eval_episode_labels=eval_grip,
+        eval_episode_ability_labels=ability_empty_close,
+        env_steps=0,
+    )
+    assert tracker.stage_index == 1
+    assert logs["curriculum/gate/eval_blocked_grasp_episode_rate"] == pytest.approx(0.0)
+    assert logs["curriculum/gate/eval_gate_passed"] == pytest.approx(0.0)
+
+    ability_blocked = np.zeros((2, 2), dtype=bool)
+    ability_blocked[:, EVAL_ABILITY_LABEL_INDEX["blocked_grasp"]] = True
+    logs = tracker.update(
+        diagnostic_labels=grip_diag,
+        eval_episode_labels=eval_grip,
+        eval_episode_ability_labels=ability_blocked,
+        env_steps=0,
+    )
+    assert tracker.stage_index == 2
+    assert logs["curriculum/gate/eval_blocked_grasp_episode_rate"] == pytest.approx(1.0)
+
+    eval_lift = np.zeros((2, 4), dtype=bool)
+    eval_lift[:, EVAL_GATE_LABEL_INDEX["lift_2cm"]] = True
+    ability_no_target = np.zeros((2, 2), dtype=bool)
+    logs = tracker.update(
+        lift_success_labels=np.ones((1,), dtype=bool),
+        eval_episode_labels=eval_lift,
+        eval_episode_ability_labels=ability_no_target,
+        env_steps=0,
+    )
+    assert tracker.stage_index == 2
+    assert logs["curriculum/gate/eval_target_approach_episode_rate"] == pytest.approx(0.0)
+
+    ability_target = np.zeros((2, 2), dtype=bool)
+    ability_target[:, EVAL_ABILITY_LABEL_INDEX["target_approach"]] = True
+    logs = tracker.update(
+        lift_success_labels=np.ones((1,), dtype=bool),
+        eval_episode_labels=eval_lift,
+        eval_episode_ability_labels=ability_target,
+        env_steps=0,
+    )
+    assert tracker.stage_index == 3
+    assert logs["curriculum/gate/eval_target_approach_episode_rate"] == pytest.approx(1.0)
+
+
+def test_lane_eval_subskill_tracker_emits_blocked_grasp_and_target_approach_labels() -> None:
+    tracker = LaneEvalSubskillTracker(
+        num_lanes=2,
+        target_approach_lift_gate_m=0.02,
+        target_approach_min_delta_m=0.02,
+    )
+    proprios = np.zeros((2, 40), dtype=np.float32)
+    next_proprios = np.zeros((2, 40), dtype=np.float32)
+    actions = np.zeros((2, 7), dtype=np.float32)
+    proprios[:, EE_TO_CUBE] = np.array([[0.01, 0.0, 0.0], [0.01, 0.0, 0.0]], dtype=np.float32)
+    proprios[:, CUBE_TO_TARGET] = np.array([[0.20, 0.0, 0.0], [0.20, 0.0, 0.0]], dtype=np.float32)
+    next_proprios[:, CUBE_TO_TARGET] = np.array([[0.15, 0.0, 0.0], [0.20, 0.0, 0.0]], dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = 0.03
+    next_proprios[0, GRIPPER_FINGER_POS] = 0.023
+    next_proprios[1, GRIPPER_FINGER_POS] = 0.002
+    actions[:, GRIPPER_ACTION_INDEX] = -1.0
+
+    labels = tracker.step(
+        proprios=proprios,
+        next_proprios=next_proprios,
+        actions=actions,
+        terminated=np.array([True, True]),
+        truncated=np.array([False, False]),
+        cube_reset_z=np.zeros((2,), dtype=np.float32),
+    )
+
+    assert labels[:, EVAL_GATE_LABEL_INDEX["grip_attempt"]].tolist() == [True, True]
+    assert tracker.last_completed_ability_labels[:, EVAL_ABILITY_LABEL_INDEX["blocked_grasp"]].tolist() == [
+        True,
+        False,
+    ]
+    assert tracker.last_completed_ability_labels[:, EVAL_ABILITY_LABEL_INDEX["target_approach"]].tolist() == [
+        True,
+        False,
+    ]
 
 
 def test_eval_dual_gate_can_use_reach_dwell_rate_and_consecutive_steps() -> None:

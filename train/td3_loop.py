@@ -17,7 +17,12 @@ import torch
 from agents.replay_buffer import DEFAULT_PRIORITY_SCORE_WEIGHTS, DEFAULT_PROTECTED_SCORE_WEIGHTS, ReplayBuffer
 from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
-from train.lr_scheduler import LearningRateScheduler, optimizer_lr, scheduler_collection_state
+from train.lr_scheduler import (
+    LearningRateScheduler,
+    optimizer_lr,
+    restart_scheduler_collection,
+    scheduler_collection_state,
+)
 from train.loggers import TrainLogger
 from train.reward_components import extract_reward_components, reward_component_logs
 from train.reward_curriculum import (
@@ -85,6 +90,9 @@ class TD3TrainLoopConfig:
     curriculum_gate_consecutive_eval_passes: int = 1
     curriculum_gate_reach_metric: str = "episode_rate"
     curriculum_gate_reach_min_consecutive_steps: int = 0
+    curriculum_gate_grip_metric: str = "grip_effect"
+    curriculum_gate_target_approach_threshold: float = 0.0
+    curriculum_gate_target_approach_min_delta_m: float = 0.02
     lift_progress_deadband_m: float = 0.002
     lift_progress_height_m: float = 0.04
     reach_progress_stage_scales: tuple[float, float, float, float] = (0.5, 0.1, 0.0, 0.0)
@@ -101,6 +109,16 @@ class TD3TrainLoopConfig:
     tiny_lift_delta_deadband_m: float = 0.0001
     tiny_lift_delta_height_m: float = 0.001
     tiny_lift_delta_near_sigma_m: float = 0.08
+    target_progress_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_progress_clip_m: float = 0.010
+    target_progress_deadband_m: float = 0.0002
+    target_progress_lift_gate_m: float = 0.020
+    target_progress_lift_gate_band_m: float = 0.020
+    target_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_dwell_sigma_m: float = 0.08
+    target_overlift_penalty_scale: float = 0.0
+    target_overlift_penalty_stages: tuple[str, ...] = ()
+    target_overlift_margin_m: float = 0.05
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -120,6 +138,9 @@ class TD3TrainLoopConfig:
     protected_stage_local: bool = False
     protected_stage_grace_env_steps: int = 0
     protected_old_stage_retain_fraction: float = 0.5
+    lr_restart_on_curriculum_advance: bool = False
+    lr_restart_warmup_updates: int = 500
+    lr_restart_cycle_updates: int = 10_000
 
 
 @dataclass
@@ -248,6 +269,11 @@ def run_td3_train_loop(
         raise ValueError("same_env_eval_start_env_steps must be non-negative")
     if cfg.per_lane_settle_steps < 0:
         raise ValueError("per_lane_settle_steps must be non-negative")
+    _validate_lr_restart_config(
+        enabled=cfg.lr_restart_on_curriculum_advance,
+        warmup_updates=cfg.lr_restart_warmup_updates,
+        cycle_updates=cfg.lr_restart_cycle_updates,
+    )
     if cfg.curriculum_gating == CURRICULUM_GATING_EVAL_DUAL_GATE and cfg.same_env_eval_lanes <= 0:
         raise ValueError("eval_dual_gate curriculum gating requires same_env_eval_lanes > 0")
     rng = np.random.default_rng(cfg.seed)
@@ -296,6 +322,16 @@ def run_td3_train_loop(
         tiny_lift_delta_deadband_m=cfg.tiny_lift_delta_deadband_m,
         tiny_lift_delta_height_m=cfg.tiny_lift_delta_height_m,
         tiny_lift_delta_near_sigma_m=cfg.tiny_lift_delta_near_sigma_m,
+        target_progress_stage_scales=cfg.target_progress_stage_scales,
+        target_progress_clip_m=cfg.target_progress_clip_m,
+        target_progress_deadband_m=cfg.target_progress_deadband_m,
+        target_progress_lift_gate_m=cfg.target_progress_lift_gate_m,
+        target_progress_lift_gate_band_m=cfg.target_progress_lift_gate_band_m,
+        target_dwell_stage_scales=cfg.target_dwell_stage_scales,
+        target_dwell_sigma_m=cfg.target_dwell_sigma_m,
+        target_overlift_penalty_scale=cfg.target_overlift_penalty_scale,
+        target_overlift_penalty_stages=cfg.target_overlift_penalty_stages,
+        target_overlift_margin_m=cfg.target_overlift_margin_m,
         vertical_alignment_penalty_scale=cfg.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=cfg.vertical_alignment_penalty_stages,
         vertical_alignment_deadband_m=cfg.vertical_alignment_deadband_m,
@@ -316,6 +352,9 @@ def run_td3_train_loop(
             consecutive_eval_passes=cfg.curriculum_gate_consecutive_eval_passes,
             reach_metric=cfg.curriculum_gate_reach_metric,
             reach_min_consecutive_steps=cfg.curriculum_gate_reach_min_consecutive_steps,
+            grip_metric=cfg.curriculum_gate_grip_metric,
+            target_approach_threshold=cfg.curriculum_gate_target_approach_threshold,
+            target_approach_min_delta_m=cfg.curriculum_gate_target_approach_min_delta_m,
         )
     )
     progress_bucket_config = ProgressBucketConfig()
@@ -364,6 +403,8 @@ def run_td3_train_loop(
             cube_motion_effect_threshold_m=progress_bucket_config.cube_motion_effect_threshold_m,
             lift_success_height_m=cfg.curriculum_gate_lift_success_height_m,
             reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
+            target_approach_lift_gate_m=cfg.target_progress_lift_gate_m,
+            target_approach_min_delta_m=cfg.curriculum_gate_target_approach_min_delta_m,
         )
         if curriculum_gate_tracker.config.eval_dual_gate_enabled and same_env_eval_indices.size > 0
         else None
@@ -384,6 +425,9 @@ def run_td3_train_loop(
         if cfg.protected_refresh_every_env_steps > 0
         else None
     )
+    lr_restart_count = 0
+    lr_updates_since_restart = 0
+    lr_last_restart_stage = -1
     if cfg.warmup_steps > 0:
         _note_progress(progress, env_steps, "warmup_start", {"warmup_steps": cfg.warmup_steps})
 
@@ -482,6 +526,7 @@ def run_td3_train_loop(
             actions,
             config=reward_curriculum_config,
             stage_index=shaping_stage_index,
+            cube_reset_z=lane_reset_cube_z,
         )
         shaped_rewards, curriculum_logs, lift_progress_proxy = shape_rewards(
             rewards,
@@ -600,8 +645,10 @@ def run_td3_train_loop(
                     active_mask=same_env_eval_metric_mask,
                 )
                 eval_gate_episode_reach_metrics = same_env_subskill_tracker.last_completed_reach_metrics
+                eval_gate_episode_ability_labels = same_env_subskill_tracker.last_completed_ability_labels
             else:
                 eval_gate_episode_reach_metrics = None
+                eval_gate_episode_ability_labels = None
             _log_loop_metrics(
                 logger,
                 progress,
@@ -614,6 +661,7 @@ def run_td3_train_loop(
         else:
             eval_gate_episode_labels = None
             eval_gate_episode_reach_metrics = None
+            eval_gate_episode_ability_labels = None
         if curriculum_gate_tracker.config.eval_dual_gate_enabled:
             previous_stage = curriculum_gate_tracker.stage_index
             gate_logs = curriculum_gate_tracker.update(
@@ -621,10 +669,20 @@ def run_td3_train_loop(
                 diagnostic_labels=diagnostic_labels[active_train_indices] if active_train_indices.size > 0 else None,
                 lift_success_labels=train_lift_success_labels,
                 eval_episode_labels=eval_gate_episode_labels,
+                eval_episode_ability_labels=eval_gate_episode_ability_labels,
                 eval_episode_reach_metrics=eval_gate_episode_reach_metrics,
                 env_steps=env_steps,
             )
             if curriculum_gate_tracker.stage_index > previous_stage:
+                if cfg.lr_restart_on_curriculum_advance:
+                    restart_scheduler_collection(
+                        schedulers,
+                        warmup_steps=cfg.lr_restart_warmup_updates,
+                        total_update_steps=cfg.lr_restart_cycle_updates,
+                    )
+                    lr_restart_count += 1
+                    lr_updates_since_restart = 0
+                    lr_last_restart_stage = int(curriculum_gate_tracker.stage_index)
                 _note_progress(
                     progress,
                     env_steps,
@@ -633,6 +691,7 @@ def run_td3_train_loop(
                         "from": reward_curriculum_config.stage_weights[previous_stage].name,
                         "to": reward_curriculum_config.stage_weights[curriculum_gate_tracker.stage_index].name,
                         "reason": "eval_dual_gate",
+                        "lr_restart": bool(cfg.lr_restart_on_curriculum_advance),
                     },
                 )
         if (
@@ -675,6 +734,15 @@ def run_td3_train_loop(
             "train/settling_train_lanes": float(settling_train_lanes),
             "train/settling_eval_lanes": float(settling_eval_lanes),
         }
+        if cfg.lr_restart_on_curriculum_advance:
+            env_logs.update(
+                _lr_restart_logs(
+                    restart_count=lr_restart_count,
+                    updates_since_restart=lr_updates_since_restart,
+                    last_restart_stage=lr_last_restart_stage,
+                    enabled=cfg.lr_restart_on_curriculum_advance,
+                )
+            )
         action_logs: dict[str, float] = {}
         if active_train_indices.size > 0:
             action_logs.update(
@@ -764,12 +832,23 @@ def run_td3_train_loop(
                 _step_scheduler(schedulers, "critic")
                 if float(final_logs.get("train/actor_updated", 0.0)) > 0.0:
                     _step_scheduler(schedulers, "actor")
+                if cfg.lr_restart_on_curriculum_advance:
+                    lr_updates_since_restart += 1
                 update_count += 1
                 final_logs = dict(final_logs)
                 final_logs["train/update_step"] = float(update_count)
                 final_logs["train/replay_size"] = float(replay.size)
                 final_logs["train/num_env_steps"] = float(env_steps)
                 final_logs.update(_td3_lr_logs(agent))
+                if cfg.lr_restart_on_curriculum_advance:
+                    final_logs.update(
+                        _lr_restart_logs(
+                            restart_count=lr_restart_count,
+                            updates_since_restart=lr_updates_since_restart,
+                            last_restart_stage=lr_last_restart_stage,
+                            enabled=cfg.lr_restart_on_curriculum_advance,
+                        )
+                    )
                 final_logs.update(agent.normalizer_logs())
                 if cfg.prioritize_replay:
                     final_logs.update(replay.priority_logs())
@@ -814,6 +893,15 @@ def run_td3_train_loop(
             "train/replay_size": float(replay.size),
             "train/num_env_steps": float(env_steps),
         }
+    if cfg.lr_restart_on_curriculum_advance:
+        final_logs.update(
+            _lr_restart_logs(
+                restart_count=lr_restart_count,
+                updates_since_restart=lr_updates_since_restart,
+                last_restart_stage=lr_last_restart_stage,
+                enabled=cfg.lr_restart_on_curriculum_advance,
+            )
+        )
     final_logs.update(agent.normalizer_logs())
     if cfg.prioritize_replay:
         final_logs.update(replay.priority_logs())
@@ -838,6 +926,35 @@ def _step_scheduler(
     scheduler = schedulers.get(name)
     if scheduler is not None:
         scheduler.step()
+
+
+def _validate_lr_restart_config(
+    *,
+    enabled: bool,
+    warmup_updates: int,
+    cycle_updates: int,
+) -> None:
+    if warmup_updates < 0:
+        raise ValueError("lr_restart_warmup_updates must be non-negative")
+    if cycle_updates <= 0:
+        raise ValueError("lr_restart_cycle_updates must be positive")
+    if enabled and warmup_updates >= cycle_updates:
+        raise ValueError("lr_restart_warmup_updates must be smaller than lr_restart_cycle_updates")
+
+
+def _lr_restart_logs(
+    *,
+    restart_count: int,
+    updates_since_restart: int,
+    last_restart_stage: int,
+    enabled: bool,
+) -> dict[str, float]:
+    return {
+        "train/lr_restart_count": float(restart_count),
+        "train/lr_updates_since_restart": float(updates_since_restart),
+        "train/lr_last_restart_stage": float(last_restart_stage),
+        "train/lr_restart_on_curriculum_advance": 1.0 if enabled else 0.0,
+    }
 
 
 def _log_loop_metrics(

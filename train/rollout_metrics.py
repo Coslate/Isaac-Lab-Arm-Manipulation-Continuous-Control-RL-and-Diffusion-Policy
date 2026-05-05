@@ -11,9 +11,12 @@ import numpy as np
 
 DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M = 0.02
 PROPRIO_CUBE_POS_BASE_SLICE = slice(21, 24)
+PROPRIO_GRIPPER_FINGER_POS_SLICE = slice(14, 16)
 PROPRIO_EE_TO_CUBE_SLICE = slice(27, 30)
 PROPRIO_CUBE_TO_TARGET_SLICE = slice(30, 33)
 ACTION_GRIPPER_INDEX = 6
+BLOCKED_GRASP_EMPTY_WIDTH_M = 0.010
+BLOCKED_GRASP_WIDTH_BAND_M = (0.015, 0.046, 0.065)
 
 
 class LaneEpisodeMetricTracker:
@@ -246,6 +249,10 @@ class LaneEvalSubskillTracker:
         cube_motion_effect_threshold_m: float = 0.005,
         lift_success_height_m: float = 0.02,
         reach_dwell_threshold_m: float = 0.05,
+        blocked_grasp_score_threshold: float = 0.5,
+        blocked_grasp_empty_closed_rate_threshold: float = 0.2,
+        target_approach_lift_gate_m: float = 0.02,
+        target_approach_min_delta_m: float = 0.02,
     ) -> None:
         if num_lanes <= 0:
             raise ValueError("num_lanes must be positive")
@@ -261,6 +268,14 @@ class LaneEvalSubskillTracker:
             raise ValueError("lift_success_height_m must be positive")
         if reach_dwell_threshold_m <= 0.0:
             raise ValueError("reach_dwell_threshold_m must be positive")
+        if not 0.0 <= blocked_grasp_score_threshold <= 1.0:
+            raise ValueError("blocked_grasp_score_threshold must be in [0, 1]")
+        if not 0.0 <= blocked_grasp_empty_closed_rate_threshold <= 1.0:
+            raise ValueError("blocked_grasp_empty_closed_rate_threshold must be in [0, 1]")
+        if target_approach_lift_gate_m < 0.0:
+            raise ValueError("target_approach_lift_gate_m must be non-negative")
+        if target_approach_min_delta_m < 0.0:
+            raise ValueError("target_approach_min_delta_m must be non-negative")
         self.num_lanes = int(num_lanes)
         self.reach_threshold_m = float(reach_threshold_m)
         self.grip_threshold_m = float(grip_threshold_m)
@@ -269,15 +284,25 @@ class LaneEvalSubskillTracker:
         self.cube_motion_effect_threshold_m = float(cube_motion_effect_threshold_m)
         self.lift_success_height_m = float(lift_success_height_m)
         self.reach_dwell_threshold_m = float(reach_dwell_threshold_m)
+        self.blocked_grasp_score_threshold = float(blocked_grasp_score_threshold)
+        self.blocked_grasp_empty_closed_rate_threshold = float(blocked_grasp_empty_closed_rate_threshold)
+        self.target_approach_lift_gate_m = float(target_approach_lift_gate_m)
+        self.target_approach_min_delta_m = float(target_approach_min_delta_m)
         self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._saw_grip_attempt = np.zeros((self.num_lanes,), dtype=bool)
         self._saw_grip_effect = np.zeros((self.num_lanes,), dtype=bool)
         self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
+        self._initial_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
+        self._min_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
+        self._close_near_counts = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._blocked_score_sums = np.zeros((self.num_lanes,), dtype=np.float64)
+        self._empty_closed_counts = np.zeros((self.num_lanes,), dtype=np.int64)
         self._active_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._reach_dwell_counts = np.zeros((self.num_lanes,), dtype=np.int64)
         self._reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._max_reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self.last_completed_reach_metrics = np.zeros((0, 2), dtype=np.float32)
+        self.last_completed_ability_labels = np.zeros((0, 2), dtype=bool)
 
     def step(
         self,
@@ -302,15 +327,20 @@ class LaneEvalSubskillTracker:
             else _as_lane_array(active_mask, self.num_lanes, bool, "active_mask")
         )
         self.last_completed_reach_metrics = np.zeros((0, 2), dtype=np.float32)
+        self.last_completed_ability_labels = np.zeros((0, 2), dtype=bool)
         if not np.any(active):
             return np.zeros((0, 4), dtype=bool)
 
+        first_active_step = active & (self._active_steps == 0)
+        current_cube_to_target = np.linalg.norm(proprios[:, PROPRIO_CUBE_TO_TARGET_SLICE], axis=1)
+        self._initial_cube_to_target[first_active_step] = current_cube_to_target[first_active_step]
         ee_to_cube = np.linalg.norm(proprios[:, PROPRIO_EE_TO_CUBE_SLICE], axis=1)
         cube_motion = np.linalg.norm(
             next_proprios[:, PROPRIO_CUBE_POS_BASE_SLICE] - proprios[:, PROPRIO_CUBE_POS_BASE_SLICE],
             axis=1,
         )
         cube_lift = next_proprios[:, PROPRIO_CUBE_POS_BASE_SLICE.stop - 1] - reset_z
+        next_cube_to_target = np.linalg.norm(next_proprios[:, PROPRIO_CUBE_TO_TARGET_SLICE], axis=1)
         grip_attempt = (
             (ee_to_cube <= self.grip_threshold_m)
             & (actions[:, ACTION_GRIPPER_INDEX] < self.close_command_threshold)
@@ -320,11 +350,19 @@ class LaneEvalSubskillTracker:
             | (cube_motion > self.cube_motion_effect_threshold_m)
         )
         reach_near = ee_to_cube <= self.reach_dwell_threshold_m
+        finger_width = np.sum(np.abs(next_proprios[:, PROPRIO_GRIPPER_FINGER_POS_SLICE]), axis=1)
+        blocked_score = _blocked_finger_gap_score(finger_width)
+        empty_closed = finger_width <= BLOCKED_GRASP_EMPTY_WIDTH_M
 
         self._min_ee_to_cube[active] = np.minimum(self._min_ee_to_cube[active], ee_to_cube[active])
         self._saw_grip_attempt[active] |= grip_attempt[active]
         self._saw_grip_effect[active] |= grip_effect[active]
         self._max_cube_lift[active] = np.maximum(self._max_cube_lift[active], cube_lift[active])
+        self._min_cube_to_target[active] = np.minimum(self._min_cube_to_target[active], next_cube_to_target[active])
+        active_close_near = active & grip_attempt
+        self._close_near_counts[active_close_near] += 1
+        self._blocked_score_sums[active_close_near] += blocked_score[active_close_near]
+        self._empty_closed_counts[active_close_near] += empty_closed[active_close_near].astype(np.int64)
         self._active_steps[active] += 1
         self._reach_dwell_counts[active] += reach_near[active].astype(np.int64)
         active_reach_near = active & reach_near
@@ -342,8 +380,22 @@ class LaneEvalSubskillTracker:
 
         labels: list[list[bool]] = []
         reach_metrics: list[list[float]] = []
+        ability_labels: list[list[bool]] = []
         for lane in np.flatnonzero(completed):
             steps = max(int(self._active_steps[lane]), 1)
+            close_near_steps = max(int(self._close_near_counts[lane]), 1)
+            blocked_score_mean = float(self._blocked_score_sums[lane]) / float(close_near_steps)
+            empty_closed_rate = float(self._empty_closed_counts[lane]) / float(close_near_steps)
+            blocked_grasp = (
+                self._close_near_counts[lane] > 0
+                and blocked_score_mean >= self.blocked_grasp_score_threshold
+                and empty_closed_rate <= self.blocked_grasp_empty_closed_rate_threshold
+            )
+            target_improvement = float(self._initial_cube_to_target[lane] - self._min_cube_to_target[lane])
+            target_approach = (
+                self._max_cube_lift[lane] >= self.target_approach_lift_gate_m
+                and target_improvement >= self.target_approach_min_delta_m
+            )
             labels.append(
                 [
                     bool(self._min_ee_to_cube[lane] <= self.reach_threshold_m),
@@ -352,6 +404,7 @@ class LaneEvalSubskillTracker:
                     bool(self._max_cube_lift[lane] >= self.lift_success_height_m),
                 ]
             )
+            ability_labels.append([bool(blocked_grasp), bool(target_approach)])
             reach_metrics.append(
                 [
                     float(self._reach_dwell_counts[lane]) / float(steps),
@@ -360,6 +413,7 @@ class LaneEvalSubskillTracker:
             )
             self._reset_lane(lane)
         self.last_completed_reach_metrics = np.asarray(reach_metrics, dtype=np.float32)
+        self.last_completed_ability_labels = np.asarray(ability_labels, dtype=bool)
         return np.asarray(labels, dtype=bool)
 
     def _reset_lane(self, lane: int) -> None:
@@ -367,10 +421,23 @@ class LaneEvalSubskillTracker:
         self._saw_grip_attempt[lane] = False
         self._saw_grip_effect[lane] = False
         self._max_cube_lift[lane] = -np.inf
+        self._initial_cube_to_target[lane] = np.inf
+        self._min_cube_to_target[lane] = np.inf
+        self._close_near_counts[lane] = 0
+        self._blocked_score_sums[lane] = 0.0
+        self._empty_closed_counts[lane] = 0
         self._active_steps[lane] = 0
         self._reach_dwell_counts[lane] = 0
         self._reach_consecutive_steps[lane] = 0
         self._max_reach_consecutive_steps[lane] = 0
+
+
+def _blocked_finger_gap_score(width: np.ndarray) -> np.ndarray:
+    low, peak, high = (float(value) for value in BLOCKED_GRASP_WIDTH_BAND_M)
+    width_array = np.asarray(width, dtype=np.float32)
+    rising = (width_array - low) / max(peak - low, np.finfo(np.float32).eps)
+    falling = (high - width_array) / max(high - peak, np.finfo(np.float32).eps)
+    return np.clip(np.minimum(rising, falling), 0.0, 1.0).astype(np.float32)
 
 
 def split_train_eval_lanes(num_envs: int, eval_lanes: int) -> tuple[np.ndarray, np.ndarray]:

@@ -9,12 +9,14 @@ from typing import Any
 
 COMPOSITE_SUCCESS_LIFT_RETURN = "composite:success_lift_return"
 STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN = "stage_aware:reach_lift_success_return"
+STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN = "stage_aware:reach_grip_lift_target_return"
 COMPOSITE_SUCCESS_KEY = "eval_rollout/success_rate"
 COMPOSITE_LIFT_KEY = "eval_rollout/max_cube_lift_m"
 COMPOSITE_RETURN_KEY = "eval_rollout/mean_return"
 MIN_CUBE_TO_TARGET_KEY = "eval_rollout/min_cube_to_target_m"
 STAGE_KEY = "curriculum/stage_index"
 STAGE0_REACH_KEY = "curriculum/gate/eval_reach_episode_rate"
+STAGE1_BLOCKED_GRASP_KEY = "curriculum/gate/eval_blocked_grasp_episode_rate"
 STAGE1_GRIP_EFFECT_KEY = "curriculum/gate/eval_grip_effect_episode_rate"
 STAGE1_GRIP_ATTEMPT_KEY = "curriculum/gate/eval_grip_attempt_episode_rate"
 STAGE2_LIFT_2CM_KEY = "curriculum/gate/eval_lift_2cm_episode_rate"
@@ -23,6 +25,13 @@ STAGE_AWARE_GLOBAL_KEYS = (
     COMPOSITE_SUCCESS_KEY,
     COMPOSITE_LIFT_KEY,
     MIN_CUBE_TO_TARGET_KEY,
+    MIN_EE_TO_CUBE_KEY,
+    COMPOSITE_RETURN_KEY,
+)
+STAGE_AWARE_TARGET_GLOBAL_KEYS = (
+    COMPOSITE_SUCCESS_KEY,
+    MIN_CUBE_TO_TARGET_KEY,
+    COMPOSITE_LIFT_KEY,
     MIN_EE_TO_CUBE_KEY,
     COMPOSITE_RETURN_KEY,
 )
@@ -85,8 +94,15 @@ class TrainingCheckpointManager:
             while self.next_periodic_step is not None and env_steps >= self.next_periodic_step:
                 self.next_periodic_step += self.checkpoint_every_env_steps
 
-        if self.save_best_by == STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN:
-            stage_candidate = self._stage_aware_best_candidate(metrics)
+        if self.save_best_by in (
+            STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+            STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+        ):
+            stage_candidate = (
+                self._stage_aware_target_best_candidate(metrics)
+                if self.save_best_by == STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN
+                else self._stage_aware_best_candidate(metrics)
+            )
             if stage_candidate is not None:
                 stage_index, comparator = stage_candidate
                 incumbent = self.stage_best_metric_values.get(stage_index)
@@ -99,7 +115,11 @@ class TrainingCheckpointManager:
                         metric_value=comparator,
                         scheduler_state=scheduler_state,
                     )
-            global_candidate = self._stage_aware_global_best_candidate(metrics)
+            global_candidate = (
+                self._stage_aware_target_global_best_candidate(metrics)
+                if self.save_best_by == STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN
+                else self._stage_aware_global_best_candidate(metrics)
+            )
             if global_candidate is not None and (
                 self.best_metric_value is None or _metric_better(global_candidate, self.best_metric_value)
             ):
@@ -164,6 +184,7 @@ class TrainingCheckpointManager:
                     COMPOSITE_RETURN_KEY,
                 ),
                 transform=(1.0, -1.0, 1.0),
+                mode=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
             )
         elif stage_index == 1:
             values = _required_metric_tuple(
@@ -174,6 +195,7 @@ class TrainingCheckpointManager:
                     MIN_EE_TO_CUBE_KEY,
                 ),
                 transform=(1.0, 1.0, -1.0),
+                mode=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
             )
         elif stage_index == 2:
             values = _required_metric_tuple(
@@ -184,6 +206,7 @@ class TrainingCheckpointManager:
                     COMPOSITE_RETURN_KEY,
                 ),
                 transform=(1.0, 1.0, 1.0),
+                mode=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
             )
         else:
             values = _required_metric_tuple(
@@ -194,6 +217,7 @@ class TrainingCheckpointManager:
                     COMPOSITE_RETURN_KEY,
                 ),
                 transform=(1.0, 1.0, 1.0),
+                mode=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
             )
         if not values:
             return None
@@ -208,6 +232,91 @@ class TrainingCheckpointManager:
             metrics,
             STAGE_AWARE_GLOBAL_KEYS,
             transform=(1.0, 1.0, -1.0, -1.0, 1.0),
+            mode=STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+        )
+        if not values:
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return values
+
+    def _stage_aware_target_best_candidate(self, metrics: dict[str, float]) -> tuple[int, tuple[float, ...]] | None:
+        if STAGE_KEY not in metrics:
+            return None
+        stage_index = int(float(metrics[STAGE_KEY]))
+        if not 0 <= stage_index <= 3:
+            raise ValueError(f"{STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN} requires stage_index in [0, 3]")
+        if not any(key.startswith("eval_rollout/") for key in metrics):
+            return None
+        if stage_index == 0:
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    STAGE0_REACH_KEY,
+                    MIN_EE_TO_CUBE_KEY,
+                    COMPOSITE_RETURN_KEY,
+                ),
+                transform=(1.0, -1.0, 1.0),
+                mode=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+            )
+        elif stage_index == 1:
+            grip_quality_key = (
+                STAGE1_BLOCKED_GRASP_KEY
+                if STAGE1_BLOCKED_GRASP_KEY in metrics
+                else STAGE1_GRIP_EFFECT_KEY
+            )
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    grip_quality_key,
+                    STAGE1_GRIP_ATTEMPT_KEY,
+                    MIN_EE_TO_CUBE_KEY,
+                ),
+                transform=(1.0, 1.0, -1.0),
+                mode=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+            )
+        elif stage_index == 2:
+            lift_quality_key = (
+                STAGE2_LIFT_2CM_KEY
+                if STAGE2_LIFT_2CM_KEY in metrics
+                else COMPOSITE_LIFT_KEY
+            )
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    lift_quality_key,
+                    MIN_CUBE_TO_TARGET_KEY,
+                    COMPOSITE_RETURN_KEY,
+                ),
+                transform=(1.0, -1.0, 1.0),
+                mode=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+            )
+        else:
+            values = _required_metric_tuple(
+                metrics,
+                (
+                    COMPOSITE_SUCCESS_KEY,
+                    MIN_CUBE_TO_TARGET_KEY,
+                    COMPOSITE_LIFT_KEY,
+                    COMPOSITE_RETURN_KEY,
+                ),
+                transform=(1.0, -1.0, 1.0, 1.0),
+                mode=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+            )
+        if not values:
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return stage_index, values
+
+    def _stage_aware_target_global_best_candidate(self, metrics: dict[str, float]) -> tuple[float, ...] | None:
+        if not any(key.startswith("eval_rollout/") for key in metrics):
+            return None
+        values = _required_metric_tuple(
+            metrics,
+            STAGE_AWARE_TARGET_GLOBAL_KEYS,
+            transform=(1.0, -1.0, 1.0, -1.0, 1.0),
+            mode=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
         )
         if not values:
             return None
@@ -298,13 +407,14 @@ def _required_metric_tuple(
     keys: tuple[str, ...],
     *,
     transform: tuple[float, ...],
+    mode: str,
 ) -> tuple[float, ...]:
     if not any(key in metrics for key in keys):
         return ()
     missing = [key for key in keys if key not in metrics]
     if missing:
         raise ValueError(
-            f"{STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN} requires {keys}; missing {tuple(missing)}"
+            f"{mode} requires {keys}; missing {tuple(missing)}"
         )
     return tuple(float(metrics[key]) * float(sign) for key, sign in zip(keys, transform, strict=True))
 
@@ -314,6 +424,7 @@ __all__ = [
     "COMPOSITE_RETURN_KEY",
     "COMPOSITE_SUCCESS_KEY",
     "COMPOSITE_SUCCESS_LIFT_RETURN",
+    "STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN",
     "STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN",
     "TrainingCheckpointManager",
 ]

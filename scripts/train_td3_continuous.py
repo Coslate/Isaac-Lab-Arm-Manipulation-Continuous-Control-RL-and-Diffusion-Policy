@@ -36,6 +36,7 @@ from train.progress import TrainProgressReporter
 from train.reward_curriculum import (
     CURRICULUM_GATING_EVAL_DUAL_GATE,
     SUPPORTED_CURRICULUM_GATING,
+    SUPPORTED_GRIP_GATE_METRICS,
     SUPPORTED_REACH_GATE_METRICS,
     SUPPORTED_REWARD_CURRICULA,
     parse_eval_gate_thresholds,
@@ -75,6 +76,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lr-gamma", dest="lr_gamma", type=float, default=0.5)
     parser.add_argument("--lr-min-lr", dest="lr_min_lr", type=float, default=0.0)
     parser.add_argument("--total-update-steps", dest="total_update_steps", type=int)
+    parser.add_argument("--lr-restart-on-curriculum-advance", dest="lr_restart_on_curriculum_advance", action="store_true")
+    parser.add_argument("--lr-restart-warmup-updates", dest="lr_restart_warmup_updates", type=int, default=500)
+    parser.add_argument("--lr-restart-cycle-updates", dest="lr_restart_cycle_updates", type=int, default=10_000)
     parser.add_argument("--tb-log-dir", "--tb_log_dir", dest="tb_log_dir")
     parser.add_argument("--wandb-project", dest="wandb_project")
     parser.add_argument("--wandb-run-name", dest="wandb_run_name")
@@ -145,6 +149,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=0,
     )
+    parser.add_argument(
+        "--curriculum-gate-grip-metric",
+        dest="curriculum_gate_grip_metric",
+        choices=SUPPORTED_GRIP_GATE_METRICS,
+        default="grip_effect",
+    )
+    parser.add_argument("--curriculum-gate-target-approach-threshold", dest="curriculum_gate_target_approach_threshold", type=float, default=0.0)
+    parser.add_argument("--curriculum-gate-target-approach-min-delta-m", dest="curriculum_gate_target_approach_min_delta_m", type=float, default=0.02)
     parser.add_argument("--lift-progress-deadband-m", dest="lift_progress_deadband_m", type=float, default=0.002)
     parser.add_argument("--lift-progress-height-m", dest="lift_progress_height_m", type=float, default=0.04)
     parser.add_argument("--reach-progress-stage-scales", dest="reach_progress_stage_scales", default="0.5,0.1,0.0,0.0")
@@ -161,6 +173,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tiny-lift-delta-deadband-m", dest="tiny_lift_delta_deadband_m", type=float, default=0.0001)
     parser.add_argument("--tiny-lift-delta-height-m", dest="tiny_lift_delta_height_m", type=float, default=0.001)
     parser.add_argument("--tiny-lift-delta-near-sigma-m", dest="tiny_lift_delta_near_sigma_m", type=float, default=0.08)
+    parser.add_argument("--target-progress-stage-scales", dest="target_progress_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-progress-clip-m", dest="target_progress_clip_m", type=float, default=0.010)
+    parser.add_argument("--target-progress-deadband-m", dest="target_progress_deadband_m", type=float, default=0.0002)
+    parser.add_argument("--target-progress-lift-gate-m", dest="target_progress_lift_gate_m", type=float, default=0.020)
+    parser.add_argument("--target-progress-lift-gate-band-m", dest="target_progress_lift_gate_band_m", type=float, default=0.020)
+    parser.add_argument("--target-dwell-stage-scales", dest="target_dwell_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-dwell-sigma-m", dest="target_dwell_sigma_m", type=float, default=0.08)
+    parser.add_argument("--target-overlift-penalty-scale", dest="target_overlift_penalty_scale", type=float, default=0.0)
+    parser.add_argument("--target-overlift-penalty-stages", dest="target_overlift_penalty_stages", default="")
+    parser.add_argument("--target-overlift-margin-m", dest="target_overlift_margin_m", type=float, default=0.05)
     parser.add_argument("--vertical-alignment-penalty-scale", dest="vertical_alignment_penalty_scale", type=float, default=0.1)
     parser.add_argument("--vertical-alignment-penalty-stages", dest="vertical_alignment_penalty_stages", default="reach")
     parser.add_argument("--vertical-alignment-deadband-m", dest="vertical_alignment_deadband_m", type=float, default=0.04)
@@ -255,6 +277,9 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         curriculum_gate_consecutive_eval_passes=args.curriculum_gate_consecutive_eval_passes,
         curriculum_gate_reach_metric=args.curriculum_gate_reach_metric,
         curriculum_gate_reach_min_consecutive_steps=args.curriculum_gate_reach_min_consecutive_steps,
+        curriculum_gate_grip_metric=args.curriculum_gate_grip_metric,
+        curriculum_gate_target_approach_threshold=args.curriculum_gate_target_approach_threshold,
+        curriculum_gate_target_approach_min_delta_m=args.curriculum_gate_target_approach_min_delta_m,
         lift_progress_deadband_m=args.lift_progress_deadband_m,
         lift_progress_height_m=args.lift_progress_height_m,
         reach_progress_stage_scales=parse_stage_scales(args.reach_progress_stage_scales),
@@ -271,6 +296,16 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         tiny_lift_delta_deadband_m=args.tiny_lift_delta_deadband_m,
         tiny_lift_delta_height_m=args.tiny_lift_delta_height_m,
         tiny_lift_delta_near_sigma_m=args.tiny_lift_delta_near_sigma_m,
+        target_progress_stage_scales=parse_stage_scales(args.target_progress_stage_scales),
+        target_progress_clip_m=args.target_progress_clip_m,
+        target_progress_deadband_m=args.target_progress_deadband_m,
+        target_progress_lift_gate_m=args.target_progress_lift_gate_m,
+        target_progress_lift_gate_band_m=args.target_progress_lift_gate_band_m,
+        target_dwell_stage_scales=parse_stage_scales(args.target_dwell_stage_scales),
+        target_dwell_sigma_m=args.target_dwell_sigma_m,
+        target_overlift_penalty_scale=args.target_overlift_penalty_scale,
+        target_overlift_penalty_stages=parse_stage_names(args.target_overlift_penalty_stages),
+        target_overlift_margin_m=args.target_overlift_margin_m,
         vertical_alignment_penalty_scale=args.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=parse_stage_names(args.vertical_alignment_penalty_stages),
         vertical_alignment_deadband_m=args.vertical_alignment_deadband_m,
@@ -290,6 +325,9 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         protected_stage_local=args.protected_stage_local,
         protected_stage_grace_env_steps=args.protected_stage_grace_env_steps,
         protected_old_stage_retain_fraction=args.protected_old_stage_retain_fraction,
+        lr_restart_on_curriculum_advance=args.lr_restart_on_curriculum_advance,
+        lr_restart_warmup_updates=args.lr_restart_warmup_updates,
+        lr_restart_cycle_updates=args.lr_restart_cycle_updates,
     )
     logger = _build_logger(args)
     progress = _build_progress(args, description="td3 train")
@@ -455,6 +493,16 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--curriculum-gate-consecutive-eval-passes must be positive")
     if args.curriculum_gate_reach_min_consecutive_steps < 0:
         raise ValueError("--curriculum-gate-reach-min-consecutive-steps must be non-negative")
+    if not 0.0 <= args.curriculum_gate_target_approach_threshold <= 1.0:
+        raise ValueError("--curriculum-gate-target-approach-threshold must be in [0, 1]")
+    if args.curriculum_gate_target_approach_min_delta_m < 0.0:
+        raise ValueError("--curriculum-gate-target-approach-min-delta-m must be non-negative")
+    if args.lr_restart_warmup_updates < 0:
+        raise ValueError("--lr-restart-warmup-updates must be non-negative")
+    if args.lr_restart_cycle_updates <= 0:
+        raise ValueError("--lr-restart-cycle-updates must be positive")
+    if args.lr_restart_on_curriculum_advance and args.lr_restart_warmup_updates >= args.lr_restart_cycle_updates:
+        raise ValueError("--lr-restart-warmup-updates must be smaller than --lr-restart-cycle-updates")
     if args.lift_progress_deadband_m < 0.0:
         raise ValueError("--lift-progress-deadband-m must be non-negative")
     if args.lift_progress_height_m <= 0.0:
@@ -464,6 +512,9 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
     parse_stage_scales(args.grasp_like_stage_scales)
     parse_grasp_like_width_band(args.grasp_like_width_band_m)
     parse_stage_scales(args.tiny_lift_delta_stage_scales)
+    parse_stage_scales(args.target_progress_stage_scales)
+    parse_stage_scales(args.target_dwell_stage_scales)
+    parse_stage_names(args.target_overlift_penalty_stages)
     parse_stage_names(args.vertical_alignment_penalty_stages)
     parse_stage_names(args.rotation_action_penalty_stages)
     if args.reach_progress_clip_m <= 0.0:
@@ -484,6 +535,20 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--tiny-lift-delta-height-m must be positive")
     if args.tiny_lift_delta_near_sigma_m <= 0.0:
         raise ValueError("--tiny-lift-delta-near-sigma-m must be positive")
+    if args.target_progress_clip_m <= 0.0:
+        raise ValueError("--target-progress-clip-m must be positive")
+    if args.target_progress_deadband_m < 0.0:
+        raise ValueError("--target-progress-deadband-m must be non-negative")
+    if args.target_progress_lift_gate_m < 0.0:
+        raise ValueError("--target-progress-lift-gate-m must be non-negative")
+    if args.target_progress_lift_gate_band_m <= 0.0:
+        raise ValueError("--target-progress-lift-gate-band-m must be positive")
+    if args.target_dwell_sigma_m <= 0.0:
+        raise ValueError("--target-dwell-sigma-m must be positive")
+    if args.target_overlift_penalty_scale < 0.0:
+        raise ValueError("--target-overlift-penalty-scale must be non-negative")
+    if args.target_overlift_margin_m <= 0.0:
+        raise ValueError("--target-overlift-margin-m must be positive")
     if args.vertical_alignment_penalty_scale < 0.0:
         raise ValueError("--vertical-alignment-penalty-scale must be non-negative")
     if args.vertical_alignment_deadband_m < 0.0:

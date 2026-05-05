@@ -24,6 +24,9 @@ SUPPORTED_CURRICULUM_GATING = (
 REACH_GATE_EPISODE_RATE = "episode_rate"
 REACH_GATE_DWELL_RATE = "dwell_rate"
 SUPPORTED_REACH_GATE_METRICS = (REACH_GATE_EPISODE_RATE, REACH_GATE_DWELL_RATE)
+GRIP_GATE_METRIC_GRIP_EFFECT = "grip_effect"
+GRIP_GATE_METRIC_BLOCKED_GRASP = "blocked_grasp"
+SUPPORTED_GRIP_GATE_METRICS = (GRIP_GATE_METRIC_GRIP_EFFECT, GRIP_GATE_METRIC_BLOCKED_GRASP)
 
 PROGRESS_BUCKETS = ("normal", "reach", "grip", "lift", "goal")
 BUCKET_INDEX = {name: index for index, name in enumerate(PROGRESS_BUCKETS)}
@@ -31,6 +34,8 @@ DIAGNOSTIC_BUCKETS = ("grip_attempt", "grip_effect")
 DIAGNOSTIC_BUCKET_INDEX = {name: index for index, name in enumerate(DIAGNOSTIC_BUCKETS)}
 EVAL_GATE_LABELS = ("reach", "grip_attempt", "grip_effect", "lift_2cm")
 EVAL_GATE_LABEL_INDEX = {name: index for index, name in enumerate(EVAL_GATE_LABELS)}
+EVAL_ABILITY_LABELS = ("blocked_grasp", "target_approach")
+EVAL_ABILITY_LABEL_INDEX = {name: index for index, name in enumerate(EVAL_ABILITY_LABELS)}
 EXPOSURE_GATE_LABELS = ("reach", "grip_attempt", "grip_effect", "lift_progress")
 EXPOSURE_GATE_LABEL_INDEX = {name: index for index, name in enumerate(EXPOSURE_GATE_LABELS)}
 
@@ -48,6 +53,12 @@ GRASP_LIKE_CLOSE_COMMAND_THRESHOLD = -0.25
 TINY_LIFT_DELTA_DEADBAND_M = 0.0001
 TINY_LIFT_DELTA_HEIGHT_M = 0.0010
 TINY_LIFT_DELTA_NEAR_SIGMA_M = 0.08
+TARGET_PROGRESS_CLIP_M = 0.010
+TARGET_PROGRESS_DEADBAND_M = 0.0002
+TARGET_PROGRESS_LIFT_GATE_M = 0.020
+TARGET_PROGRESS_LIFT_GATE_BAND_M = 0.020
+TARGET_DWELL_SIGMA_M = 0.08
+TARGET_OVERLIFT_MARGIN_M = 0.05
 
 
 @dataclass(frozen=True)
@@ -130,6 +141,16 @@ class RewardCurriculumConfig:
     tiny_lift_delta_deadband_m: float = TINY_LIFT_DELTA_DEADBAND_M
     tiny_lift_delta_height_m: float = TINY_LIFT_DELTA_HEIGHT_M
     tiny_lift_delta_near_sigma_m: float = TINY_LIFT_DELTA_NEAR_SIGMA_M
+    target_progress_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_progress_clip_m: float = TARGET_PROGRESS_CLIP_M
+    target_progress_deadband_m: float = TARGET_PROGRESS_DEADBAND_M
+    target_progress_lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M
+    target_progress_lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M
+    target_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_dwell_sigma_m: float = TARGET_DWELL_SIGMA_M
+    target_overlift_penalty_scale: float = 0.0
+    target_overlift_penalty_stages: tuple[str, ...] = ()
+    target_overlift_margin_m: float = TARGET_OVERLIFT_MARGIN_M
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -178,6 +199,29 @@ class RewardCurriculumConfig:
             raise ValueError("tiny_lift_delta_height_m must be positive")
         if self.tiny_lift_delta_near_sigma_m <= 0.0:
             raise ValueError("tiny_lift_delta_near_sigma_m must be positive")
+        if len(self.target_progress_stage_scales) != 4:
+            raise ValueError("target_progress_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_progress_stage_scales):
+            raise ValueError("target_progress_stage_scales must be non-negative")
+        if self.target_progress_clip_m <= 0.0:
+            raise ValueError("target_progress_clip_m must be positive")
+        if self.target_progress_deadband_m < 0.0:
+            raise ValueError("target_progress_deadband_m must be non-negative")
+        if self.target_progress_lift_gate_m < 0.0:
+            raise ValueError("target_progress_lift_gate_m must be non-negative")
+        if self.target_progress_lift_gate_band_m <= 0.0:
+            raise ValueError("target_progress_lift_gate_band_m must be positive")
+        if len(self.target_dwell_stage_scales) != 4:
+            raise ValueError("target_dwell_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_dwell_stage_scales):
+            raise ValueError("target_dwell_stage_scales must be non-negative")
+        if self.target_dwell_sigma_m <= 0.0:
+            raise ValueError("target_dwell_sigma_m must be positive")
+        if self.target_overlift_penalty_scale < 0.0:
+            raise ValueError("target_overlift_penalty_scale must be non-negative")
+        _validate_stage_names(self.target_overlift_penalty_stages, "target_overlift_penalty_stages")
+        if self.target_overlift_margin_m <= 0.0:
+            raise ValueError("target_overlift_margin_m must be positive")
         if self.vertical_alignment_penalty_scale < 0.0:
             raise ValueError("vertical_alignment_penalty_scale must be non-negative")
         _validate_stage_names(self.vertical_alignment_penalty_stages, "vertical_alignment_penalty_stages")
@@ -240,6 +284,9 @@ class CurriculumGateConfig:
     consecutive_eval_passes: int = 1
     reach_metric: str = REACH_GATE_EPISODE_RATE
     reach_min_consecutive_steps: int = 0
+    grip_metric: str = GRIP_GATE_METRIC_GRIP_EFFECT
+    target_approach_threshold: float = 0.0
+    target_approach_min_delta_m: float = 0.02
 
     def __post_init__(self) -> None:
         if self.mode not in SUPPORTED_CURRICULUM_GATING:
@@ -274,6 +321,12 @@ class CurriculumGateConfig:
             raise ValueError(f"curriculum gate reach metric must be one of {SUPPORTED_REACH_GATE_METRICS!r}")
         if self.reach_min_consecutive_steps < 0:
             raise ValueError("curriculum gate reach min consecutive steps must be non-negative")
+        if self.grip_metric not in SUPPORTED_GRIP_GATE_METRICS:
+            raise ValueError(f"curriculum gate grip metric must be one of {SUPPORTED_GRIP_GATE_METRICS!r}")
+        if not 0.0 <= self.target_approach_threshold <= 1.0:
+            raise ValueError("curriculum gate target approach threshold must be in [0, 1]")
+        if self.target_approach_min_delta_m < 0.0:
+            raise ValueError("curriculum gate target approach min delta must be non-negative")
 
     @property
     def enabled(self) -> bool:
@@ -296,6 +349,7 @@ class CurriculumGateTracker:
         self.stage_index = 0
         self._window: deque[np.ndarray] = deque(maxlen=int(self.config.window_transitions))
         self._eval_window: deque[np.ndarray] = deque(maxlen=int(self.config.eval_window_episodes))
+        self._eval_ability_window: deque[np.ndarray] = deque(maxlen=int(self.config.eval_window_episodes))
         self._eval_reach_metric_window: deque[np.ndarray] = deque(maxlen=int(self.config.eval_window_episodes))
         self._stage_exposures = np.zeros((len(EXPOSURE_GATE_LABELS),), dtype=np.int64)
         self._stage_start_env_steps = 0
@@ -315,6 +369,7 @@ class CurriculumGateTracker:
         diagnostic_labels: np.ndarray | None = None,
         lift_success_labels: np.ndarray | None = None,
         eval_episode_labels: np.ndarray | None = None,
+        eval_episode_ability_labels: np.ndarray | None = None,
         eval_episode_reach_metrics: np.ndarray | None = None,
         env_steps: int = 0,
     ) -> dict[str, float]:
@@ -388,6 +443,24 @@ class CurriculumGateTracker:
                 else:
                     for _ in range(eval_array.shape[0]):
                         self._eval_reach_metric_window.append(np.zeros((2,), dtype=np.float32))
+                if eval_episode_ability_labels is not None:
+                    ability_array = np.asarray(eval_episode_ability_labels, dtype=bool)
+                    if ability_array.ndim == 1:
+                        ability_array = ability_array[None, :]
+                    if ability_array.ndim != 2 or ability_array.shape[1] != len(EVAL_ABILITY_LABELS):
+                        raise ValueError(
+                            f"eval_episode_ability_labels must have shape (N, {len(EVAL_ABILITY_LABELS)}); "
+                            f"got {ability_array.shape}"
+                        )
+                    if ability_array.shape[0] != eval_array.shape[0]:
+                        raise ValueError(
+                            "eval_episode_ability_labels row count must match eval_episode_labels"
+                        )
+                    for row in ability_array:
+                        self._eval_ability_window.append(row.astype(bool, copy=True))
+                else:
+                    for _ in range(eval_array.shape[0]):
+                        self._eval_ability_window.append(np.zeros((len(EVAL_ABILITY_LABELS),), dtype=bool))
 
         rates = self.rates()
         held = 0.0
@@ -464,6 +537,7 @@ class CurriculumGateTracker:
         }
         if self.config.eval_dual_gate_enabled:
             eval_rates = self.eval_rates()
+            ability_rates = self.eval_ability_rates()
             reach_metrics = self.eval_reach_metrics()
             logs.update(
                 {
@@ -472,6 +546,8 @@ class CurriculumGateTracker:
                     "curriculum/gate/eval_reach_episode_rate": eval_rates["reach"],
                     "curriculum/gate/eval_grip_attempt_episode_rate": eval_rates["grip_attempt"],
                     "curriculum/gate/eval_grip_effect_episode_rate": eval_rates["grip_effect"],
+                    "curriculum/gate/eval_blocked_grasp_episode_rate": ability_rates["blocked_grasp"],
+                    "curriculum/gate/eval_target_approach_episode_rate": ability_rates["target_approach"],
                     "curriculum/gate/eval_lift_2cm_episode_rate": eval_rates["lift_2cm"],
                     "curriculum/gate/eval_reach_dwell_rate": reach_metrics["reach_dwell_rate"],
                     "curriculum/gate/eval_reach_max_consecutive_steps": reach_metrics[
@@ -479,6 +555,12 @@ class CurriculumGateTracker:
                     ],
                     "curriculum/gate/reach_metric_dwell_rate": (
                         1.0 if self.config.reach_metric == REACH_GATE_DWELL_RATE else 0.0
+                    ),
+                    "curriculum/gate/grip_metric_blocked_grasp": (
+                        1.0 if self.config.grip_metric == GRIP_GATE_METRIC_BLOCKED_GRASP else 0.0
+                    ),
+                    "curriculum/gate/target_approach_threshold": float(
+                        self.config.target_approach_threshold
                     ),
                     "curriculum/gate/exposure_reach_count": float(
                         self._stage_exposures[EXPOSURE_GATE_LABEL_INDEX["reach"]]
@@ -525,6 +607,15 @@ class CurriculumGateTracker:
             "reach_max_consecutive_steps": float(np.mean(metrics[:, 1])),
         }
 
+    def eval_ability_rates(self) -> dict[str, float]:
+        if not self._eval_ability_window:
+            return {name: 0.0 for name in EVAL_ABILITY_LABELS}
+        labels = np.stack(tuple(self._eval_ability_window), axis=0).astype(np.float32)
+        return {
+            "blocked_grasp": float(np.mean(labels[:, EVAL_ABILITY_LABEL_INDEX["blocked_grasp"]])),
+            "target_approach": float(np.mean(labels[:, EVAL_ABILITY_LABEL_INDEX["target_approach"]])),
+        }
+
     @property
     def stage_start_env_steps(self) -> int:
         return int(self._stage_start_env_steps)
@@ -538,6 +629,7 @@ class CurriculumGateTracker:
         if len(self._eval_window) < int(self.config.min_eval_episodes):
             return False
         rates = self.eval_rates()
+        ability_rates = self.eval_ability_rates()
         reach_metrics = self.eval_reach_metrics()
         reach_threshold, grip_attempt_threshold, grip_effect_threshold, lift_threshold = (
             float(value) for value in self.config.eval_thresholds
@@ -556,9 +648,16 @@ class CurriculumGateTracker:
             self._reach_consecutive_gate_passed = 1.0 if consecutive_passed else 0.0
             return bool(metric_passed and consecutive_passed)
         if self.stage_index == 1:
-            return rates["grip_attempt"] >= grip_attempt_threshold and rates["grip_effect"] >= grip_effect_threshold
+            grip_quality_rate = (
+                ability_rates["blocked_grasp"]
+                if self.config.grip_metric == GRIP_GATE_METRIC_BLOCKED_GRASP
+                else rates["grip_effect"]
+            )
+            return rates["grip_attempt"] >= grip_attempt_threshold and grip_quality_rate >= grip_effect_threshold
         if self.stage_index == 2:
-            return rates["lift_2cm"] >= lift_threshold
+            target_threshold = float(self.config.target_approach_threshold)
+            target_passed = target_threshold <= 0.0 or ability_rates["target_approach"] >= target_threshold
+            return rates["lift_2cm"] >= lift_threshold and target_passed
         return True
 
     def _exposure_gate_passes(self) -> bool:
@@ -935,6 +1034,105 @@ def compute_tiny_lift_delta_proxy(
     return (near_lift_context * delta_proxy).astype(np.float32)
 
 
+def compute_lift_context(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Soft gate for target-directed terms after the cube is lifted."""
+
+    if lift_gate_m < 0.0:
+        raise ValueError("lift_gate_m must be non-negative")
+    if lift_gate_band_m <= 0.0:
+        raise ValueError("lift_gate_band_m must be positive")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    reset_z = np.asarray(cube_reset_z, dtype=np.float32).reshape(-1)
+    if reset_z.shape != (next_proprio_array.shape[0],):
+        raise ValueError(f"cube_reset_z must have shape ({next_proprio_array.shape[0]},); got {reset_z.shape}")
+    next_cube_z = next_proprio_array[:, CUBE_POS_BASE.stop - 1]
+    return np.clip(
+        (next_cube_z - reset_z - float(lift_gate_m)) / float(lift_gate_band_m),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+
+def compute_target_progress_proxy(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    deadband_m: float = TARGET_PROGRESS_DEADBAND_M,
+    clip_m: float = TARGET_PROGRESS_CLIP_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Dense target progress after lift: reward reduced cube-to-target distance."""
+
+    if deadband_m < 0.0:
+        raise ValueError("deadband_m must be non-negative")
+    if clip_m <= 0.0:
+        raise ValueError("clip_m must be positive")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if proprio_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("proprios and next_proprios must share batch size")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    prev_dist = np.linalg.norm(proprio_array[:, CUBE_TO_TARGET], axis=1)
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    progress = np.clip(
+        (prev_dist - next_dist - float(deadband_m)) / float(clip_m),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    return (context * progress).astype(np.float32)
+
+
+def compute_target_dwell_proxy(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    sigma_m: float = TARGET_DWELL_SIGMA_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Dense lifted-cube proximity reward to the target."""
+
+    if sigma_m <= 0.0:
+        raise ValueError("sigma_m must be positive")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    return (context * np.exp(-next_dist / float(sigma_m))).astype(np.float32)
+
+
+def compute_target_overlift_penalty(
+    next_proprios: np.ndarray,
+    *,
+    margin_m: float = TARGET_OVERLIFT_MARGIN_M,
+) -> np.ndarray:
+    """Penalty for lifting above the target height plus a small margin."""
+
+    if margin_m <= 0.0:
+        raise ValueError("margin_m must be positive")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    next_cube_z = next_proprio_array[:, CUBE_POS_BASE.stop - 1]
+    next_target_z = next_cube_z + next_proprio_array[:, CUBE_TO_TARGET.stop - 1]
+    return (-np.maximum(next_cube_z - next_target_z - float(margin_m), 0.0)).astype(np.float32)
+
+
 def compute_vertical_alignment_penalty(
     proprios: np.ndarray,
     *,
@@ -965,6 +1163,7 @@ def compute_pr611_shaping_terms(
     *,
     config: RewardCurriculumConfig,
     stage_index: int,
+    cube_reset_z: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Return scaled PR6.11 reward-shaping terms for the given curriculum stage."""
 
@@ -977,6 +1176,9 @@ def compute_pr611_shaping_terms(
             "reach_dwell_proxy": zeros,
             "grasp_like_proxy": zeros,
             "tiny_lift_delta_proxy": zeros,
+            "target_progress_proxy": zeros,
+            "target_dwell_proxy": zeros,
+            "target_overlift_penalty": zeros,
             "vertical_alignment_penalty": zeros,
             "rotation_action_penalty": zeros,
         }
@@ -988,6 +1190,9 @@ def compute_pr611_shaping_terms(
         reach_progress = np.zeros((batch_size,), dtype=np.float32)
         grasp_like_proxy = np.zeros((batch_size,), dtype=np.float32)
         tiny_lift_delta_proxy = np.zeros((batch_size,), dtype=np.float32)
+        target_progress_proxy = np.zeros((batch_size,), dtype=np.float32)
+        target_dwell_proxy = np.zeros((batch_size,), dtype=np.float32)
+        target_overlift_penalty = np.zeros((batch_size,), dtype=np.float32)
     else:
         reach_progress = compute_reach_progress(
             proprio_array,
@@ -1010,6 +1215,30 @@ def compute_pr611_shaping_terms(
             height_m=config.tiny_lift_delta_height_m,
             near_sigma_m=config.tiny_lift_delta_near_sigma_m,
         )
+        if cube_reset_z is None:
+            target_progress_proxy = np.zeros((batch_size,), dtype=np.float32)
+            target_dwell_proxy = np.zeros((batch_size,), dtype=np.float32)
+        else:
+            target_progress_proxy = compute_target_progress_proxy(
+                proprio_array,
+                next_proprios,
+                cube_reset_z,
+                deadband_m=config.target_progress_deadband_m,
+                clip_m=config.target_progress_clip_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_dwell_proxy = compute_target_dwell_proxy(
+                next_proprios,
+                cube_reset_z,
+                sigma_m=config.target_dwell_sigma_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+        target_overlift_penalty = compute_target_overlift_penalty(
+            next_proprios,
+            margin_m=config.target_overlift_margin_m,
+        )
     reach_progress = (
         float(config.reach_progress_stage_scales[stage_index]) * reach_progress
     ).astype(np.float32)
@@ -1022,6 +1251,20 @@ def compute_pr611_shaping_terms(
     ).astype(np.float32)
     tiny_lift_delta_proxy = (
         float(config.tiny_lift_delta_stage_scales[stage_index]) * tiny_lift_delta_proxy
+    ).astype(np.float32)
+    target_progress_proxy = (
+        float(config.target_progress_stage_scales[stage_index]) * target_progress_proxy
+    ).astype(np.float32)
+    target_dwell_proxy = (
+        float(config.target_dwell_stage_scales[stage_index]) * target_dwell_proxy
+    ).astype(np.float32)
+    target_overlift_scale = (
+        float(config.target_overlift_penalty_scale)
+        if stage_name in config.target_overlift_penalty_stages
+        else 0.0
+    )
+    target_overlift_penalty = (
+        target_overlift_scale * target_overlift_penalty
     ).astype(np.float32)
     vertical_scale = (
         float(config.vertical_alignment_penalty_scale)
@@ -1048,6 +1291,9 @@ def compute_pr611_shaping_terms(
         "reach_dwell_proxy": reach_dwell_proxy,
         "grasp_like_proxy": grasp_like_proxy,
         "tiny_lift_delta_proxy": tiny_lift_delta_proxy,
+        "target_progress_proxy": target_progress_proxy,
+        "target_dwell_proxy": target_dwell_proxy,
+        "target_overlift_penalty": target_overlift_penalty,
         "vertical_alignment_penalty": vertical_penalty,
         "rotation_action_penalty": rotation_penalty,
     }
@@ -1101,6 +1347,7 @@ def shape_rewards(
         actions,
         config=config,
         stage_index=stage_index,
+        cube_reset_z=cube_reset_z,
     )
     shaped = (
         weights.reach * _component(components, "reaching_object", reward_array.shape[0])
@@ -1114,6 +1361,9 @@ def shape_rewards(
         + pr611_terms["reach_dwell_proxy"]
         + pr611_terms["grasp_like_proxy"]
         + pr611_terms["tiny_lift_delta_proxy"]
+        + pr611_terms["target_progress_proxy"]
+        + pr611_terms["target_dwell_proxy"]
+        + pr611_terms["target_overlift_penalty"]
         + pr611_terms["vertical_alignment_penalty"]
         + pr611_terms["rotation_action_penalty"]
     ).astype(np.float32)
@@ -1131,6 +1381,15 @@ def shape_rewards(
         ),
         "reward/train/tiny_lift_delta_proxy": (
             float(np.mean(pr611_terms["tiny_lift_delta_proxy"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_progress_proxy": (
+            float(np.mean(pr611_terms["target_progress_proxy"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_dwell_proxy": (
+            float(np.mean(pr611_terms["target_dwell_proxy"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_overlift_penalty": (
+            float(np.mean(pr611_terms["target_overlift_penalty"])) if shaped.size else 0.0
         ),
         "reward/train/vertical_alignment_penalty": (
             float(np.mean(pr611_terms["vertical_alignment_penalty"])) if shaped.size else 0.0
@@ -1368,6 +1627,8 @@ __all__ = [
     "DIAGNOSTIC_BUCKETS",
     "DIAGNOSTIC_BUCKET_INDEX",
     "EE_TO_CUBE",
+    "EVAL_ABILITY_LABELS",
+    "EVAL_ABILITY_LABEL_INDEX",
     "EVAL_GATE_LABELS",
     "EVAL_GATE_LABEL_INDEX",
     "EXPOSURE_GATE_LABELS",
@@ -1379,15 +1640,24 @@ __all__ = [
     "GRASP_LIKE_NEAR_SIGMA_M",
     "GRASP_LIKE_OPEN_WIDTH_M",
     "GRASP_LIKE_WIDTH_BAND_M",
+    "GRIP_GATE_METRIC_BLOCKED_GRASP",
+    "GRIP_GATE_METRIC_GRIP_EFFECT",
     "PROGRESS_BUCKETS",
     "REACH_GATE_DWELL_RATE",
     "REACH_GATE_EPISODE_RATE",
+    "TARGET_DWELL_SIGMA_M",
+    "TARGET_OVERLIFT_MARGIN_M",
+    "TARGET_PROGRESS_CLIP_M",
+    "TARGET_PROGRESS_DEADBAND_M",
+    "TARGET_PROGRESS_LIFT_GATE_BAND_M",
+    "TARGET_PROGRESS_LIFT_GATE_M",
     "CurriculumGateConfig",
     "CurriculumGateTracker",
     "ProgressBucketConfig",
     "REWARD_CURRICULUM_NONE",
     "REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL",
     "SUPPORTED_CURRICULUM_GATING",
+    "SUPPORTED_GRIP_GATE_METRICS",
     "SUPPORTED_REACH_GATE_METRICS",
     "SUPPORTED_REWARD_CURRICULA",
     "RewardCurriculumConfig",
@@ -1398,6 +1668,7 @@ __all__ = [
     "compute_blocked_finger_gap_score",
     "compute_finger_width",
     "compute_grasp_like_proxy",
+    "compute_lift_context",
     "compute_lift_success_labels",
     "compute_lift_progress_proxy",
     "compute_not_empty_collapse",
@@ -1406,6 +1677,9 @@ __all__ = [
     "compute_reach_progress",
     "compute_progress_diagnostic_labels",
     "compute_rotation_action_penalty",
+    "compute_target_dwell_proxy",
+    "compute_target_overlift_penalty",
+    "compute_target_progress_proxy",
     "compute_tiny_lift_delta_proxy",
     "compute_vertical_alignment_penalty",
     "curriculum_stage",

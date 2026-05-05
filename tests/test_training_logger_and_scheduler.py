@@ -15,10 +15,17 @@ from agents.normalization import ActionNormalizer
 from agents.sac import SACAgent, SACConfig
 from agents.td3 import TD3Agent, TD3Config
 from configs import ACTION_DIM
-from scripts.train_sac_continuous import _FakeSACEnv, _build_fake_env, parse_args as parse_sac_args
+from scripts.train_sac_continuous import (
+    _FakeSACEnv,
+    _build_fake_env,
+    _validate_pr68_args as _validate_sac_pr68_args,
+    parse_args as parse_sac_args,
+)
+from scripts.train_td3_continuous import _validate_pr68_args as _validate_td3_pr68_args
 from scripts.train_td3_continuous import parse_args as parse_td3_args
 from train.checkpoint_manager import (
     COMPOSITE_SUCCESS_LIFT_RETURN,
+    STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
     STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
     TrainingCheckpointManager,
 )
@@ -27,6 +34,7 @@ from train.lr_scheduler import (
     estimate_total_update_steps,
     load_scheduler_collection_state,
     make_scheduler,
+    restart_scheduler_collection,
 )
 from train.progress import TrainProgressReporter
 from train.sac_loop import (
@@ -331,6 +339,35 @@ def test_warmup_cosine_scheduler_and_state_roundtrip():
     restored.step()
     restored.step()
     assert restored_optimizer.param_groups[0]["lr"] == pytest.approx(0.1)
+
+
+def test_scheduler_collection_restart_uses_stage_cycle_and_roundtrips_state():
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    scheduler = make_scheduler("warmup_cosine", optimizer, warmup_steps=5, total_update_steps=100, min_lr=0.1)
+    scheduler.step()
+    scheduler.step()
+    assert scheduler.step_count == 2
+
+    restart_scheduler_collection({"actor": scheduler}, warmup_steps=2, total_update_steps=6)
+
+    assert scheduler.step_count == 0
+    assert scheduler.warmup_steps == 2
+    assert scheduler.total_update_steps == 6
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.5)
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
+    scheduler.step()
+    assert 0.1 < optimizer.param_groups[0]["lr"] < 1.0
+
+    restored_optimizer = torch.optim.SGD([torch.nn.Parameter(torch.tensor(2.0))], lr=1.0)
+    restored = make_scheduler("warmup_cosine", restored_optimizer, warmup_steps=5, total_update_steps=100, min_lr=0.1)
+    restored.load_state_dict(scheduler.state_dict())
+    assert restored.step_count == scheduler.step_count
+    assert restored.warmup_steps == 2
+    assert restored.total_update_steps == 6
+    assert restored_optimizer.param_groups[0]["lr"] == pytest.approx(optimizer.param_groups[0]["lr"])
 
 
 def test_estimate_total_update_steps_counts_vectorized_steps():
@@ -735,6 +772,114 @@ def test_stage_aware_checkpoint_uses_merged_same_step_eval_and_gate_metrics(tmp_
     assert manager.stage_best_metric_values[0] == pytest.approx((0.30, -0.03, 0.18))
 
 
+def test_training_checkpoint_manager_target_aware_stage3_prefers_target_distance(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target",
+        save_best_by=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        100,
+        {
+            "curriculum/stage_index": 3.0,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.20,
+            "eval_rollout/max_cube_lift_m": 0.50,
+            "eval_rollout/min_ee_to_cube_m": 0.05,
+            "eval_rollout/mean_return": 10.0,
+        },
+        None,
+    )
+    manager(
+        agent,
+        200,
+        {
+            "curriculum/stage_index": 3.0,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.08,
+            "eval_rollout/max_cube_lift_m": 0.04,
+            "eval_rollout/min_ee_to_cube_m": 0.10,
+            "eval_rollout/mean_return": 1.0,
+        },
+        None,
+    )
+
+    stage3_payload = load_checkpoint(tmp_path / "sac_stage_target_best_stage3.pt", expected_agent_type="sac")
+    global_payload = load_checkpoint(tmp_path / "sac_stage_target_best.pt", expected_agent_type="sac")
+    assert stage3_payload.metadata.num_env_steps == 200
+    assert global_payload.metadata.num_env_steps == 200
+    assert manager.stage_best_metric_values[3] == pytest.approx((0.0, -0.08, 0.04, 1.0))
+    assert manager.best_metric_value == pytest.approx((0.0, -0.08, 0.04, -0.10, 1.0))
+
+
+def test_training_checkpoint_manager_target_aware_global_prefers_success_first(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_success",
+        save_best_by=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        100,
+        {
+            "curriculum/stage_index": 3.0,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/min_cube_to_target_m": 0.01,
+            "eval_rollout/max_cube_lift_m": 1.0,
+            "eval_rollout/min_ee_to_cube_m": 0.01,
+            "eval_rollout/mean_return": 100.0,
+        },
+        None,
+    )
+    manager(
+        agent,
+        200,
+        {
+            "curriculum/stage_index": 3.0,
+            "eval_rollout/success_rate": 1.0,
+            "eval_rollout/min_cube_to_target_m": 0.02,
+            "eval_rollout/max_cube_lift_m": 0.02,
+            "eval_rollout/min_ee_to_cube_m": 0.10,
+            "eval_rollout/mean_return": 0.0,
+        },
+        None,
+    )
+
+    global_payload = load_checkpoint(tmp_path / "sac_stage_target_success_best.pt", expected_agent_type="sac")
+    assert global_payload.metadata.num_env_steps == 200
+    assert manager.best_metric_value == pytest.approx((1.0, -0.02, 0.02, -0.10, 0.0))
+
+
+def test_training_checkpoint_manager_target_aware_requires_target_metrics(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_bad",
+        save_best_by=STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    with pytest.raises(ValueError, match="requires"):
+        manager(
+            agent,
+            10,
+            {
+                "curriculum/stage_index": 3.0,
+                "eval_rollout/success_rate": 0.0,
+                "eval_rollout/max_cube_lift_m": 0.05,
+                "eval_rollout/mean_return": 1.0,
+            },
+            None,
+        )
+
+
 def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     sac_args = parse_sac_args(
         [
@@ -1028,6 +1173,134 @@ def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     assert td3_args.protected_old_stage_retain_fraction == pytest.approx(0.5)
 
 
+def test_train_script_parsers_accept_pr614_lr_restart_and_target_shaping_controls():
+    sac_args = parse_sac_args(
+        [
+            "--backend",
+            "fake",
+            "--lr-restart-on-curriculum-advance",
+            "--lr-restart-warmup-updates",
+            "500",
+            "--lr-restart-cycle-updates",
+            "10000",
+            "--curriculum-gate-grip-metric",
+            "blocked_grasp",
+            "--curriculum-gate-target-approach-threshold",
+            "0.25",
+            "--curriculum-gate-target-approach-min-delta-m",
+            "0.03",
+            "--target-progress-stage-scales",
+            "0,0,0.3,1",
+            "--target-progress-clip-m",
+            "0.01",
+            "--target-progress-deadband-m",
+            "0.0002",
+            "--target-progress-lift-gate-m",
+            "0.02",
+            "--target-progress-lift-gate-band-m",
+            "0.02",
+            "--target-dwell-stage-scales",
+            "0,0,0.2,0.8",
+            "--target-dwell-sigma-m",
+            "0.08",
+            "--target-overlift-penalty-scale",
+            "0.05",
+            "--target-overlift-penalty-stages",
+            "stock_like",
+            "--target-overlift-margin-m",
+            "0.05",
+        ]
+    )
+    td3_args = parse_td3_args(
+        [
+            "--backend",
+            "fake",
+            "--lr-restart-on-curriculum-advance",
+            "--lr-restart-warmup-updates",
+            "600",
+            "--lr-restart-cycle-updates",
+            "12000",
+            "--curriculum-gate-grip-metric",
+            "blocked_grasp",
+            "--curriculum-gate-target-approach-threshold",
+            "0.3",
+            "--curriculum-gate-target-approach-min-delta-m",
+            "0.04",
+            "--target-progress-stage-scales",
+            "0,0,0.4,1",
+            "--target-dwell-stage-scales",
+            "0,0,0.1,0.7",
+            "--target-overlift-penalty-stages",
+            "lift,stock_like",
+        ]
+    )
+
+    _validate_sac_pr68_args(sac_args)
+    _validate_td3_pr68_args(td3_args)
+    assert sac_args.lr_restart_on_curriculum_advance is True
+    assert sac_args.lr_restart_warmup_updates == 500
+    assert sac_args.lr_restart_cycle_updates == 10000
+    assert sac_args.curriculum_gate_grip_metric == "blocked_grasp"
+    assert sac_args.curriculum_gate_target_approach_threshold == pytest.approx(0.25)
+    assert sac_args.curriculum_gate_target_approach_min_delta_m == pytest.approx(0.03)
+    assert sac_args.target_progress_stage_scales == "0,0,0.3,1"
+    assert sac_args.target_dwell_stage_scales == "0,0,0.2,0.8"
+    assert sac_args.target_overlift_penalty_stages == "stock_like"
+    assert td3_args.lr_restart_warmup_updates == 600
+    assert td3_args.lr_restart_cycle_updates == 12000
+    assert td3_args.curriculum_gate_target_approach_threshold == pytest.approx(0.3)
+    assert td3_args.target_overlift_penalty_stages == "lift,stock_like"
+
+
+@pytest.mark.parametrize(
+    ("argv", "validator", "message"),
+    [
+        (
+            ["--backend", "fake", "--lr-restart-warmup-updates", "-1"],
+            _validate_sac_pr68_args,
+            "lr-restart-warmup-updates",
+        ),
+        (
+            ["--backend", "fake", "--lr-restart-cycle-updates", "0"],
+            _validate_sac_pr68_args,
+            "lr-restart-cycle-updates",
+        ),
+        (
+            [
+                "--backend",
+                "fake",
+                "--lr-restart-on-curriculum-advance",
+                "--lr-restart-warmup-updates",
+                "10",
+                "--lr-restart-cycle-updates",
+                "10",
+            ],
+            _validate_sac_pr68_args,
+            "smaller",
+        ),
+        (
+            ["--backend", "fake", "--target-progress-stage-scales", "0,0,1"],
+            _validate_sac_pr68_args,
+            "stage scales",
+        ),
+        (
+            ["--backend", "fake", "--target-dwell-sigma-m", "0"],
+            _validate_sac_pr68_args,
+            "target-dwell-sigma-m",
+        ),
+        (
+            ["--backend", "fake", "--target-overlift-penalty-stages", "bogus"],
+            _validate_sac_pr68_args,
+            "unsupported",
+        ),
+    ],
+)
+def test_train_script_validation_rejects_invalid_pr614_controls(argv, validator, message):
+    args = parse_sac_args(argv)
+    with pytest.raises(ValueError, match=message):
+        validator(args)
+
+
 def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
     torch.manual_seed(0)
     env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
@@ -1112,6 +1385,10 @@ def test_train_loop_logs_reward_curriculum_and_prioritized_replay(agent, config,
         seed=0,
         ram_budget_gib=4.0,
         reward_curriculum="reach_grip_lift_goal",
+        target_progress_stage_scales=(0.0, 0.0, 0.3, 1.0),
+        target_dwell_stage_scales=(0.0, 0.0, 0.2, 0.8),
+        target_overlift_penalty_scale=0.05,
+        target_overlift_penalty_stages=("lift", "stock_like"),
         prioritize_replay=True,
         priority_replay_ratio=0.5,
         protect_rare_transitions=True,
@@ -1239,12 +1516,18 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("reward/train/reach_dwell_proxy" in logs for logs in report.log_history)
     assert any("reward/train/grasp_like_proxy" in logs for logs in report.log_history)
     assert any("reward/train/tiny_lift_delta_proxy" in logs for logs in report.log_history)
+    assert any("reward/train/target_progress_proxy" in logs for logs in report.log_history)
+    assert any("reward/train/target_dwell_proxy" in logs for logs in report.log_history)
+    assert any("reward/train/target_overlift_penalty" in logs for logs in report.log_history)
     assert any("reward/train/vertical_alignment_penalty" in logs for logs in report.log_history)
     assert any("reward/train/rotation_action_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/reach_progress" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/reach_dwell_proxy" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/grasp_like_proxy" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/tiny_lift_delta_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/target_progress_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/target_dwell_proxy" in logs for logs in report.log_history)
+    assert any("reward/eval_rollout/target_overlift_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/vertical_alignment_penalty" in logs for logs in report.log_history)
     assert any("reward/eval_rollout/rotation_action_penalty" in logs for logs in report.log_history)
     assert any("eval_rollout/reach_dwell_rate" in logs for logs in report.log_history)
@@ -1258,6 +1541,7 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
     assert any("reward/train/reach_progress" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/train/reach_dwell_proxy" in metrics for _step, metrics in logger.scalar_calls)
     assert any("reward/train/grasp_like_proxy" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("reward/train/target_progress_proxy" in metrics for _step, metrics in logger.scalar_calls)
     assert any("eval_rollout/max_cube_lift_m" in metrics for _step, metrics in logger.scalar_calls)
     assert any("action/eval_rollout/gripper_mean" in metrics for _step, metrics, _force in progress.calls)
     assert any(
@@ -1265,6 +1549,7 @@ def test_train_loop_logs_pr69_lift_gate_action_and_diagnostic_replay_metrics(age
         for _step, metrics, _force in progress.calls
     )
     assert any("reward/eval_rollout/reach_progress" in metrics for _step, metrics, _force in progress.calls)
+    assert any("reward/eval_rollout/target_progress_proxy" in metrics for _step, metrics, _force in progress.calls)
     assert any("eval_rollout/reach_dwell_rate" in metrics for _step, metrics, _force in progress.calls)
 
 
@@ -1314,6 +1599,8 @@ def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
     assert any("curriculum/gate/reach_consecutive_gate_passed" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_grip_attempt_episode_rate" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_grip_effect_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_blocked_grasp_episode_rate" in logs for logs in report.log_history)
+    assert any("curriculum/gate/eval_target_approach_episode_rate" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_lift_2cm_episode_rate" in logs for logs in report.log_history)
     assert any("curriculum/gate/exposure_reach_count" in logs for logs in report.log_history)
     assert any("curriculum/gate/exposure_grip_attempt_count" in logs for logs in report.log_history)
@@ -1324,12 +1611,113 @@ def test_train_loop_logs_pr610_eval_dual_gate_metrics(agent, config, runner):
     assert any("curriculum/gate/consecutive_eval_gate_passed" in logs for logs in report.log_history)
     assert any("curriculum/gate/eval_gate_passed" in metrics for _step, metrics in logger.scalar_calls)
     assert any("curriculum/gate/eval_reach_dwell_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("curriculum/gate/eval_blocked_grasp_episode_rate" in metrics for _step, metrics in logger.scalar_calls)
     assert any("curriculum/gate/advanced_stage" in metrics for _step, metrics, _force in progress.calls)
     assert any(
         "curriculum/gate/reach_consecutive_gate_passed" in metrics
         for _step, metrics, _force in progress.calls
     )
     assert any(kind == "curriculum_advance" for _step, kind, _fields in progress.notes)
+
+
+@pytest.mark.parametrize(
+    ("agent_factory", "config", "runner", "scheduler_names"),
+    [
+        (
+            lambda: SACAgent(_tiny_sac_config()),
+            SACTrainLoopConfig,
+            run_sac_train_loop,
+            ("actor", "critic", "alpha"),
+        ),
+        (
+            lambda: TD3Agent(_tiny_td3_config()),
+            TD3TrainLoopConfig,
+            run_td3_train_loop,
+            ("actor", "critic"),
+        ),
+    ],
+)
+def test_train_loop_restarts_lr_on_eval_dual_gate_curriculum_advance(
+    agent_factory,
+    config,
+    runner,
+    scheduler_names,
+):
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    agent = agent_factory()
+    schedulers = {
+        name: make_scheduler(
+            "warmup_cosine",
+            getattr(agent, f"{name}_optimizer"),
+            warmup_steps=5,
+            total_update_steps=100,
+            min_lr=1e-5,
+        )
+        for name in scheduler_names
+    }
+    progress = _RecordingProgress()
+    cfg = config(
+        replay_capacity=64,
+        warmup_steps=4,
+        batch_size=4,
+        total_env_steps=30,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        rollout_metrics_window=10,
+        reward_curriculum="reach_grip_lift_goal",
+        curriculum_gating="eval_dual_gate",
+        curriculum_gate_eval_window_episodes=4,
+        curriculum_gate_min_eval_episodes=1,
+        curriculum_gate_eval_thresholds=(0.0, 0.0, 0.0, 0.0),
+        curriculum_gate_min_train_exposures=(0, 0, 0, 0),
+        curriculum_gate_min_stage_env_steps=0,
+        lr_restart_on_curriculum_advance=True,
+        lr_restart_warmup_updates=1,
+        lr_restart_cycle_updates=4,
+    )
+
+    report = runner(env, agent, loop_config=cfg, schedulers=schedulers, progress=progress)
+
+    assert report.final_logs["train/lr_restart_count"] >= 1.0
+    assert report.final_logs["train/lr_restart_on_curriculum_advance"] == pytest.approx(1.0)
+    assert all(scheduler.warmup_steps == 1 for scheduler in schedulers.values())
+    assert all(scheduler.total_update_steps == 4 for scheduler in schedulers.values())
+    assert set(report.scheduler_state) == set(scheduler_names)
+    assert any(
+        kind == "curriculum_advance" and fields.get("lr_restart") is True
+        for _step, kind, fields in progress.notes
+    )
+
+
+def test_train_loop_does_not_log_lr_restart_when_disabled():
+    torch.manual_seed(0)
+    env = _FakeSACEnv(num_envs=4, seed=0, terminal_step=3)
+    agent = SACAgent(_tiny_sac_config())
+    scheduler = make_scheduler("warmup_cosine", agent.actor_optimizer, warmup_steps=1, total_update_steps=8)
+    cfg = SACTrainLoopConfig(
+        replay_capacity=64,
+        warmup_steps=4,
+        batch_size=4,
+        total_env_steps=18,
+        seed=0,
+        ram_budget_gib=4.0,
+        same_env_eval_lanes=1,
+        reward_curriculum="reach_grip_lift_goal",
+        curriculum_gating="eval_dual_gate",
+        curriculum_gate_eval_window_episodes=4,
+        curriculum_gate_min_eval_episodes=1,
+        curriculum_gate_eval_thresholds=(0.0, 0.0, 0.0, 0.0),
+        curriculum_gate_min_train_exposures=(0, 0, 0, 0),
+        curriculum_gate_min_stage_env_steps=0,
+    )
+
+    report = run_sac_train_loop(env, agent, loop_config=cfg, schedulers={"actor": scheduler})
+
+    assert report.num_updates > 0
+    assert scheduler.step_count == report.num_updates
+    assert "train/lr_restart_count" not in report.final_logs
 
 
 @pytest.mark.parametrize(

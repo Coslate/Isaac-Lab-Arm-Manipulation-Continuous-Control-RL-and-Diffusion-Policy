@@ -56,6 +56,30 @@ class LearningRateScheduler:
         self.step_count += 1
         self._apply_lrs()
 
+    def restart(
+        self,
+        *,
+        warmup_steps: int | None = None,
+        total_update_steps: int | None = None,
+    ) -> None:
+        """Restart the schedule clock while keeping optimizer state and base LRs."""
+
+        if warmup_steps is not None and warmup_steps < 0:
+            raise ValueError("warmup_steps must be non-negative")
+        if total_update_steps is not None and total_update_steps <= 0:
+            raise ValueError("total_update_steps must be positive")
+        if warmup_steps is not None:
+            self.warmup_steps = int(warmup_steps)
+        if total_update_steps is not None:
+            self.total_update_steps = int(total_update_steps)
+        if (
+            self.scheduler_type == SCHEDULER_WARMUP_COSINE
+            and self.total_update_steps is not None
+            and self.warmup_steps >= self.total_update_steps
+        ):
+            raise ValueError("warmup_steps must be smaller than total_update_steps")
+        self.step_count = 0
+
     def get_last_lr(self) -> list[float]:
         return [float(group["lr"]) for group in self.optimizer.param_groups]
 
@@ -179,6 +203,26 @@ def load_scheduler_collection_state(
         schedulers[name].load_state_dict(scheduler_state)
 
 
+def restart_scheduler_collection(
+    schedulers: Mapping[str, LearningRateScheduler] | None,
+    *,
+    warmup_steps: int,
+    total_update_steps: int,
+) -> None:
+    """Restart all schedulers in a train-loop mapping."""
+
+    if warmup_steps < 0:
+        raise ValueError("warmup_steps must be non-negative")
+    if total_update_steps <= 0:
+        raise ValueError("total_update_steps must be positive")
+    if warmup_steps >= total_update_steps:
+        raise ValueError("warmup_steps must be smaller than total_update_steps")
+    if not schedulers:
+        return
+    for scheduler in schedulers.values():
+        scheduler.restart(warmup_steps=warmup_steps, total_update_steps=total_update_steps)
+
+
 def optimizer_lr(optimizer: torch.optim.Optimizer) -> float:
     """Return the first param group's LR as a scalar log value."""
 
@@ -195,5 +239,6 @@ __all__ = [
     "load_scheduler_collection_state",
     "make_scheduler",
     "optimizer_lr",
+    "restart_scheduler_collection",
     "scheduler_collection_state",
 ]
