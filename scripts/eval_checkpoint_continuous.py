@@ -49,13 +49,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--success-threshold-m", dest="success_threshold_m", type=float, default=DEFAULT_SUCCESS_THRESHOLD_M
     )
+    parser.add_argument("--target-hold-consecutive-steps", dest="target_hold_consecutive_steps", type=int, default=5)
     parser.add_argument("--policy-camera-name", default="wrist_cam")
     parser.add_argument("--policy-image-obs-key", default="wrist_rgb")
     parser.add_argument("--debug-camera-name", default="table_cam")
     parser.add_argument("--debug-image-obs-key", default="table_rgb")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.target_hold_consecutive_steps <= 0:
+        raise ValueError("--target-hold-consecutive-steps must be positive")
+    return args
 
 
 def _validate_checkpoint(args: argparse.Namespace) -> None:
@@ -105,6 +109,7 @@ def evaluate_with_env(
         seed=args.seed,
         backend=args.backend,
         success_threshold_m=args.success_threshold_m,
+        target_hold_consecutive_steps=args.target_hold_consecutive_steps,
         legacy_warning=eval_fields["legacy_warning"],
     )
 
@@ -126,6 +131,8 @@ def evaluate_with_env(
         "mean_return": metrics.mean_return,
         "success_rate": metrics.success_rate,
         "mean_action_jerk": metrics.mean_action_jerk,
+        "target_hold_episode_rate": metrics.target_hold_episode_rate,
+        "p50_cube_to_target_m": metrics.p50_cube_to_target_m,
         "settle_steps": metrics.settle_steps,
         "legacy_warning": metrics.legacy_warning,
     }

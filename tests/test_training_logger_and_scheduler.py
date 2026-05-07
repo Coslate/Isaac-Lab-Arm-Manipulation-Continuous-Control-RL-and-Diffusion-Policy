@@ -27,6 +27,7 @@ from train.checkpoint_manager import (
     COMPOSITE_SUCCESS_LIFT_RETURN,
     STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
     STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+    STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN,
     TrainingCheckpointManager,
 )
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
@@ -880,6 +881,110 @@ def test_training_checkpoint_manager_target_aware_requires_target_metrics(tmp_pa
         )
 
 
+def test_training_checkpoint_manager_target_stability_stage3_prefers_success_hold_distance_jerk(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_stability",
+        save_best_by=STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    base = {
+        "curriculum/stage_index": 3.0,
+        "eval_rollout/success_rate": 0.5,
+        "eval_rollout/target_hold_episode_rate": 0.2,
+        "eval_rollout/p50_cube_to_target_m": 0.04,
+        "eval_rollout/mean_action_jerk": 1.0,
+        "eval_rollout/mean_return": 10.0,
+        "eval_rollout/max_cube_lift_m": 10.0,
+    }
+    better_hold = dict(base, **{"eval_rollout/target_hold_episode_rate": 0.3, "eval_rollout/max_cube_lift_m": 0.01})
+    better_distance = dict(better_hold, **{"eval_rollout/p50_cube_to_target_m": 0.02})
+    better_jerk = dict(better_distance, **{"eval_rollout/mean_action_jerk": 0.5})
+
+    manager(agent, 100, base, None)
+    manager(agent, 200, better_hold, None)
+    manager(agent, 300, better_distance, None)
+    manager(agent, 400, better_jerk, None)
+
+    stage3_payload = load_checkpoint(
+        tmp_path / "sac_stage_target_stability_best_stage3.pt",
+        expected_agent_type="sac",
+    )
+    global_payload = load_checkpoint(tmp_path / "sac_stage_target_stability_best.pt", expected_agent_type="sac")
+    assert stage3_payload.metadata.num_env_steps == 400
+    assert global_payload.metadata.num_env_steps == 400
+    assert manager.stage_best_metric_values[3] == pytest.approx((0.5, 0.3, -0.02, -0.5, 10.0))
+    assert manager.best_metric_value == pytest.approx((0.5, 0.3, -0.02, -0.5, 10.0))
+
+
+def test_training_checkpoint_manager_target_stability_success_beats_high_lift(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_stability_success",
+        save_best_by=STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    manager(
+        agent,
+        100,
+        {
+            "curriculum/stage_index": 3.0,
+            "eval_rollout/success_rate": 0.0,
+            "eval_rollout/target_hold_episode_rate": 1.0,
+            "eval_rollout/p50_cube_to_target_m": 0.01,
+            "eval_rollout/mean_action_jerk": 0.01,
+            "eval_rollout/mean_return": 100.0,
+            "eval_rollout/max_cube_lift_m": 2.0,
+        },
+        None,
+    )
+    manager(
+        agent,
+        200,
+        {
+            "curriculum/stage_index": 3.0,
+            "eval_rollout/success_rate": 0.25,
+            "eval_rollout/target_hold_episode_rate": 0.0,
+            "eval_rollout/p50_cube_to_target_m": 0.05,
+            "eval_rollout/mean_action_jerk": 2.0,
+            "eval_rollout/mean_return": 0.0,
+            "eval_rollout/max_cube_lift_m": 0.02,
+        },
+        None,
+    )
+
+    global_payload = load_checkpoint(tmp_path / "sac_stage_target_stability_success_best.pt", expected_agent_type="sac")
+    assert global_payload.metadata.num_env_steps == 200
+    assert manager.best_metric_value == pytest.approx((0.25, 0.0, -0.05, -2.0, 0.0))
+
+
+def test_training_checkpoint_manager_target_stability_requires_metrics(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_stability_bad",
+        save_best_by=STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    with pytest.raises(ValueError, match="requires"):
+        manager(
+            agent,
+            10,
+            {
+                "curriculum/stage_index": 3.0,
+                "eval_rollout/success_rate": 0.0,
+                "eval_rollout/target_hold_episode_rate": 0.0,
+                "eval_rollout/p50_cube_to_target_m": 0.05,
+            },
+            None,
+        )
+
+
 def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     sac_args = parse_sac_args(
         [
@@ -1252,6 +1357,75 @@ def test_train_script_parsers_accept_pr614_lr_restart_and_target_shaping_control
     assert td3_args.target_overlift_penalty_stages == "lift,stock_like"
 
 
+def test_train_script_parsers_accept_pr615_target_stability_controls():
+    sac_args = parse_sac_args(
+        [
+            "--backend",
+            "fake",
+            "--target-success-bonus-stage-scales",
+            "0,0,0.5,2",
+            "--target-success-threshold-m",
+            "0.02",
+            "--target-away-penalty-stage-scales",
+            "0,0,0.1,0.4",
+            "--target-away-deadband-m",
+            "0.0001",
+            "--target-away-clip-m",
+            "0.01",
+            "--near-target-action-penalty-stage-scales",
+            "0,0,0,0.03",
+            "--near-target-action-threshold-m",
+            "0.04",
+            "--near-target-action-band-m",
+            "0.02",
+            "--near-target-rotation-weight",
+            "1.5",
+            "--target-z-alignment-penalty-stage-scales",
+            "0,0,0.1,0.3",
+            "--target-z-alignment-clip-m",
+            "0.05",
+            "--target-hold-consecutive-steps",
+            "5",
+        ]
+    )
+    td3_args = parse_td3_args(
+        [
+            "--backend",
+            "fake",
+            "--target-success-bonus-stage-scales",
+            "0,0,0.4,1.8",
+            "--target-away-penalty-stage-scales",
+            "0,0,0.2,0.5",
+            "--near-target-action-penalty-stage-scales",
+            "0,0,0,0.04",
+            "--target-z-alignment-penalty-stage-scales",
+            "0,0,0.2,0.4",
+            "--target-hold-consecutive-steps",
+            "6",
+        ]
+    )
+
+    _validate_sac_pr68_args(sac_args)
+    _validate_td3_pr68_args(td3_args)
+    assert sac_args.target_success_bonus_stage_scales == "0,0,0.5,2"
+    assert sac_args.target_success_threshold_m == pytest.approx(0.02)
+    assert sac_args.target_away_penalty_stage_scales == "0,0,0.1,0.4"
+    assert sac_args.target_away_deadband_m == pytest.approx(0.0001)
+    assert sac_args.target_away_clip_m == pytest.approx(0.01)
+    assert sac_args.near_target_action_penalty_stage_scales == "0,0,0,0.03"
+    assert sac_args.near_target_action_threshold_m == pytest.approx(0.04)
+    assert sac_args.near_target_action_band_m == pytest.approx(0.02)
+    assert sac_args.near_target_rotation_weight == pytest.approx(1.5)
+    assert sac_args.target_z_alignment_penalty_stage_scales == "0,0,0.1,0.3"
+    assert sac_args.target_z_alignment_clip_m == pytest.approx(0.05)
+    assert sac_args.target_hold_consecutive_steps == 5
+    assert td3_args.target_success_bonus_stage_scales == "0,0,0.4,1.8"
+    assert td3_args.target_away_penalty_stage_scales == "0,0,0.2,0.5"
+    assert td3_args.near_target_action_penalty_stage_scales == "0,0,0,0.04"
+    assert td3_args.target_z_alignment_penalty_stage_scales == "0,0,0.2,0.4"
+    assert td3_args.target_hold_consecutive_steps == 6
+
+
 @pytest.mark.parametrize(
     ("argv", "validator", "message"),
     [
@@ -1293,9 +1467,54 @@ def test_train_script_parsers_accept_pr614_lr_restart_and_target_shaping_control
             _validate_sac_pr68_args,
             "unsupported",
         ),
+        (
+            ["--backend", "fake", "--target-success-bonus-stage-scales", "0,0,1"],
+            _validate_sac_pr68_args,
+            "stage scales",
+        ),
+        (
+            ["--backend", "fake", "--target-success-threshold-m", "0"],
+            _validate_sac_pr68_args,
+            "target-success-threshold-m",
+        ),
+        (
+            ["--backend", "fake", "--target-away-deadband-m", "-0.1"],
+            _validate_sac_pr68_args,
+            "target-away-deadband-m",
+        ),
+        (
+            ["--backend", "fake", "--target-away-clip-m", "0"],
+            _validate_sac_pr68_args,
+            "target-away-clip-m",
+        ),
+        (
+            ["--backend", "fake", "--near-target-action-threshold-m", "0"],
+            _validate_sac_pr68_args,
+            "near-target-action-threshold-m",
+        ),
+        (
+            ["--backend", "fake", "--near-target-action-band-m", "0"],
+            _validate_sac_pr68_args,
+            "near-target-action-band-m",
+        ),
+        (
+            ["--backend", "fake", "--near-target-rotation-weight", "-1"],
+            _validate_sac_pr68_args,
+            "near-target-rotation-weight",
+        ),
+        (
+            ["--backend", "fake", "--target-z-alignment-clip-m", "0"],
+            _validate_sac_pr68_args,
+            "target-z-alignment-clip-m",
+        ),
+        (
+            ["--backend", "fake", "--target-hold-consecutive-steps", "0"],
+            _validate_sac_pr68_args,
+            "target-hold-consecutive-steps",
+        ),
     ],
 )
-def test_train_script_validation_rejects_invalid_pr614_controls(argv, validator, message):
+def test_train_script_validation_rejects_invalid_target_controls(argv, validator, message):
     args = parse_sac_args(argv)
     with pytest.raises(ValueError, match=message):
         validator(args)
@@ -1328,6 +1547,10 @@ def test_sac_train_loop_logs_training_rollouts_and_same_env_eval_lanes():
     assert any("eval_rollout/mean_return" in logs for logs in report.log_history)
     assert any("train_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
     assert any("eval_rollout/success_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("train_rollout/target_hold_episode_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("eval_rollout/target_hold_episode_rate" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("eval_rollout/p50_cube_to_target_m" in metrics for _step, metrics in logger.scalar_calls)
+    assert any("eval_rollout/mean_action_jerk" in metrics for _step, metrics in logger.scalar_calls)
     assert any("train_rollout/mean_return" in metrics for _step, metrics, _force in progress.calls)
     assert any("eval_rollout/mean_return" in metrics for _step, metrics, _force in progress.calls)
 
@@ -1389,6 +1612,10 @@ def test_train_loop_logs_reward_curriculum_and_prioritized_replay(agent, config,
         target_dwell_stage_scales=(0.0, 0.0, 0.2, 0.8),
         target_overlift_penalty_scale=0.05,
         target_overlift_penalty_stages=("lift", "stock_like"),
+        target_success_bonus_stage_scales=(0.0, 0.0, 0.5, 2.0),
+        target_away_penalty_stage_scales=(0.0, 0.0, 0.1, 0.4),
+        near_target_action_penalty_stage_scales=(0.0, 0.0, 0.0, 0.03),
+        target_z_alignment_penalty_stage_scales=(0.0, 0.0, 0.1, 0.3),
         prioritize_replay=True,
         priority_replay_ratio=0.5,
         protect_rare_transitions=True,
@@ -1400,6 +1627,10 @@ def test_train_loop_logs_reward_curriculum_and_prioritized_replay(agent, config,
 
     assert report.num_updates > 0
     assert any("reward/train_shaped" in logs for logs in report.log_history)
+    assert any("reward/train/target_success_bonus" in logs for logs in report.log_history)
+    assert any("reward/train/target_away_penalty" in logs for logs in report.log_history)
+    assert any("reward/train/near_target_action_penalty" in logs for logs in report.log_history)
+    assert any("reward/train/target_z_alignment_penalty" in logs for logs in report.log_history)
     assert any("curriculum/stage_index" in logs for logs in report.log_history)
     assert any("priority_replay/bucket_count/reach" in logs for logs in report.log_history)
     assert any("train/td_error_mean" in logs for logs in report.log_history)

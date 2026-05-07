@@ -39,9 +39,13 @@ from train.reward_curriculum import (
     compute_reach_dwell_proxy,
     compute_reach_progress,
     compute_rotation_action_penalty,
+    compute_near_target_action_penalty,
+    compute_target_away_penalty,
     compute_target_dwell_proxy,
     compute_target_overlift_penalty,
     compute_target_progress_proxy,
+    compute_target_success_bonus,
+    compute_target_z_alignment_penalty,
     compute_tiny_lift_delta_proxy,
     compute_vertical_alignment_penalty,
     curriculum_stage,
@@ -410,6 +414,97 @@ def test_target_overlift_penalty_only_applies_above_target_plus_margin() -> None
     np.testing.assert_allclose(penalty, np.array([0.0, -0.05, 0.0], dtype=np.float32), atol=1e-6)
 
 
+def test_target_success_bonus_matches_eval_threshold_and_lift_context() -> None:
+    next_proprios = np.zeros((3, 40), dtype=np.float32)
+    reset_z = np.zeros((3,), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.04, 0.04, 0.01], dtype=np.float32)
+    next_proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.019, 0.0, 0.0], [0.021, 0.0, 0.0], [0.001, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    bonus = compute_target_success_bonus(
+        next_proprios,
+        reset_z,
+        threshold_m=0.02,
+        lift_gate_m=0.02,
+        lift_gate_band_m=0.02,
+    )
+
+    np.testing.assert_allclose(bonus, np.array([1.0, 0.0, 0.0], dtype=np.float32), atol=1e-6)
+
+
+def test_target_away_penalty_only_penalizes_lifted_regression_beyond_deadband() -> None:
+    proprios = np.zeros((4, 40), dtype=np.float32)
+    next_proprios = np.zeros((4, 40), dtype=np.float32)
+    reset_z = np.zeros((4,), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.04, 0.04, 0.04, 0.01], dtype=np.float32)
+    proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.05, 0.0, 0.0], [0.05, 0.0, 0.0], [0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    next_proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.04, 0.0, 0.0], [0.05005, 0.0, 0.0], [0.056, 0.0, 0.0], [0.060, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    penalty = compute_target_away_penalty(
+        proprios,
+        next_proprios,
+        reset_z,
+        deadband_m=0.0001,
+        clip_m=0.010,
+        lift_gate_m=0.02,
+        lift_gate_band_m=0.02,
+    )
+
+    np.testing.assert_allclose(penalty, np.array([0.0, 0.0, -0.59, 0.0], dtype=np.float32), atol=1e-5)
+
+
+def test_near_target_action_penalty_excludes_gripper_and_ramps_near_target() -> None:
+    next_proprios = np.zeros((3, 40), dtype=np.float32)
+    reset_z = np.zeros((3,), dtype=np.float32)
+    actions = np.zeros((3, 7), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = 0.04
+    next_proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.03, 0.0, 0.0], [0.05, 0.0, 0.0], [0.07, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    actions[:, 0:3] = np.array([[3.0, 4.0, 0.0], [3.0, 4.0, 0.0], [3.0, 4.0, 0.0]], dtype=np.float32)
+    actions[:, 3:6] = np.array([[0.0, 0.0, 12.0], [0.0, 0.0, 12.0], [0.0, 0.0, 12.0]], dtype=np.float32)
+    actions[:, GRIPPER_ACTION_INDEX] = -100.0
+
+    penalty = compute_near_target_action_penalty(
+        next_proprios,
+        actions,
+        reset_z,
+        threshold_m=0.04,
+        band_m=0.02,
+        rotation_weight=0.5,
+        lift_gate_m=0.02,
+        lift_gate_band_m=0.02,
+    )
+
+    np.testing.assert_allclose(penalty, np.array([-11.0, -5.5, 0.0], dtype=np.float32), atol=1e-6)
+
+
+def test_target_z_alignment_penalty_is_symmetric_and_clipped_after_lift() -> None:
+    next_proprios = np.zeros((4, 40), dtype=np.float32)
+    reset_z = np.zeros((4,), dtype=np.float32)
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.04, 0.04, 0.04, 0.01], dtype=np.float32)
+    next_proprios[:, CUBE_TO_TARGET.stop - 1] = np.array([0.0, 0.025, -0.10, 0.05], dtype=np.float32)
+
+    penalty = compute_target_z_alignment_penalty(
+        next_proprios,
+        reset_z,
+        clip_m=0.05,
+        lift_gate_m=0.02,
+        lift_gate_band_m=0.02,
+    )
+
+    np.testing.assert_allclose(penalty, np.array([0.0, -0.5, -1.0, 0.0], dtype=np.float32), atol=1e-6)
+
+
 def test_target_terms_are_stage_weighted_and_logged() -> None:
     proprios = np.zeros((1, 40), dtype=np.float32)
     next_proprios = np.zeros((1, 40), dtype=np.float32)
@@ -464,6 +559,69 @@ def test_target_terms_are_stage_weighted_and_logged() -> None:
     assert logs["reward/train/target_overlift_penalty"] == pytest.approx(-0.00025)
 
 
+def test_pr615_target_stability_terms_are_stage_weighted_and_logged() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    proprios[0, CUBE_TO_TARGET] = np.array([0.010, 0.0, 0.0], dtype=np.float32)
+    next_proprios[0, CUBE_TO_TARGET] = np.array([0.015, 0.0, 0.010], dtype=np.float32)
+    next_proprios[0, CUBE_POS_BASE.stop - 1] = 0.04
+    actions[0, 0] = 2.0
+    actions[0, 3] = 3.0
+    config = RewardCurriculumConfig(
+        mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
+        reach_progress_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        reach_dwell_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        target_success_bonus_stage_scales=(0.0, 0.0, 0.5, 2.0),
+        target_success_threshold_m=0.02,
+        target_away_penalty_stage_scales=(0.0, 0.0, 0.1, 0.4),
+        target_away_deadband_m=0.0001,
+        target_away_clip_m=0.010,
+        near_target_action_penalty_stage_scales=(0.0, 0.0, 0.0, 0.03),
+        near_target_action_threshold_m=0.04,
+        near_target_action_band_m=0.02,
+        near_target_rotation_weight=1.0,
+        target_z_alignment_penalty_stage_scales=(0.0, 0.0, 0.1, 0.3),
+        target_z_alignment_clip_m=0.05,
+    )
+
+    terms = compute_pr611_shaping_terms(
+        proprios,
+        next_proprios,
+        actions,
+        config=config,
+        stage_index=3,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+    )
+    shaped, logs, _lift = shape_rewards(
+        np.array([0.0], dtype=np.float32),
+        {},
+        proprios,
+        actions,
+        env_steps=90,
+        total_env_steps=100,
+        config=config,
+        next_proprios=next_proprios,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+        stage_index_override=3,
+    )
+
+    assert terms["target_success_bonus"][0] == pytest.approx(2.0)
+    expected_away = -0.4 * (
+        float(np.linalg.norm(next_proprios[0, CUBE_TO_TARGET]))
+        - float(np.linalg.norm(proprios[0, CUBE_TO_TARGET]))
+        - 0.0001
+    ) / 0.010
+    assert terms["target_away_penalty"][0] == pytest.approx(expected_away)
+    assert terms["near_target_action_penalty"][0] == pytest.approx(-0.15)
+    assert terms["target_z_alignment_penalty"][0] == pytest.approx(-0.06)
+    assert shaped[0] == pytest.approx(sum(term[0] for term in terms.values()))
+    assert logs["reward/train/target_success_bonus"] == pytest.approx(2.0)
+    assert logs["reward/train/target_away_penalty"] == pytest.approx(expected_away)
+    assert logs["reward/train/near_target_action_penalty"] == pytest.approx(-0.15)
+    assert logs["reward/train/target_z_alignment_penalty"] == pytest.approx(-0.06)
+
+
 def test_target_reward_config_validates_new_values() -> None:
     with pytest.raises(ValueError, match="target_progress_stage_scales"):
         RewardCurriculumConfig(target_progress_stage_scales=(0.0, 0.0, 0.0))  # type: ignore[arg-type]
@@ -481,6 +639,28 @@ def test_target_reward_config_validates_new_values() -> None:
         RewardCurriculumConfig(target_overlift_penalty_stages=("bogus",))
     with pytest.raises(ValueError, match="target_overlift_margin_m"):
         RewardCurriculumConfig(target_overlift_margin_m=0.0)
+    with pytest.raises(ValueError, match="target_success_bonus_stage_scales"):
+        RewardCurriculumConfig(target_success_bonus_stage_scales=(0.0, 0.0, 0.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target_success_threshold_m"):
+        RewardCurriculumConfig(target_success_threshold_m=0.0)
+    with pytest.raises(ValueError, match="target_away_penalty_stage_scales"):
+        RewardCurriculumConfig(target_away_penalty_stage_scales=(0.0, 0.0, 0.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target_away_deadband_m"):
+        RewardCurriculumConfig(target_away_deadband_m=-1e-4)
+    with pytest.raises(ValueError, match="target_away_clip_m"):
+        RewardCurriculumConfig(target_away_clip_m=0.0)
+    with pytest.raises(ValueError, match="near_target_action_penalty_stage_scales"):
+        RewardCurriculumConfig(near_target_action_penalty_stage_scales=(0.0, 0.0, 0.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="near_target_action_threshold_m"):
+        RewardCurriculumConfig(near_target_action_threshold_m=0.0)
+    with pytest.raises(ValueError, match="near_target_action_band_m"):
+        RewardCurriculumConfig(near_target_action_band_m=0.0)
+    with pytest.raises(ValueError, match="near_target_rotation_weight"):
+        RewardCurriculumConfig(near_target_rotation_weight=-0.1)
+    with pytest.raises(ValueError, match="target_z_alignment_penalty_stage_scales"):
+        RewardCurriculumConfig(target_z_alignment_penalty_stage_scales=(0.0, 0.0, 0.0))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target_z_alignment_clip_m"):
+        RewardCurriculumConfig(target_z_alignment_clip_m=0.0)
 
 
 def test_action_diagnostics_log_finger_width_distribution_and_close_near_slice() -> None:

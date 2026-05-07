@@ -92,6 +92,12 @@ def test_record_checkpoint_visuals_create_gif_png_and_metrics(tmp_path, agent_ty
         "max_cube_lift_m",
         "min_ee_to_cube_m",
         "min_cube_to_target_m",
+        "target_success_step_rate",
+        "target_hold_episode_rate",
+        "target_hold_max_consecutive_steps",
+        "mean_cube_to_target_m",
+        "p50_cube_to_target_m",
+        "final_cube_to_target_m",
         "gripper_close_near_cube_rate",
     } <= set(payload)
     assert len(payload["visual_rollout_reward_trace"]) == payload["visual_rollout_reward_num_steps"] == 5

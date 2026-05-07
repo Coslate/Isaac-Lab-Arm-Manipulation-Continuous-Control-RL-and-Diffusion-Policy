@@ -73,6 +73,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--success-threshold-m", dest="success_threshold_m", type=float, default=DEFAULT_SUCCESS_THRESHOLD_M
     )
+    parser.add_argument("--target-hold-consecutive-steps", dest="target_hold_consecutive_steps", type=int, default=5)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args(argv)
     _normalize_optional_camera_args(args)
@@ -496,6 +497,7 @@ def _evaluate_visual_episode(
         seed=args.seed,
         backend=args.backend,
         success_threshold_m=args.success_threshold_m,
+        target_hold_consecutive_steps=args.target_hold_consecutive_steps,
         legacy_warning=eval_fields["legacy_warning"],
     )
 
@@ -624,6 +626,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--gif-fps must be positive")
     if args.settle_steps < 0:
         raise ValueError("--settle-steps must be non-negative")
+    if args.target_hold_consecutive_steps <= 0:
+        raise ValueError("--target-hold-consecutive-steps must be positive")
     if args.num_envs <= 0:
         raise ValueError("--num-parallel-envs must be positive")
     if args.env_index < 0 or args.env_index >= args.num_envs:

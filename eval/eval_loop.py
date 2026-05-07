@@ -44,6 +44,13 @@ class EvalMetrics:
     closest_target_approach_by_episode: dict[str, dict[str, Any]] = field(default_factory=dict)
     target_positions_base_m_by_episode: dict[str, list[float]] = field(default_factory=dict)
     target_position_constant_by_episode: bool | None = None
+    target_hold_consecutive_steps: int = 5
+    target_success_step_rate: float = 0.0
+    target_hold_episode_rate: float = 0.0
+    target_hold_max_consecutive_steps: float = 0.0
+    mean_cube_to_target_m: float = 0.0
+    p50_cube_to_target_m: float = 0.0
+    final_cube_to_target_m: float = 0.0
     target_debug_camera_name: str | None = None
     target_debug_pixel_source: str = "not_available"
 
@@ -56,6 +63,7 @@ def evaluate_rollout_dataset(
     *,
     success_threshold_m: float = DEFAULT_SUCCESS_THRESHOLD_M,
     consecutive_success_steps: int = DEFAULT_CONSECUTIVE_SUCCESS_STEPS,
+    target_hold_consecutive_steps: int = 5,
     policy_name: str | None = None,
     env_backend: str | None = None,
 ) -> EvalMetrics:
@@ -88,6 +96,11 @@ def evaluate_rollout_dataset(
     episode_lengths = np.asarray([episode_length(episode) for episode in episodes], dtype=np.float64)
     action_jerks = np.asarray([mean_action_jerk(episode.actions) for episode in episodes], dtype=np.float64)
     target_positions_by_episode = target_positions_by_episode_from_dataset(episode_keys, episodes)
+    target_hold = target_hold_metrics(
+        episodes,
+        success_threshold_m=success_threshold_m,
+        target_hold_consecutive_steps=target_hold_consecutive_steps,
+    )
 
     return EvalMetrics(
         policy_name=resolved_policy_name,
@@ -109,6 +122,13 @@ def evaluate_rollout_dataset(
         ),
         target_positions_base_m_by_episode=target_positions_by_episode,
         target_position_constant_by_episode=target_position_constant_by_episode(episodes),
+        target_hold_consecutive_steps=target_hold["target_hold_consecutive_steps"],
+        target_success_step_rate=target_hold["target_success_step_rate"],
+        target_hold_episode_rate=target_hold["target_hold_episode_rate"],
+        target_hold_max_consecutive_steps=target_hold["target_hold_max_consecutive_steps"],
+        mean_cube_to_target_m=target_hold["mean_cube_to_target_m"],
+        p50_cube_to_target_m=target_hold["p50_cube_to_target_m"],
+        final_cube_to_target_m=target_hold["final_cube_to_target_m"],
     )
 
 
@@ -324,6 +344,60 @@ def mean_action_jerk(actions: np.ndarray) -> float:
         return 0.0
     diffs = np.diff(action_array, axis=0)
     return float(np.linalg.norm(diffs, axis=1).mean())
+
+
+def target_hold_metrics(
+    episodes: list[EpisodeData],
+    *,
+    success_threshold_m: float = DEFAULT_SUCCESS_THRESHOLD_M,
+    target_hold_consecutive_steps: int = 5,
+) -> dict[str, float | int]:
+    """Compute target hold and cube-to-target distribution metrics from episodes."""
+
+    if success_threshold_m <= 0.0:
+        raise ValueError("success_threshold_m must be positive")
+    if target_hold_consecutive_steps <= 0:
+        raise ValueError("target_hold_consecutive_steps must be positive")
+    success_step_rates: list[float] = []
+    max_consecutive_steps: list[int] = []
+    hold_episodes: list[bool] = []
+    mean_distances: list[float] = []
+    p50_distances: list[float] = []
+    final_distances: list[float] = []
+    for episode in episodes:
+        distances = cube_to_target_distances(episode.proprios)
+        if distances.size == 0:
+            continue
+        step_successes = distances <= float(success_threshold_m)
+        max_run = _max_consecutive_true(step_successes)
+        success_step_rates.append(float(np.mean(step_successes)))
+        max_consecutive_steps.append(max_run)
+        hold_episodes.append(bool(max_run >= int(target_hold_consecutive_steps)))
+        mean_distances.append(float(np.mean(distances)))
+        p50_distances.append(float(np.median(distances)))
+        final_distances.append(float(distances[-1]))
+    return {
+        "target_hold_consecutive_steps": int(target_hold_consecutive_steps),
+        "target_success_step_rate": float(np.mean(success_step_rates)) if success_step_rates else 0.0,
+        "target_hold_episode_rate": float(np.mean(hold_episodes)) if hold_episodes else 0.0,
+        "target_hold_max_consecutive_steps": float(np.mean(max_consecutive_steps)) if max_consecutive_steps else 0.0,
+        "mean_cube_to_target_m": float(np.mean(mean_distances)) if mean_distances else 0.0,
+        "p50_cube_to_target_m": float(np.median(p50_distances)) if p50_distances else 0.0,
+        "final_cube_to_target_m": float(np.mean(final_distances)) if final_distances else 0.0,
+    }
+
+
+def _max_consecutive_true(values: np.ndarray) -> int:
+    bool_values = np.asarray(values, dtype=bool).reshape(-1)
+    max_run = 0
+    current_run = 0
+    for value in bool_values:
+        if value:
+            current_run += 1
+            max_run = max(max_run, current_run)
+        else:
+            current_run = 0
+    return int(max_run)
 
 
 def _as_episode_proprio(proprios: np.ndarray) -> np.ndarray:

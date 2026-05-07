@@ -183,6 +183,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-overlift-penalty-scale", dest="target_overlift_penalty_scale", type=float, default=0.0)
     parser.add_argument("--target-overlift-penalty-stages", dest="target_overlift_penalty_stages", default="")
     parser.add_argument("--target-overlift-margin-m", dest="target_overlift_margin_m", type=float, default=0.05)
+    parser.add_argument("--target-success-bonus-stage-scales", dest="target_success_bonus_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-success-threshold-m", dest="target_success_threshold_m", type=float, default=0.020)
+    parser.add_argument("--target-away-penalty-stage-scales", dest="target_away_penalty_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-away-deadband-m", dest="target_away_deadband_m", type=float, default=0.0001)
+    parser.add_argument("--target-away-clip-m", dest="target_away_clip_m", type=float, default=0.010)
+    parser.add_argument("--near-target-action-penalty-stage-scales", dest="near_target_action_penalty_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--near-target-action-threshold-m", dest="near_target_action_threshold_m", type=float, default=0.040)
+    parser.add_argument("--near-target-action-band-m", dest="near_target_action_band_m", type=float, default=0.020)
+    parser.add_argument("--near-target-rotation-weight", dest="near_target_rotation_weight", type=float, default=1.0)
+    parser.add_argument("--target-z-alignment-penalty-stage-scales", dest="target_z_alignment_penalty_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-z-alignment-clip-m", dest="target_z_alignment_clip_m", type=float, default=0.050)
+    parser.add_argument("--target-hold-consecutive-steps", dest="target_hold_consecutive_steps", type=int, default=5)
     parser.add_argument("--vertical-alignment-penalty-scale", dest="vertical_alignment_penalty_scale", type=float, default=0.1)
     parser.add_argument("--vertical-alignment-penalty-stages", dest="vertical_alignment_penalty_stages", default="reach")
     parser.add_argument("--vertical-alignment-deadband-m", dest="vertical_alignment_deadband_m", type=float, default=0.04)
@@ -306,6 +318,18 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         target_overlift_penalty_scale=args.target_overlift_penalty_scale,
         target_overlift_penalty_stages=parse_stage_names(args.target_overlift_penalty_stages),
         target_overlift_margin_m=args.target_overlift_margin_m,
+        target_success_bonus_stage_scales=parse_stage_scales(args.target_success_bonus_stage_scales),
+        target_success_threshold_m=args.target_success_threshold_m,
+        target_away_penalty_stage_scales=parse_stage_scales(args.target_away_penalty_stage_scales),
+        target_away_deadband_m=args.target_away_deadband_m,
+        target_away_clip_m=args.target_away_clip_m,
+        near_target_action_penalty_stage_scales=parse_stage_scales(args.near_target_action_penalty_stage_scales),
+        near_target_action_threshold_m=args.near_target_action_threshold_m,
+        near_target_action_band_m=args.near_target_action_band_m,
+        near_target_rotation_weight=args.near_target_rotation_weight,
+        target_z_alignment_penalty_stage_scales=parse_stage_scales(args.target_z_alignment_penalty_stage_scales),
+        target_z_alignment_clip_m=args.target_z_alignment_clip_m,
+        target_hold_consecutive_steps=args.target_hold_consecutive_steps,
         vertical_alignment_penalty_scale=args.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=parse_stage_names(args.vertical_alignment_penalty_stages),
         vertical_alignment_deadband_m=args.vertical_alignment_deadband_m,
@@ -514,6 +538,10 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
     parse_stage_scales(args.tiny_lift_delta_stage_scales)
     parse_stage_scales(args.target_progress_stage_scales)
     parse_stage_scales(args.target_dwell_stage_scales)
+    parse_stage_scales(args.target_success_bonus_stage_scales)
+    parse_stage_scales(args.target_away_penalty_stage_scales)
+    parse_stage_scales(args.near_target_action_penalty_stage_scales)
+    parse_stage_scales(args.target_z_alignment_penalty_stage_scales)
     parse_stage_names(args.target_overlift_penalty_stages)
     parse_stage_names(args.vertical_alignment_penalty_stages)
     parse_stage_names(args.rotation_action_penalty_stages)
@@ -549,6 +577,22 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--target-overlift-penalty-scale must be non-negative")
     if args.target_overlift_margin_m <= 0.0:
         raise ValueError("--target-overlift-margin-m must be positive")
+    if args.target_success_threshold_m <= 0.0:
+        raise ValueError("--target-success-threshold-m must be positive")
+    if args.target_away_deadband_m < 0.0:
+        raise ValueError("--target-away-deadband-m must be non-negative")
+    if args.target_away_clip_m <= 0.0:
+        raise ValueError("--target-away-clip-m must be positive")
+    if args.near_target_action_threshold_m <= 0.0:
+        raise ValueError("--near-target-action-threshold-m must be positive")
+    if args.near_target_action_band_m <= 0.0:
+        raise ValueError("--near-target-action-band-m must be positive")
+    if args.near_target_rotation_weight < 0.0:
+        raise ValueError("--near-target-rotation-weight must be non-negative")
+    if args.target_z_alignment_clip_m <= 0.0:
+        raise ValueError("--target-z-alignment-clip-m must be positive")
+    if args.target_hold_consecutive_steps <= 0:
+        raise ValueError("--target-hold-consecutive-steps must be positive")
     if args.vertical_alignment_penalty_scale < 0.0:
         raise ValueError("--vertical-alignment-penalty-scale must be non-negative")
     if args.vertical_alignment_deadband_m < 0.0:

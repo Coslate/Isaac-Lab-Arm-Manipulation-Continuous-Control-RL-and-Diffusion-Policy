@@ -19,6 +19,7 @@ from eval import (
     save_metrics_json,
     successful_steps_from_flags,
     successful_steps_from_proprio,
+    target_hold_metrics,
     target_positions_from_proprio,
 )
 from policies import RandomPolicy
@@ -84,6 +85,13 @@ def test_evaluate_rollout_dataset_computes_project_success_rate(tmp_path) -> Non
         "closest_target_approach_by_episode",
         "target_positions_base_m_by_episode",
         "target_position_constant_by_episode",
+        "target_hold_consecutive_steps",
+        "target_success_step_rate",
+        "target_hold_episode_rate",
+        "target_hold_max_consecutive_steps",
+        "mean_cube_to_target_m",
+        "p50_cube_to_target_m",
+        "final_cube_to_target_m",
         "target_debug_camera_name",
         "target_debug_pixel_source",
     }
@@ -118,6 +126,12 @@ def test_evaluate_rollout_dataset_computes_project_success_rate(tmp_path) -> Non
     assert set(payload["target_positions_base_m_by_episode"]) == {"episode_000", "episode_001"}
     assert payload["target_positions_base_m_by_episode"]["episode_000"] == pytest.approx([0.45, 0.0, 0.25])
     assert payload["target_position_constant_by_episode"] is True
+    assert payload["target_success_step_rate"] == pytest.approx(1.0 / 6.0)
+    assert payload["target_hold_episode_rate"] == pytest.approx(0.0)
+    assert payload["target_hold_max_consecutive_steps"] == pytest.approx(0.5)
+    assert payload["mean_cube_to_target_m"] == pytest.approx(((0.05 + 0.01 + 0.04) / 3.0 + (0.03 + 0.025) / 2.0) / 2.0)
+    assert payload["p50_cube_to_target_m"] == pytest.approx(np.median([0.04, 0.0275]))
+    assert payload["final_cube_to_target_m"] == pytest.approx((0.04 + 0.025) / 2.0)
     assert payload["target_debug_pixel_source"] == "not_available"
 
 
@@ -151,6 +165,32 @@ def test_explicit_success_flags_can_require_consecutive_threshold_steps() -> Non
     assert successful_steps_from_flags(np.array([False, True, False]))
     assert not successful_steps_from_flags(np.array([True, False, True]), consecutive_success_steps=2)
     assert successful_steps_from_flags(np.array([False, True, True]), consecutive_success_steps=2)
+
+
+def test_target_hold_metrics_are_stricter_than_any_step_success() -> None:
+    touch_once = _episode(
+        rewards=[0.0, 0.0, 0.0],
+        actions=np.zeros((3, 7), dtype=np.float32),
+        cube_to_target=np.array([[0.03, 0.0, 0.0], [0.01, 0.0, 0.0], [0.03, 0.0, 0.0]]),
+    )
+    held = _episode(
+        rewards=[0.0, 0.0, 0.0],
+        actions=np.zeros((3, 7), dtype=np.float32),
+        cube_to_target=np.array([[0.03, 0.0, 0.0], [0.01, 0.0, 0.0], [0.015, 0.0, 0.0]]),
+    )
+
+    metrics = target_hold_metrics(
+        [touch_once, held],
+        success_threshold_m=0.02,
+        target_hold_consecutive_steps=2,
+    )
+
+    assert metrics["target_success_step_rate"] == pytest.approx(0.5)
+    assert metrics["target_hold_episode_rate"] == pytest.approx(0.5)
+    assert metrics["target_hold_max_consecutive_steps"] == pytest.approx(1.5)
+    assert metrics["mean_cube_to_target_m"] == pytest.approx(((0.03 + 0.01 + 0.03) / 3.0 + (0.03 + 0.01 + 0.015) / 3.0) / 2.0)
+    assert metrics["p50_cube_to_target_m"] == pytest.approx(np.median([0.03, 0.015]))
+    assert metrics["final_cube_to_target_m"] == pytest.approx((0.03 + 0.015) / 2.0)
 
 
 def test_mean_action_jerk_for_constant_and_changing_actions() -> None:

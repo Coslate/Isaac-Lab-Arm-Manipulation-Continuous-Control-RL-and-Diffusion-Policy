@@ -165,6 +165,41 @@ def test_evaluate_episodes_reports_lift_aware_diagnostics():
     assert metrics.gripper_close_near_cube_rate == pytest.approx(0.25)
 
 
+def test_evaluate_episodes_reports_target_hold_and_distance_distribution_metrics():
+    length = 5
+    proprios = np.zeros((length, PROPRIO_DIM), dtype=np.float32)
+    proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.05, 0.0, 0.0], [0.015, 0.0, 0.0], [0.010, 0.0, 0.0], [0.030, 0.0, 0.0], [0.018, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    episode = EpisodeData(
+        images=np.zeros((length, *IMAGE_SHAPE), dtype=np.uint8),
+        proprios=proprios,
+        actions=np.zeros((length, 7), dtype=np.float32),
+        rewards=np.zeros((length,), dtype=np.float32),
+        dones=np.array([False, False, False, False, True]),
+        truncateds=np.zeros((length,), dtype=bool),
+        metadata=EpisodeMetadata(policy_name="fake_sac", env_backend="fake"),
+    )
+
+    metrics = evaluate_episodes(
+        [episode],
+        agent_type="sac",
+        checkpoint="/tmp/fake.pt",
+        num_env_steps=1,
+        success_threshold_m=0.02,
+        target_hold_consecutive_steps=2,
+    )
+
+    assert metrics.success_rate == pytest.approx(1.0)
+    assert metrics.target_success_step_rate == pytest.approx(3.0 / 5.0)
+    assert metrics.target_hold_episode_rate == pytest.approx(1.0)
+    assert metrics.target_hold_max_consecutive_steps == pytest.approx(2.0)
+    assert metrics.mean_cube_to_target_m == pytest.approx((0.05 + 0.015 + 0.010 + 0.030 + 0.018) / 5.0)
+    assert metrics.p50_cube_to_target_m == pytest.approx(0.018)
+    assert metrics.final_cube_to_target_m == pytest.approx(0.018)
+
+
 # ---------------------------------------------------------------------------
 # CLI: SAC + TD3 fake-checkpoint eval round trip
 # ---------------------------------------------------------------------------
@@ -200,6 +235,12 @@ def test_eval_sac_checkpoint_writes_required_metrics_fields(tmp_path, monkeypatc
         "success_threshold_m",
         "success_source",
         "episode_successes",
+        "target_success_step_rate",
+        "target_hold_episode_rate",
+        "target_hold_max_consecutive_steps",
+        "mean_cube_to_target_m",
+        "p50_cube_to_target_m",
+        "final_cube_to_target_m",
     }
     missing = required - payload.keys()
     assert not missing, f"metrics JSON missing fields: {missing}"

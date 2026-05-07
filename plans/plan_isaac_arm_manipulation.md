@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-05-03. The repository has completed the interview/demo vertical slice from
+Updated 2026-05-06. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -74,7 +74,13 @@ requiring an actual grasp or lift. On 2026-05-03, immediately after the v9b revi
 proxy reward and its CLI/log fields were removed from the current code path;
 `grip_attempt` and `grip_effect` remain as diagnostics/gates only. The next lift-focused
 reward change should teach actual grasp-lift transitions instead of adding another close-command
-reward. The remaining
+reward. The v11 run confirmed that SAC can learn the full reach -> grip -> lift -> target
+chain, but fresh checkpoint evaluation and GIF/MP4 review show that target-phase success is
+still unstable: `final.pt` outperformed `best.pt`, several failures reached within roughly
+3-5 cm of the target, and the policy often pulled/rotated the lifted cube near the reticle
+instead of settling inside the 2 cm success region. PR6.15 records the next planned code-level
+fix: target-success-aligned reward shaping, near-target action stabilization, z-alignment
+penalty, target-hold metrics, and a stability-aware best-checkpoint comparator. The remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -126,6 +132,8 @@ Implementation permission rule:
 | PR 6.12 - Reach dwell shaping + robust-reach gate | Done | `reach_dwell_proxy = exp(-ee_to_cube_distance / sigma_m)`, dwell/consecutive reach metrics, SAC/TD3 CLI flags, stage-0 dwell-mode gate, optional consecutive near-cube gate, and small stage-decayed dwell support in grip/lift stages | PR6.12 targeted slice -> `75 passed`; full pytest in `isaac_arm` -> `340 passed, 1 skipped` | Next SAC run should set `--reach-progress-stage-scales 0.0,0.0,0.0,0.0`, enable `--reach-dwell-stage-scales 0.8,0.3,0.05,0.0`, and use `--curriculum-gate-reach-metric dwell_rate` plus a nonzero consecutive-step gate. |
 | Post-v9b grip-proxy cleanup | Done on 2026-05-03 | Removed `grip_proxy` reward shaping, SAC/TD3 CLI flags, train/eval progress logs, RUN command flags, and tests that treated near-cube close commands as a reward term | Full pytest in `isaac_arm` -> `339 passed, 1 skipped` | Keep `grip_attempt` / `grip_effect` as diagnostics and curriculum gates; do not reintroduce reward for close commands unless it verifies a real grasp or lift. |
 | PR 6.13 - Post-v9b grasp-like + tiny-lift shaping | Done on 2026-05-03 | Replaces close-command reward hacking with opt-in grasp-like finger-width evidence, opt-in tiny step-to-step cube-lift reward, finger-width W&B diagnostics, and a recommended next-run stage-2 dwell removal | Targeted PR6.13 slice -> `118 passed`; full pytest in `isaac_arm` -> `346 passed, 1 skipped` | Tuned/improvement PR, not a controlled rerun. Intended to teach "near cube -> stable non-empty grasp-like closure -> first millimeters of cube lift" without reintroducing `grip_proxy`. |
+| PR 6.14 - Post-v10 target-approach shaping + stage-aware LR restart | Planned | Target progress/dwell shaping, target over-lift guardrail, target-aware stage/global best mode, ability-based target-approach eval gate, optional curriculum-advance LR restart | Planned tests: `tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`, `tests/test_sac_continuous.py`, `tests/test_td3_continuous.py`, optional `tests/test_checkpoint_manager.py` | Documentation-first until implementation is explicitly requested; no forced curriculum advancement. |
+| PR 6.15 - Post-v11 target success + stability shaping | Done on 2026-05-06 | Target-success bonus aligned to 2 cm eval success, target-away penalty, near-target action penalty, target z-alignment penalty, target-hold metrics, stability-aware best-checkpoint mode | Targeted PR6.15 slice -> `158 passed`; SAC/TD3 continuous slice -> `37 passed`; full pytest in `isaac_arm` -> `390 passed, 1 skipped` | Tuned/improvement PR after v11. Goal: convert "gets near target" into "enters and quietly holds target." |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -5690,6 +5698,612 @@ Implementation commit body:
 Add target progress/dwell reward shaping, a small target over-lift guardrail, target-aware
 stage best checkpoint ranking, and opt-in LR scheduler restarts on curriculum advancement.
 Keep curriculum advancement ability-based and avoid any forced stage max cap.
+```
+
+---
+
+### PR 6.15 - Post-v11 Target Success + Stability Shaping
+
+**Status**
+
+Done on 2026-05-06 after the v11 `sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001`
+run and follow-up checkpoint evaluation. This is a tuned/improvement PR, not a controlled
+rerun.
+
+Verification:
+
+```text
+Targeted PR6.15 slice:
+  158 passed
+
+SAC/TD3 continuous slice:
+  37 passed
+
+Full pytest in isaac_arm:
+  390 passed, 1 skipped
+```
+
+**Why This PR Exists**
+
+PR6.14 made the target direction visible to the reward and checkpoint selector. The v11 run
+then showed the next failure mode: the policy can execute the whole skill chain, but it does
+not reliably settle the lifted cube inside the final 2 cm success region.
+
+Observed v11 evidence:
+
+```text
+best.pt formal eval:
+  success_rate = 1/32 = 0.03125
+  mean_return = 40.63
+  min_cube_to_target_m = 0.0095
+
+final.pt formal eval:
+  success_rate = 4/32 = 0.125
+  mean_return = 46.23
+  min_cube_to_target_m = 0.0068
+
+best visual env0..7:
+  0/8 success
+
+final visual env0..9:
+  3/10 success
+```
+
+Interpretation:
+- `final.pt` is better than the saved `best.pt`, so the current best-checkpoint comparator is
+  not robust enough for the target phase;
+- many fresh rollout failures reach about 3-5 cm from the target and still receive high return;
+- the policy often keeps moving, rotating, or pulling after the cube is near the target;
+- the current target dwell term is too forgiving when `sigma_m=0.08`, because 3-5 cm still
+  receives a substantial dense reward;
+- target success is currently measured by the evaluator as `norm(proprio[:, 30:33]) <= 0.02`,
+  but the training reward does not give a strong, explicit, stable bonus for entering and
+  holding that exact region.
+
+This PR should convert "gets near the target" into "enters the success region and quietly
+holds it."
+
+**Non-Goals**
+
+Do not weaken the formal success definition. The success threshold remains `0.02m` unless a
+separate evaluation-method PR changes it.
+
+Do not reintroduce close-command-only grip rewards. This PR is target-phase shaping only.
+
+Do not remove PR6.14 target progress/dwell terms. PR6.15 adds success-aligned and stability
+terms on top of them, with defaults disabled for backward compatibility.
+
+Do not make fresh visual rollout the online training gate. Fresh PR12a visual rollout remains
+a post-training robustness check; train-time checkpoint selection still uses logged eval metrics.
+
+**Design Position**
+
+Keep:
+- PR6.13 grasp-like and tiny-lift shaping;
+- PR6.14 target progress/dwell/overlift shaping;
+- PR6.10/PR6.12 eval-dual-gated curriculum;
+- PR11a formal checkpoint eval success definition;
+- PR12a fresh visual rollout review after training.
+
+Change:
+- add an explicit target-success bonus aligned with the 2 cm eval success threshold;
+- penalize moving away from target after lift;
+- penalize unnecessary translation/rotation actions near target;
+- add true cube-target z-alignment penalty for both over-target and under-target errors;
+- log target-hold metrics that measure staying inside the success region for multiple steps;
+- add a stability-aware best-checkpoint mode that no longer lets `max_cube_lift_m` dominate
+  stage3 selection.
+
+**Code Change 1: Target-Success Bonus**
+
+Add an opt-in reward term that directly matches the evaluator's success condition.
+
+Use the existing proprio contract:
+
+```text
+cube_to_target_vec = proprio[:, 30:33]          # target_pos_base - cube_pos_base
+cube_to_target_dist = norm(cube_to_target_vec)
+```
+
+Formula:
+
+```text
+next_dist = norm(next_proprio[:, 30:33])
+lift_context = compute_lift_context(next_proprio, cube_reset_z)
+
+target_success_bonus =
+  lift_context * 1[next_dist <= target_success_threshold_m]
+```
+
+Recommended defaults:
+
+```text
+target_success_threshold_m = 0.020
+target_success_bonus_stage_scales = 0.0,0.0,0.5,2.0
+```
+
+Rationale:
+- the reward should clearly distinguish 1.9 cm from 3-5 cm;
+- a per-step bonus naturally rewards staying in the target region, not just touching it once;
+- stage2 gets a small preview after lift, while stage3 gets the main success pressure.
+
+**Code Change 2: Target-Away Penalty**
+
+Current `target_progress_proxy` only rewards getting closer; it does not punish getting farther.
+Add the negative counterpart after lift:
+
+```text
+prev_dist = norm(proprio[:, 30:33])
+next_dist = norm(next_proprio[:, 30:33])
+
+target_away_penalty =
+  -lift_context
+  * clip((next_dist - prev_dist - target_away_deadband_m)
+         / target_away_clip_m, 0, 1)
+```
+
+Recommended defaults:
+
+```text
+target_away_deadband_m = 0.0001
+target_away_clip_m = 0.010
+target_away_penalty_stage_scales = 0.0,0.0,0.1,0.4
+```
+
+Rationale:
+- near-target dithering often alternates between small progress and small regressions;
+- positive-only progress shaping can still make oscillation acceptable;
+- the penalty teaches that moving the lifted cube away from the target is actively bad.
+
+**Code Change 3: Near-Target Action Penalty**
+
+Add a stage-local action penalty that turns on only when the lifted cube is close to target.
+This should penalize arm motion, not gripper closure.
+
+```text
+near_target_context =
+  lift_context
+  * clip((near_target_action_threshold_m + near_target_action_band_m - next_dist)
+         / near_target_action_band_m, 0, 1)
+
+translation_norm = norm(action[:, 0:3])
+rotation_norm = norm(action[:, 3:6])
+
+near_target_action_penalty =
+  -near_target_context
+  * (translation_norm + near_target_rotation_weight * rotation_norm)
+```
+
+Recommended defaults:
+
+```text
+near_target_action_threshold_m = 0.040
+near_target_action_band_m = 0.020
+near_target_rotation_weight = 1.0
+near_target_action_penalty_stage_scales = 0.0,0.0,0.0,0.03
+```
+
+Rationale:
+- the policy should still move aggressively when far from target;
+- once the cube is within about 4 cm, unnecessary translation/rotation often causes the
+  pull/oscillation failure seen in v11 GIFs;
+- the gripper channel is excluded so the policy can keep holding the cube.
+
+**Code Change 4: Target Z-Alignment Penalty**
+
+The existing `vertical_alignment_penalty` aligns EE-to-cube z and was configured only for
+stage0 reach. The existing `target_overlift_penalty` only penalizes being above target height
+by more than a margin. PR6.15 adds true cube-target z alignment:
+
+```text
+next_cube_to_target_z = next_proprio[:, 32]
+
+target_z_alignment_penalty =
+  -lift_context
+  * clip(abs(next_cube_to_target_z) / target_z_alignment_clip_m, 0, 1)
+```
+
+Recommended defaults:
+
+```text
+target_z_alignment_clip_m = 0.050
+target_z_alignment_penalty_stage_scales = 0.0,0.0,0.1,0.3
+```
+
+Rationale:
+- penalizes both over-target and under-target z error;
+- complements the 3D dwell reward with a direct vertical stabilization signal;
+- reduces high/low target tugging after the cube is already lifted.
+
+**Reward Formula Update**
+
+The shaped reward becomes:
+
+```text
+shaped =
+  PR6.14 shaped reward
+  + target_success_bonus_stage_scale[stage] * target_success_bonus
+  + target_away_penalty_stage_scale[stage] * target_away_penalty
+  + near_target_action_penalty_stage_scale[stage] * near_target_action_penalty
+  + target_z_alignment_penalty_stage_scale[stage] * target_z_alignment_penalty
+```
+
+Add train/eval reward logs:
+
+```text
+reward/train/target_success_bonus
+reward/train/target_away_penalty
+reward/train/near_target_action_penalty
+reward/train/target_z_alignment_penalty
+
+reward/eval_rollout/target_success_bonus
+reward/eval_rollout/target_away_penalty
+reward/eval_rollout/near_target_action_penalty
+reward/eval_rollout/target_z_alignment_penalty
+```
+
+Defaults must preserve current PR6.14 behavior exactly when the new stage scales are all zero.
+
+**Code Change 5: Target-Hold Metrics**
+
+Add rollout/eval metrics that expose whether the policy merely touches target or holds it.
+
+Per-step condition:
+
+```text
+target_success_step = norm(proprio[:, 30:33]) <= target_success_threshold_m
+```
+
+Episode metrics:
+
+```text
+target_success_step_rate =
+  fraction of active episode steps inside target_success_threshold_m
+
+target_hold_max_consecutive_steps =
+  max consecutive run of target_success_step
+
+target_hold_episode =
+  target_hold_max_consecutive_steps >= target_hold_consecutive_steps
+
+target_hold_episode_rate =
+  mean(target_hold_episode over rollout window)
+```
+
+Distance distribution metrics:
+
+```text
+mean_cube_to_target_m
+p50_cube_to_target_m
+final_cube_to_target_m
+min_cube_to_target_m       # keep existing
+```
+
+Recommended default for best-checkpoint stability:
+
+```text
+target_hold_consecutive_steps = 5
+```
+
+Do not change formal `success_rate` semantics in PR11a. `success_rate` remains the current
+episode-any-step 2 cm success definition. `target_hold_episode_rate` is an additional stricter
+diagnostic and checkpoint-ranking signal.
+
+Log keys:
+
+```text
+eval_rollout/target_success_step_rate
+eval_rollout/target_hold_episode_rate
+eval_rollout/target_hold_max_consecutive_steps
+eval_rollout/mean_cube_to_target_m
+eval_rollout/p50_cube_to_target_m
+eval_rollout/final_cube_to_target_m
+
+train_rollout/target_success_step_rate
+train_rollout/target_hold_episode_rate
+train_rollout/target_hold_max_consecutive_steps
+train_rollout/mean_cube_to_target_m
+train_rollout/p50_cube_to_target_m
+train_rollout/final_cube_to_target_m
+```
+
+PR11a checkpoint eval metrics JSON should include the same target-hold and distance-distribution
+fields for formal post-training comparison.
+
+**Code Change 6: Stability-Aware Best Checkpoint Selection**
+
+Add a new `--save-best-by` mode rather than changing old modes in place:
+
+```text
+stage_aware:target_stability_success_return
+```
+
+Keep these existing modes unchanged:
+
+```text
+stage_aware:reach_lift_success_return
+stage_aware:reach_grip_lift_target_return
+```
+
+Stage0/1/2 can reuse the PR6.14 stage-aware target comparator. Stage3 must change priority:
+
+```text
+stage3 comparator:
+  eval_rollout/success_rate
+  eval_rollout/target_hold_episode_rate
+  -eval_rollout/p50_cube_to_target_m
+  -eval_rollout/mean_action_jerk
+  eval_rollout/mean_return
+```
+
+Global comparator for this mode:
+
+```text
+eval_rollout/success_rate
+eval_rollout/target_hold_episode_rate
+-eval_rollout/p50_cube_to_target_m
+-eval_rollout/mean_action_jerk
+eval_rollout/mean_return
+```
+
+Rationale:
+- `max_cube_lift_m` should not dominate after stage3 is reached;
+- if success ties, prefer the checkpoint that holds target longer;
+- if hold ties, prefer lower typical cube-to-target error, not a single lucky min;
+- if distance ties, prefer smoother action;
+- return remains a final tie-breaker, not the main target-success selector.
+
+If `eval_rollout/target_hold_episode_rate`, `eval_rollout/p50_cube_to_target_m`, or
+`eval_rollout/mean_action_jerk` is missing, the new comparator should fail readably in tests
+when the mode is explicitly requested. Do not silently fall back to `max_cube_lift_m`.
+
+**CLI Contract**
+
+Add SAC and TD3 flags:
+
+```text
+--target-success-bonus-stage-scales FLOAT,FLOAT,FLOAT,FLOAT    default: 0.0,0.0,0.0,0.0
+--target-success-threshold-m FLOAT                             default: 0.020
+
+--target-away-penalty-stage-scales FLOAT,FLOAT,FLOAT,FLOAT     default: 0.0,0.0,0.0,0.0
+--target-away-deadband-m FLOAT                                 default: 0.0001
+--target-away-clip-m FLOAT                                     default: 0.010
+
+--near-target-action-penalty-stage-scales FLOAT,FLOAT,FLOAT,FLOAT default: 0.0,0.0,0.0,0.0
+--near-target-action-threshold-m FLOAT                         default: 0.040
+--near-target-action-band-m FLOAT                              default: 0.020
+--near-target-rotation-weight FLOAT                            default: 1.0
+
+--target-z-alignment-penalty-stage-scales FLOAT,FLOAT,FLOAT,FLOAT default: 0.0,0.0,0.0,0.0
+--target-z-alignment-clip-m FLOAT                              default: 0.050
+
+--target-hold-consecutive-steps INT                            default: 5
+```
+
+Validation:
+- each stage-scale flag must contain exactly four nonnegative values;
+- thresholds, clip values, bands, and success threshold must be positive;
+- deadband must be nonnegative;
+- rotation weight must be nonnegative;
+- `target_hold_consecutive_steps` must be positive;
+- missing `next_proprios` or `cube_reset_z` yields zeros for reward terms when defaults are
+  disabled, preserving smoke/default tests.
+
+**Recommended Use After Implementation**
+
+This next run is:
+
+```text
+tuned/improvement run after v11
+```
+
+Do not present the final long command until implementation lands and parser tests verify the
+actual CLI names. The expected high-level changes from v11 are:
+
+```text
+add:
+  --target-success-bonus-stage-scales 0.0,0.0,0.5,2.0
+  --target-success-threshold-m 0.020
+
+  --target-away-penalty-stage-scales 0.0,0.0,0.1,0.4
+  --target-away-deadband-m 0.0001
+  --target-away-clip-m 0.010
+
+  --near-target-action-penalty-stage-scales 0.0,0.0,0.0,0.03
+  --near-target-action-threshold-m 0.040
+  --near-target-action-band-m 0.020
+  --near-target-rotation-weight 1.0
+
+  --target-z-alignment-penalty-stage-scales 0.0,0.0,0.1,0.3
+  --target-z-alignment-clip-m 0.050
+
+  --target-hold-consecutive-steps 5
+
+change:
+  --save-best-by stage_aware:reach_grip_lift_target_return
+  -> --save-best-by stage_aware:target_stability_success_return
+
+likely tune:
+  --target-dwell-sigma-m 0.08
+  -> --target-dwell-sigma-m 0.04
+
+  --target-dwell-stage-scales 0.0,0.0,0.2,0.8
+  -> --target-dwell-stage-scales 0.0,0.0,0.4,1.6
+```
+
+Keep from v11 unless later analysis changes it:
+
+```text
+--curriculum-gating eval_dual_gate
+--curriculum-gate-reach-metric dwell_rate
+--curriculum-gate-reach-min-consecutive-steps 20
+--curriculum-gate-consecutive-eval-passes 3
+--curriculum-gate-min-stage-env-steps 50000
+--grasp-like-stage-scales 0.0,0.4,0.2,0.0
+--tiny-lift-delta-stage-scales 0.0,0.5,1.0,0.0
+--target-progress-stage-scales 0.0,0.0,0.3,1.0
+--target-overlift-penalty-stages stock_like
+```
+
+Suggested aligned run name:
+
+```text
+sac_franka_2m5_seed0_v12_targetstability
+```
+
+**Pytest Coverage Matrix**
+
+Every new behavior in this PR must have targeted unit coverage before any long Isaac run.
+
+`tests/test_reward_curriculum.py`:
+- `compute_target_success_bonus` returns one for lifted samples inside `target_success_threshold_m`.
+- `compute_target_success_bonus` returns zero outside the threshold.
+- `compute_target_success_bonus` is gated off before lift context becomes positive.
+- target success bonus stage scales apply only to configured stages.
+- `compute_target_away_penalty` is zero when distance decreases.
+- `compute_target_away_penalty` is zero for distance increases below `target_away_deadband_m`.
+- `compute_target_away_penalty` is negative when lifted cube distance increases beyond deadband.
+- target-away penalty clips at `target_away_clip_m`.
+- `compute_near_target_action_penalty` is zero when far from target.
+- `compute_near_target_action_penalty` is zero before lift context.
+- near-target action penalty excludes the gripper action dimension.
+- near-target action penalty increases in magnitude with translation norm.
+- near-target action penalty increases in magnitude with rotation norm according to
+  `near_target_rotation_weight`.
+- near-target context ramps across `near_target_action_band_m`.
+- `compute_target_z_alignment_penalty` is zero when cube-target z error is zero.
+- target z-alignment penalty is negative for positive z error and negative z error.
+- target z-alignment penalty clips at `target_z_alignment_clip_m`.
+- disabled PR6.15 stage scales preserve PR6.14 shaped reward exactly.
+- enabled terms are included in `shape_rewards` with the expected signed contribution.
+- reward logs include all four new train keys.
+- eval reward-summary path includes all four new eval rollout keys.
+- invalid stage-scale length, negative stage scale, nonpositive thresholds/bands/clips, negative
+  deadband, negative rotation weight, and nonpositive hold steps fail validation.
+
+`tests/test_rollout_metrics.py` (new) or the existing rollout-metrics test file:
+- target success step rate equals the fraction of steps with `norm(proprio[:, 30:33]) <= 0.02`.
+- target hold max consecutive steps is computed correctly for no-hit, one-hit, and multi-run
+  episodes.
+- target hold episode is true only when max consecutive success steps reaches
+  `target_hold_consecutive_steps`.
+- target hold episode rate averages across multiple lanes/episodes.
+- `mean_cube_to_target_m`, `p50_cube_to_target_m`, `final_cube_to_target_m`, and existing
+  `min_cube_to_target_m` are computed from the same proprio slice.
+- metrics handle empty/incomplete episode buffers readably.
+
+`tests/test_eval_metrics.py` and `tests/test_eval_sac_td3_checkpoints.py`:
+- PR11-lite/PR11a metrics JSON includes target-hold and cube-to-target distribution fields.
+- formal `success_rate` remains unchanged and still uses any-step 2 cm success.
+- `target_hold_episode_rate` is stricter than or equal to `success_rate` when
+  `target_hold_consecutive_steps > 1`.
+- fake SAC and TD3 checkpoint eval writes the new fields for deterministic fake rollouts.
+- legacy metrics payloads without new fields fail only when a new stability-aware comparator or
+  explicit validation mode requires them.
+
+`tests/test_training_logger_and_scheduler.py`:
+- SAC parser accepts every PR6.15 CLI flag.
+- TD3 parser accepts every PR6.15 CLI flag.
+- parser validation rejects all invalid PR6.15 values listed above.
+- JSONL/TensorBoard/W&B logger path receives the new reward keys.
+- progress-log formatter maps the new reward keys to readable short names.
+- fake same-env eval lanes log target-hold metrics after clean eval episodes.
+- default flags keep PR6.14 reward and logging behavior unchanged except for optional zero-valued
+  metrics that are explicitly documented.
+
+`tests/test_checkpoint_manager.py`:
+- `stage_aware:target_stability_success_return` is accepted as a `--save-best-by` mode.
+- the new mode rejects missing `eval_rollout/target_hold_episode_rate`.
+- the new mode rejects missing `eval_rollout/p50_cube_to_target_m`.
+- the new mode rejects missing `eval_rollout/mean_action_jerk`.
+- stage3 comparator prefers higher `success_rate` first.
+- when success ties, stage3 comparator prefers higher `target_hold_episode_rate`.
+- when hold ties, stage3 comparator prefers lower `p50_cube_to_target_m`.
+- when p50 distance ties, stage3 comparator prefers lower `mean_action_jerk`.
+- when jerk ties, stage3 comparator uses `mean_return`.
+- higher `max_cube_lift_m` alone does not win stage3 when success/hold/distance/jerk are worse.
+- old checkpoint modes remain byte-for-byte behavior-compatible in comparator tests.
+
+`tests/test_sac_continuous.py` and `tests/test_td3_continuous.py`:
+- fake backend smoke train completes with all PR6.15 defaults disabled.
+- fake backend smoke train completes with PR6.15 target-success/stability shaping enabled.
+- checkpoint metadata stores PR6.15 hparams when nondefault flags are used.
+- loading a checkpoint with PR6.15 hparams preserves eval/checkpoint-policy behavior.
+
+`tests/test_visual_sac_td3_checkpoints.py`:
+- `record_gif_continuous` metrics payload includes target-hold and cube-to-target distribution
+  fields for the recorded single lane.
+- external metrics-payload validation accepts matching PR6.15 fields.
+- external metrics-payload validation rejects mismatched checkpoint/seed/settle contracts as
+  before; PR6.15 must not weaken PR12a safety checks.
+
+**Test Commands**
+
+Targeted verification:
+
+This command assumes the implementation PR adds `tests/test_rollout_metrics.py`.
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_rollout_metrics.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_checkpoint_manager.py \
+  tests/test_eval_metrics.py \
+  tests/test_eval_sac_td3_checkpoints.py \
+  tests/test_visual_sac_td3_checkpoints.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py
+```
+
+If the target-hold metrics land in an existing differently named test file, include that file
+in the targeted command and record the exact command in the implementation PR summary.
+
+Full verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+Live Isaac smoke remains opt-in and is not required for PR6.15 unit completion:
+
+```bash
+RUN_ISAAC_RUNTIME_SMOKE=1 timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_isaac_runtime_smoke.py
+```
+
+**Definition Of Done**
+
+PR6.15 is complete when:
+- all four new reward terms are implemented with defaults disabled;
+- SAC and TD3 CLI/parser/config paths expose and validate the new hparams;
+- train/eval reward logs expose each new term;
+- rollout/eval metrics expose target-hold and cube-to-target distribution fields;
+- the new stability-aware checkpoint mode is implemented without changing older modes;
+- targeted tests cover every formula, log field, parser validation, metric, and comparator rule;
+- full pytest passes in the `isaac_arm` environment;
+- the next v12 command can be written with exact changed flags against v11.
+
+**Suggested Commit Messages**
+
+For the plan-only PR description commit:
+
+```text
+docs(plan): specify post-v11 target stability PR
+```
+
+For the later implementation commit:
+
+```text
+feat(rl): add target success and stability shaping
+```
+
+Implementation commit body:
+
+```text
+Add success-aligned target reward, target-away and near-target action penalties, cube-target
+z-alignment shaping, target-hold rollout/eval metrics, and a stability-aware best checkpoint
+mode. Keep old reward and checkpoint-selection modes backward compatible by default.
 ```
 
 ---

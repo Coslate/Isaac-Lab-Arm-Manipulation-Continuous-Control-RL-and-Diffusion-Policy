@@ -30,6 +30,7 @@ from eval.eval_loop import (
     episode_return,
     episode_success_with_source,
     mean_action_jerk,
+    target_hold_metrics,
     target_position_constant_by_episode,
     target_positions_by_episode_from_dataset,
 )
@@ -72,6 +73,13 @@ class EvalCheckpointMetrics:
     min_ee_to_cube_m: float = 0.0
     min_cube_to_target_m: float = 0.0
     gripper_close_near_cube_rate: float = 0.0
+    target_hold_consecutive_steps: int = 5
+    target_success_step_rate: float = 0.0
+    target_hold_episode_rate: float = 0.0
+    target_hold_max_consecutive_steps: float = 0.0
+    mean_cube_to_target_m: float = 0.0
+    p50_cube_to_target_m: float = 0.0
+    final_cube_to_target_m: float = 0.0
     legacy_warning: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -91,6 +99,7 @@ def evaluate_episodes(
     backend: str = "isaac",
     success_threshold_m: float = DEFAULT_SUCCESS_THRESHOLD_M,
     consecutive_success_steps: int = DEFAULT_CONSECUTIVE_SUCCESS_STEPS,
+    target_hold_consecutive_steps: int = 5,
     legacy_warning: str | None = None,
 ) -> EvalCheckpointMetrics:
     """Compute scalar metrics from in-memory checkpoint eval rollouts."""
@@ -122,6 +131,11 @@ def evaluate_episodes(
 
     target_positions_by_episode = target_positions_by_episode_from_dataset(episode_keys, episodes)
     lift_metrics = _lift_aware_metrics(episodes)
+    target_hold = target_hold_metrics(
+        episodes,
+        success_threshold_m=success_threshold_m,
+        target_hold_consecutive_steps=target_hold_consecutive_steps,
+    )
 
     return EvalCheckpointMetrics(
         agent_type=agent_type,
@@ -153,6 +167,13 @@ def evaluate_episodes(
         min_ee_to_cube_m=lift_metrics["min_ee_to_cube_m"],
         min_cube_to_target_m=lift_metrics["min_cube_to_target_m"],
         gripper_close_near_cube_rate=lift_metrics["gripper_close_near_cube_rate"],
+        target_hold_consecutive_steps=target_hold["target_hold_consecutive_steps"],
+        target_success_step_rate=target_hold["target_success_step_rate"],
+        target_hold_episode_rate=target_hold["target_hold_episode_rate"],
+        target_hold_max_consecutive_steps=target_hold["target_hold_max_consecutive_steps"],
+        mean_cube_to_target_m=target_hold["mean_cube_to_target_m"],
+        p50_cube_to_target_m=target_hold["p50_cube_to_target_m"],
+        final_cube_to_target_m=target_hold["final_cube_to_target_m"],
         legacy_warning=legacy_warning,
     )
 

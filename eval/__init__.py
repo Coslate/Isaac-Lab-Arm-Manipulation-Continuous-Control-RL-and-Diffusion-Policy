@@ -31,6 +31,7 @@ from .eval_loop import (
     successful_steps_from_flags,
     successful_steps_from_proprio,
     target_position_constant_by_episode,
+    target_hold_metrics,
     target_positions_by_episode_from_dataset,
     target_positions_from_proprio,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "successful_steps_from_flags",
     "successful_steps_from_proprio",
     "target_position_constant_by_episode",
+    "target_hold_metrics",
     "target_positions_by_episode_from_dataset",
     "target_positions_from_proprio",
     "GifRecordResult",

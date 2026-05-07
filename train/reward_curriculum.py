@@ -59,6 +59,13 @@ TARGET_PROGRESS_LIFT_GATE_M = 0.020
 TARGET_PROGRESS_LIFT_GATE_BAND_M = 0.020
 TARGET_DWELL_SIGMA_M = 0.08
 TARGET_OVERLIFT_MARGIN_M = 0.05
+TARGET_SUCCESS_THRESHOLD_M = 0.020
+TARGET_AWAY_DEADBAND_M = 0.0001
+TARGET_AWAY_CLIP_M = 0.010
+NEAR_TARGET_ACTION_THRESHOLD_M = 0.040
+NEAR_TARGET_ACTION_BAND_M = 0.020
+NEAR_TARGET_ROTATION_WEIGHT = 1.0
+TARGET_Z_ALIGNMENT_CLIP_M = 0.050
 
 
 @dataclass(frozen=True)
@@ -151,6 +158,17 @@ class RewardCurriculumConfig:
     target_overlift_penalty_scale: float = 0.0
     target_overlift_penalty_stages: tuple[str, ...] = ()
     target_overlift_margin_m: float = TARGET_OVERLIFT_MARGIN_M
+    target_success_bonus_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_success_threshold_m: float = TARGET_SUCCESS_THRESHOLD_M
+    target_away_penalty_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_away_deadband_m: float = TARGET_AWAY_DEADBAND_M
+    target_away_clip_m: float = TARGET_AWAY_CLIP_M
+    near_target_action_penalty_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    near_target_action_threshold_m: float = NEAR_TARGET_ACTION_THRESHOLD_M
+    near_target_action_band_m: float = NEAR_TARGET_ACTION_BAND_M
+    near_target_rotation_weight: float = NEAR_TARGET_ROTATION_WEIGHT
+    target_z_alignment_penalty_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_z_alignment_clip_m: float = TARGET_Z_ALIGNMENT_CLIP_M
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -222,6 +240,36 @@ class RewardCurriculumConfig:
         _validate_stage_names(self.target_overlift_penalty_stages, "target_overlift_penalty_stages")
         if self.target_overlift_margin_m <= 0.0:
             raise ValueError("target_overlift_margin_m must be positive")
+        if len(self.target_success_bonus_stage_scales) != 4:
+            raise ValueError("target_success_bonus_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_success_bonus_stage_scales):
+            raise ValueError("target_success_bonus_stage_scales must be non-negative")
+        if self.target_success_threshold_m <= 0.0:
+            raise ValueError("target_success_threshold_m must be positive")
+        if len(self.target_away_penalty_stage_scales) != 4:
+            raise ValueError("target_away_penalty_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_away_penalty_stage_scales):
+            raise ValueError("target_away_penalty_stage_scales must be non-negative")
+        if self.target_away_deadband_m < 0.0:
+            raise ValueError("target_away_deadband_m must be non-negative")
+        if self.target_away_clip_m <= 0.0:
+            raise ValueError("target_away_clip_m must be positive")
+        if len(self.near_target_action_penalty_stage_scales) != 4:
+            raise ValueError("near_target_action_penalty_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.near_target_action_penalty_stage_scales):
+            raise ValueError("near_target_action_penalty_stage_scales must be non-negative")
+        if self.near_target_action_threshold_m <= 0.0:
+            raise ValueError("near_target_action_threshold_m must be positive")
+        if self.near_target_action_band_m <= 0.0:
+            raise ValueError("near_target_action_band_m must be positive")
+        if self.near_target_rotation_weight < 0.0:
+            raise ValueError("near_target_rotation_weight must be non-negative")
+        if len(self.target_z_alignment_penalty_stage_scales) != 4:
+            raise ValueError("target_z_alignment_penalty_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_z_alignment_penalty_stage_scales):
+            raise ValueError("target_z_alignment_penalty_stage_scales must be non-negative")
+        if self.target_z_alignment_clip_m <= 0.0:
+            raise ValueError("target_z_alignment_clip_m must be positive")
         if self.vertical_alignment_penalty_scale < 0.0:
             raise ValueError("vertical_alignment_penalty_scale must be non-negative")
         _validate_stage_names(self.vertical_alignment_penalty_stages, "vertical_alignment_penalty_stages")
@@ -1133,6 +1181,132 @@ def compute_target_overlift_penalty(
     return (-np.maximum(next_cube_z - next_target_z - float(margin_m), 0.0)).astype(np.float32)
 
 
+def compute_target_success_bonus(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    threshold_m: float = TARGET_SUCCESS_THRESHOLD_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Binary success-region reward after lift, aligned to eval success distance."""
+
+    if threshold_m <= 0.0:
+        raise ValueError("threshold_m must be positive")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    return (context * (next_dist <= float(threshold_m)).astype(np.float32)).astype(np.float32)
+
+
+def compute_target_away_penalty(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    deadband_m: float = TARGET_AWAY_DEADBAND_M,
+    clip_m: float = TARGET_AWAY_CLIP_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Penalty for moving the lifted cube farther away from the target."""
+
+    if deadband_m < 0.0:
+        raise ValueError("deadband_m must be non-negative")
+    if clip_m <= 0.0:
+        raise ValueError("clip_m must be positive")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if proprio_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("proprios and next_proprios must share batch size")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    prev_dist = np.linalg.norm(proprio_array[:, CUBE_TO_TARGET], axis=1)
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    away = np.clip(
+        (next_dist - prev_dist - float(deadband_m)) / float(clip_m),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    return (-context * away).astype(np.float32)
+
+
+def compute_near_target_action_penalty(
+    next_proprios: np.ndarray,
+    actions: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    threshold_m: float = NEAR_TARGET_ACTION_THRESHOLD_M,
+    band_m: float = NEAR_TARGET_ACTION_BAND_M,
+    rotation_weight: float = NEAR_TARGET_ROTATION_WEIGHT,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Penalty for unnecessary arm motion once a lifted cube is near target."""
+
+    if threshold_m <= 0.0:
+        raise ValueError("threshold_m must be positive")
+    if band_m <= 0.0:
+        raise ValueError("band_m must be positive")
+    if rotation_weight < 0.0:
+        raise ValueError("rotation_weight must be non-negative")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    action_array = _as_2d_float(actions, name="actions")
+    if action_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("actions and next_proprios must share batch size")
+    if action_array.shape[1] < 6:
+        raise ValueError("actions must have at least six dimensions")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    near_context = np.clip(
+        (float(threshold_m) + float(band_m) - next_dist) / float(band_m),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    translation_norm = np.linalg.norm(action_array[:, 0:3], axis=1)
+    rotation_norm = np.linalg.norm(action_array[:, 3:6], axis=1)
+    action_cost = translation_norm + float(rotation_weight) * rotation_norm
+    return (-context * near_context * action_cost).astype(np.float32)
+
+
+def compute_target_z_alignment_penalty(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    clip_m: float = TARGET_Z_ALIGNMENT_CLIP_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Penalty for lifted cube z-error relative to the target height."""
+
+    if clip_m <= 0.0:
+        raise ValueError("clip_m must be positive")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    z_error = np.abs(next_proprio_array[:, CUBE_TO_TARGET.stop - 1])
+    normalized = np.clip(z_error / float(clip_m), 0.0, 1.0).astype(np.float32)
+    return (-context * normalized).astype(np.float32)
+
+
 def compute_vertical_alignment_penalty(
     proprios: np.ndarray,
     *,
@@ -1179,6 +1353,10 @@ def compute_pr611_shaping_terms(
             "target_progress_proxy": zeros,
             "target_dwell_proxy": zeros,
             "target_overlift_penalty": zeros,
+            "target_success_bonus": zeros,
+            "target_away_penalty": zeros,
+            "near_target_action_penalty": zeros,
+            "target_z_alignment_penalty": zeros,
             "vertical_alignment_penalty": zeros,
             "rotation_action_penalty": zeros,
         }
@@ -1193,6 +1371,10 @@ def compute_pr611_shaping_terms(
         target_progress_proxy = np.zeros((batch_size,), dtype=np.float32)
         target_dwell_proxy = np.zeros((batch_size,), dtype=np.float32)
         target_overlift_penalty = np.zeros((batch_size,), dtype=np.float32)
+        target_success_bonus = np.zeros((batch_size,), dtype=np.float32)
+        target_away_penalty = np.zeros((batch_size,), dtype=np.float32)
+        near_target_action_penalty = np.zeros((batch_size,), dtype=np.float32)
+        target_z_alignment_penalty = np.zeros((batch_size,), dtype=np.float32)
     else:
         reach_progress = compute_reach_progress(
             proprio_array,
@@ -1218,6 +1400,10 @@ def compute_pr611_shaping_terms(
         if cube_reset_z is None:
             target_progress_proxy = np.zeros((batch_size,), dtype=np.float32)
             target_dwell_proxy = np.zeros((batch_size,), dtype=np.float32)
+            target_success_bonus = np.zeros((batch_size,), dtype=np.float32)
+            target_away_penalty = np.zeros((batch_size,), dtype=np.float32)
+            near_target_action_penalty = np.zeros((batch_size,), dtype=np.float32)
+            target_z_alignment_penalty = np.zeros((batch_size,), dtype=np.float32)
         else:
             target_progress_proxy = compute_target_progress_proxy(
                 proprio_array,
@@ -1232,6 +1418,39 @@ def compute_pr611_shaping_terms(
                 next_proprios,
                 cube_reset_z,
                 sigma_m=config.target_dwell_sigma_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_success_bonus = compute_target_success_bonus(
+                next_proprios,
+                cube_reset_z,
+                threshold_m=config.target_success_threshold_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_away_penalty = compute_target_away_penalty(
+                proprio_array,
+                next_proprios,
+                cube_reset_z,
+                deadband_m=config.target_away_deadband_m,
+                clip_m=config.target_away_clip_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            near_target_action_penalty = compute_near_target_action_penalty(
+                next_proprios,
+                actions,
+                cube_reset_z,
+                threshold_m=config.near_target_action_threshold_m,
+                band_m=config.near_target_action_band_m,
+                rotation_weight=config.near_target_rotation_weight,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_z_alignment_penalty = compute_target_z_alignment_penalty(
+                next_proprios,
+                cube_reset_z,
+                clip_m=config.target_z_alignment_clip_m,
                 lift_gate_m=config.target_progress_lift_gate_m,
                 lift_gate_band_m=config.target_progress_lift_gate_band_m,
             )
@@ -1266,6 +1485,20 @@ def compute_pr611_shaping_terms(
     target_overlift_penalty = (
         target_overlift_scale * target_overlift_penalty
     ).astype(np.float32)
+    target_success_bonus = (
+        float(config.target_success_bonus_stage_scales[stage_index]) * target_success_bonus
+    ).astype(np.float32)
+    target_away_penalty = (
+        float(config.target_away_penalty_stage_scales[stage_index]) * target_away_penalty
+    ).astype(np.float32)
+    near_target_action_penalty = (
+        float(config.near_target_action_penalty_stage_scales[stage_index])
+        * near_target_action_penalty
+    ).astype(np.float32)
+    target_z_alignment_penalty = (
+        float(config.target_z_alignment_penalty_stage_scales[stage_index])
+        * target_z_alignment_penalty
+    ).astype(np.float32)
     vertical_scale = (
         float(config.vertical_alignment_penalty_scale)
         if stage_name in config.vertical_alignment_penalty_stages
@@ -1294,6 +1527,10 @@ def compute_pr611_shaping_terms(
         "target_progress_proxy": target_progress_proxy,
         "target_dwell_proxy": target_dwell_proxy,
         "target_overlift_penalty": target_overlift_penalty,
+        "target_success_bonus": target_success_bonus,
+        "target_away_penalty": target_away_penalty,
+        "near_target_action_penalty": near_target_action_penalty,
+        "target_z_alignment_penalty": target_z_alignment_penalty,
         "vertical_alignment_penalty": vertical_penalty,
         "rotation_action_penalty": rotation_penalty,
     }
@@ -1364,6 +1601,10 @@ def shape_rewards(
         + pr611_terms["target_progress_proxy"]
         + pr611_terms["target_dwell_proxy"]
         + pr611_terms["target_overlift_penalty"]
+        + pr611_terms["target_success_bonus"]
+        + pr611_terms["target_away_penalty"]
+        + pr611_terms["near_target_action_penalty"]
+        + pr611_terms["target_z_alignment_penalty"]
         + pr611_terms["vertical_alignment_penalty"]
         + pr611_terms["rotation_action_penalty"]
     ).astype(np.float32)
@@ -1390,6 +1631,18 @@ def shape_rewards(
         ),
         "reward/train/target_overlift_penalty": (
             float(np.mean(pr611_terms["target_overlift_penalty"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_success_bonus": (
+            float(np.mean(pr611_terms["target_success_bonus"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_away_penalty": (
+            float(np.mean(pr611_terms["target_away_penalty"])) if shaped.size else 0.0
+        ),
+        "reward/train/near_target_action_penalty": (
+            float(np.mean(pr611_terms["near_target_action_penalty"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_z_alignment_penalty": (
+            float(np.mean(pr611_terms["target_z_alignment_penalty"])) if shaped.size else 0.0
         ),
         "reward/train/vertical_alignment_penalty": (
             float(np.mean(pr611_terms["vertical_alignment_penalty"])) if shaped.size else 0.0
@@ -1646,11 +1899,15 @@ __all__ = [
     "REACH_GATE_DWELL_RATE",
     "REACH_GATE_EPISODE_RATE",
     "TARGET_DWELL_SIGMA_M",
+    "TARGET_AWAY_CLIP_M",
+    "TARGET_AWAY_DEADBAND_M",
     "TARGET_OVERLIFT_MARGIN_M",
     "TARGET_PROGRESS_CLIP_M",
     "TARGET_PROGRESS_DEADBAND_M",
     "TARGET_PROGRESS_LIFT_GATE_BAND_M",
     "TARGET_PROGRESS_LIFT_GATE_M",
+    "TARGET_SUCCESS_THRESHOLD_M",
+    "TARGET_Z_ALIGNMENT_CLIP_M",
     "CurriculumGateConfig",
     "CurriculumGateTracker",
     "ProgressBucketConfig",
@@ -1677,9 +1934,13 @@ __all__ = [
     "compute_reach_progress",
     "compute_progress_diagnostic_labels",
     "compute_rotation_action_penalty",
+    "compute_near_target_action_penalty",
+    "compute_target_away_penalty",
     "compute_target_dwell_proxy",
     "compute_target_overlift_penalty",
     "compute_target_progress_proxy",
+    "compute_target_success_bonus",
+    "compute_target_z_alignment_penalty",
     "compute_tiny_lift_delta_proxy",
     "compute_vertical_alignment_penalty",
     "curriculum_stage",

@@ -111,6 +111,8 @@ class LaneLiftDiagnosticTracker:
         grip_threshold_m: float = 0.05,
         close_command_threshold: float = -0.25,
         reach_dwell_threshold_m: float = 0.05,
+        target_success_threshold_m: float = DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M,
+        target_hold_consecutive_steps: int = 5,
     ) -> None:
         if num_lanes <= 0:
             raise ValueError("num_lanes must be positive")
@@ -120,12 +122,18 @@ class LaneLiftDiagnosticTracker:
             raise ValueError("grip_threshold_m must be positive")
         if reach_dwell_threshold_m <= 0.0:
             raise ValueError("reach_dwell_threshold_m must be positive")
+        if target_success_threshold_m <= 0.0:
+            raise ValueError("target_success_threshold_m must be positive")
+        if target_hold_consecutive_steps <= 0:
+            raise ValueError("target_hold_consecutive_steps must be positive")
         self.num_lanes = int(num_lanes)
         self.prefix = prefix.rstrip("/")
         self.window_size = int(window_size)
         self.grip_threshold_m = float(grip_threshold_m)
         self.close_command_threshold = float(close_command_threshold)
         self.reach_dwell_threshold_m = float(reach_dwell_threshold_m)
+        self.target_success_threshold_m = float(target_success_threshold_m)
+        self.target_hold_consecutive_steps = int(target_hold_consecutive_steps)
         self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
         self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._min_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
@@ -133,6 +141,15 @@ class LaneLiftDiagnosticTracker:
         self._reach_dwell_counts = np.zeros((self.num_lanes,), dtype=np.int64)
         self._reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._max_reach_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._target_success_counts = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._target_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._max_target_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._target_distance_sums = np.zeros((self.num_lanes,), dtype=np.float64)
+        self._final_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
+        self._cube_to_target_distances: list[list[float]] = [[] for _ in range(self.num_lanes)]
+        self._previous_actions = np.full((self.num_lanes, 0), np.nan, dtype=np.float32)
+        self._action_jerk_sums = np.zeros((self.num_lanes,), dtype=np.float64)
+        self._action_jerk_counts = np.zeros((self.num_lanes,), dtype=np.int64)
         self._active_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._completed_max_cube_lift: deque[float] = deque(maxlen=self.window_size)
         self._completed_min_ee_to_cube: deque[float] = deque(maxlen=self.window_size)
@@ -140,6 +157,13 @@ class LaneLiftDiagnosticTracker:
         self._completed_close_near_rates: deque[float] = deque(maxlen=self.window_size)
         self._completed_reach_dwell_rates: deque[float] = deque(maxlen=self.window_size)
         self._completed_reach_max_consecutive_steps: deque[int] = deque(maxlen=self.window_size)
+        self._completed_target_success_step_rates: deque[float] = deque(maxlen=self.window_size)
+        self._completed_target_hold_episodes: deque[bool] = deque(maxlen=self.window_size)
+        self._completed_target_hold_max_consecutive_steps: deque[int] = deque(maxlen=self.window_size)
+        self._completed_mean_cube_to_target: deque[float] = deque(maxlen=self.window_size)
+        self._completed_p50_cube_to_target: deque[float] = deque(maxlen=self.window_size)
+        self._completed_final_cube_to_target: deque[float] = deque(maxlen=self.window_size)
+        self._completed_mean_action_jerks: deque[float] = deque(maxlen=self.window_size)
 
     def step(
         self,
@@ -169,11 +193,21 @@ class LaneLiftDiagnosticTracker:
         cube_lift = next_proprios[:, PROPRIO_CUBE_POS_BASE_SLICE.stop - 1] - reset_z
         ee_to_cube = np.linalg.norm(proprios[:, PROPRIO_EE_TO_CUBE_SLICE], axis=1)
         cube_to_target = np.linalg.norm(next_proprios[:, PROPRIO_CUBE_TO_TARGET_SLICE], axis=1)
+        target_success = cube_to_target <= self.target_success_threshold_m
         close_near = (
             (ee_to_cube <= self.grip_threshold_m)
             & (actions[:, ACTION_GRIPPER_INDEX] < self.close_command_threshold)
         )
         reach_near = ee_to_cube <= self.reach_dwell_threshold_m
+
+        if self._previous_actions.shape[1] != actions.shape[1]:
+            self._previous_actions = np.full((self.num_lanes, actions.shape[1]), np.nan, dtype=np.float32)
+        has_previous_action = active & np.isfinite(self._previous_actions).all(axis=1)
+        if np.any(has_previous_action):
+            action_diffs = actions[has_previous_action] - self._previous_actions[has_previous_action]
+            self._action_jerk_sums[has_previous_action] += np.linalg.norm(action_diffs, axis=1)
+            self._action_jerk_counts[has_previous_action] += 1
+        self._previous_actions[active] = actions[active]
 
         self._max_cube_lift[active] = np.maximum(self._max_cube_lift[active], cube_lift[active])
         self._min_ee_to_cube[active] = np.minimum(self._min_ee_to_cube[active], ee_to_cube[active])
@@ -188,6 +222,19 @@ class LaneLiftDiagnosticTracker:
             self._max_reach_consecutive_steps[active],
             self._reach_consecutive_steps[active],
         )
+        self._target_success_counts[active] += target_success[active].astype(np.int64)
+        active_target_success = active & target_success
+        active_target_miss = active & ~target_success
+        self._target_consecutive_steps[active_target_success] += 1
+        self._target_consecutive_steps[active_target_miss] = 0
+        self._max_target_consecutive_steps[active] = np.maximum(
+            self._max_target_consecutive_steps[active],
+            self._target_consecutive_steps[active],
+        )
+        self._target_distance_sums[active] += cube_to_target[active]
+        self._final_cube_to_target[active] = cube_to_target[active]
+        for lane in np.flatnonzero(active):
+            self._cube_to_target_distances[lane].append(float(cube_to_target[lane]))
         self._active_steps[active] += 1
 
         completed = active & (terminated | truncated)
@@ -202,6 +249,28 @@ class LaneLiftDiagnosticTracker:
             self._completed_close_near_rates.append(float(self._close_near_counts[lane]) / float(steps))
             self._completed_reach_dwell_rates.append(float(self._reach_dwell_counts[lane]) / float(steps))
             self._completed_reach_max_consecutive_steps.append(int(self._max_reach_consecutive_steps[lane]))
+            distances = np.asarray(self._cube_to_target_distances[lane], dtype=np.float64)
+            self._completed_target_success_step_rates.append(
+                float(self._target_success_counts[lane]) / float(steps)
+            )
+            self._completed_target_hold_max_consecutive_steps.append(
+                int(self._max_target_consecutive_steps[lane])
+            )
+            self._completed_target_hold_episodes.append(
+                bool(self._max_target_consecutive_steps[lane] >= self.target_hold_consecutive_steps)
+            )
+            self._completed_mean_cube_to_target.append(
+                float(np.mean(distances)) if distances.size else float(self._final_cube_to_target[lane])
+            )
+            self._completed_p50_cube_to_target.append(
+                float(np.median(distances)) if distances.size else float(self._final_cube_to_target[lane])
+            )
+            self._completed_final_cube_to_target.append(float(self._final_cube_to_target[lane]))
+            self._completed_mean_action_jerks.append(
+                float(self._action_jerk_sums[lane]) / float(self._action_jerk_counts[lane])
+                if self._action_jerk_counts[lane] > 0
+                else 0.0
+            )
             self._reset_lane(lane)
         return self.summary()
 
@@ -217,6 +286,19 @@ class LaneLiftDiagnosticTracker:
             self._metric_key("reach_max_consecutive_steps"): float(
                 np.mean(self._completed_reach_max_consecutive_steps)
             ),
+            self._metric_key("target_success_step_rate"): float(
+                np.mean(self._completed_target_success_step_rates)
+            ),
+            self._metric_key("target_hold_episode_rate"): float(
+                np.mean(self._completed_target_hold_episodes)
+            ),
+            self._metric_key("target_hold_max_consecutive_steps"): float(
+                np.mean(self._completed_target_hold_max_consecutive_steps)
+            ),
+            self._metric_key("mean_cube_to_target_m"): float(np.mean(self._completed_mean_cube_to_target)),
+            self._metric_key("p50_cube_to_target_m"): float(np.median(self._completed_p50_cube_to_target)),
+            self._metric_key("final_cube_to_target_m"): float(np.mean(self._completed_final_cube_to_target)),
+            self._metric_key("mean_action_jerk"): float(np.mean(self._completed_mean_action_jerks)),
         }
 
     def _reset_lane(self, lane: int) -> None:
@@ -227,6 +309,16 @@ class LaneLiftDiagnosticTracker:
         self._reach_dwell_counts[lane] = 0
         self._reach_consecutive_steps[lane] = 0
         self._max_reach_consecutive_steps[lane] = 0
+        self._target_success_counts[lane] = 0
+        self._target_consecutive_steps[lane] = 0
+        self._max_target_consecutive_steps[lane] = 0
+        self._target_distance_sums[lane] = 0.0
+        self._final_cube_to_target[lane] = np.inf
+        self._cube_to_target_distances[lane].clear()
+        if self._previous_actions.shape[1] > 0:
+            self._previous_actions[lane, :] = np.nan
+        self._action_jerk_sums[lane] = 0.0
+        self._action_jerk_counts[lane] = 0
         self._active_steps[lane] = 0
 
     def _metric_key(self, suffix: str) -> str:

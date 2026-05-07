@@ -119,6 +119,18 @@ class TD3TrainLoopConfig:
     target_overlift_penalty_scale: float = 0.0
     target_overlift_penalty_stages: tuple[str, ...] = ()
     target_overlift_margin_m: float = 0.05
+    target_success_bonus_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_success_threshold_m: float = 0.02
+    target_away_penalty_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_away_deadband_m: float = 0.0001
+    target_away_clip_m: float = 0.010
+    near_target_action_penalty_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    near_target_action_threshold_m: float = 0.040
+    near_target_action_band_m: float = 0.020
+    near_target_rotation_weight: float = 1.0
+    target_z_alignment_penalty_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_z_alignment_clip_m: float = 0.050
+    target_hold_consecutive_steps: int = 5
     vertical_alignment_penalty_scale: float = 0.1
     vertical_alignment_penalty_stages: tuple[str, ...] = ("reach",)
     vertical_alignment_deadband_m: float = 0.04
@@ -332,6 +344,17 @@ def run_td3_train_loop(
         target_overlift_penalty_scale=cfg.target_overlift_penalty_scale,
         target_overlift_penalty_stages=cfg.target_overlift_penalty_stages,
         target_overlift_margin_m=cfg.target_overlift_margin_m,
+        target_success_bonus_stage_scales=cfg.target_success_bonus_stage_scales,
+        target_success_threshold_m=cfg.target_success_threshold_m,
+        target_away_penalty_stage_scales=cfg.target_away_penalty_stage_scales,
+        target_away_deadband_m=cfg.target_away_deadband_m,
+        target_away_clip_m=cfg.target_away_clip_m,
+        near_target_action_penalty_stage_scales=cfg.near_target_action_penalty_stage_scales,
+        near_target_action_threshold_m=cfg.near_target_action_threshold_m,
+        near_target_action_band_m=cfg.near_target_action_band_m,
+        near_target_rotation_weight=cfg.near_target_rotation_weight,
+        target_z_alignment_penalty_stage_scales=cfg.target_z_alignment_penalty_stage_scales,
+        target_z_alignment_clip_m=cfg.target_z_alignment_clip_m,
         vertical_alignment_penalty_scale=cfg.vertical_alignment_penalty_scale,
         vertical_alignment_penalty_stages=cfg.vertical_alignment_penalty_stages,
         vertical_alignment_deadband_m=cfg.vertical_alignment_deadband_m,
@@ -372,6 +395,16 @@ def run_td3_train_loop(
         prefix="train_rollout",
         window_size=cfg.rollout_metrics_window,
     )
+    train_lift_tracker = LaneLiftDiagnosticTracker(
+        num_lanes=num_train_lanes,
+        prefix="train_rollout",
+        window_size=cfg.rollout_metrics_window,
+        grip_threshold_m=progress_bucket_config.grip_threshold_m,
+        close_command_threshold=progress_bucket_config.close_command_threshold,
+        reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
+        target_success_threshold_m=cfg.target_success_threshold_m,
+        target_hold_consecutive_steps=cfg.target_hold_consecutive_steps,
+    )
     same_env_eval_tracker = (
         LaneEpisodeMetricTracker(
             num_lanes=int(same_env_eval_indices.shape[0]),
@@ -389,6 +422,8 @@ def run_td3_train_loop(
             grip_threshold_m=progress_bucket_config.grip_threshold_m,
             close_command_threshold=progress_bucket_config.close_command_threshold,
             reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
+            target_success_threshold_m=cfg.target_success_threshold_m,
+            target_hold_consecutive_steps=cfg.target_hold_consecutive_steps,
         )
         if same_env_eval_indices.size > 0
         else None
@@ -595,12 +630,24 @@ def run_td3_train_loop(
             )
             warmup_done_reported = True
         successes = infer_successes(_info, num_envs=num_envs, proprios=next_proprios)
+        same_step_eval_rollout_logs: dict[str, float] = {}
         train_rollout_logs = train_rollout_tracker.step(
             rewards=rewards[train_indices],
             terminated=dones[train_indices],
             truncated=truncs[train_indices],
             successes=successes[train_indices],
             active_mask=~settling_before[train_indices],
+        )
+        train_rollout_logs.update(
+            train_lift_tracker.step(
+                proprios=proprios[train_indices],
+                next_proprios=next_proprios[train_indices],
+                actions=actions[train_indices],
+                terminated=dones[train_indices],
+                truncated=truncs[train_indices],
+                cube_reset_z=lane_reset_cube_z[train_indices],
+                active_mask=~settling_before[train_indices],
+            )
         )
         _log_loop_metrics(
             logger,
@@ -657,6 +704,7 @@ def run_td3_train_loop(
                 log_history,
                 force=True,
             )
+            same_step_eval_rollout_logs = dict(eval_rollout_logs)
             _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, eval_rollout_logs, schedulers)
         else:
             eval_gate_episode_labels = None
@@ -821,7 +869,11 @@ def run_td3_train_loop(
             if logger is not None:
                 logger.log_scalars(env_steps, reward_logs)
         _update_progress(progress, env_steps, env_logs)
-        _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, env_logs, schedulers)
+        checkpoint_env_logs = _merge_same_step_eval_checkpoint_metrics(
+            env_logs,
+            same_step_eval_rollout_logs,
+        )
+        _maybe_save_checkpoint(checkpoint_saver, agent, env_steps, checkpoint_env_logs, schedulers)
 
         if active_train_indices.size > 0 and not warming_up and replay.size >= cfg.batch_size:
             for _ in range(agent.config.utd_ratio):
@@ -986,6 +1038,21 @@ def _maybe_save_checkpoint(
     checkpoint_saver(agent, env_steps, metrics, scheduler_collection_state(schedulers))
 
 
+def _merge_same_step_eval_checkpoint_metrics(
+    metrics: dict[str, float],
+    eval_rollout_metrics: dict[str, float],
+) -> dict[str, float]:
+    """Attach same-step eval rollout metrics to env/gate metrics for best-checkpoint selection."""
+
+    if not metrics or not eval_rollout_metrics:
+        return metrics
+    if not any(key.startswith("eval_rollout/") for key in eval_rollout_metrics):
+        return metrics
+    merged = dict(eval_rollout_metrics)
+    merged.update(metrics)
+    return merged
+
+
 def _td3_lr_logs(agent: TD3Agent) -> dict[str, float]:
     return {
         "train/learning_rate_actor": optimizer_lr(agent.actor_optimizer),
@@ -1076,6 +1143,12 @@ def _run_td3_periodic_eval(
             "eval/mean_episode_length": float(metrics.mean_episode_length),
             "eval/mean_action_jerk": float(metrics.mean_action_jerk),
             "eval/episode_successes_count": float(sum(metrics.episode_successes.values())),
+            "eval/target_success_step_rate": float(metrics.target_success_step_rate),
+            "eval/target_hold_episode_rate": float(metrics.target_hold_episode_rate),
+            "eval/target_hold_max_consecutive_steps": float(metrics.target_hold_max_consecutive_steps),
+            "eval/mean_cube_to_target_m": float(metrics.mean_cube_to_target_m),
+            "eval/p50_cube_to_target_m": float(metrics.p50_cube_to_target_m),
+            "eval/final_cube_to_target_m": float(metrics.final_cube_to_target_m),
         }
     finally:
         close = getattr(eval_env, "close", None)
