@@ -926,6 +926,121 @@ python -u -m scripts.train_sac_continuous \
   --wandb-mode online \
   2>&1 | tee ./logs/sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001_stdout_stderr.log
 
+RUN_NAME=sac_franka_2m5_seed0_v12_targethold
+
+python -u -m scripts.train_sac_continuous \
+  --backend isaac \
+  --env-id Isaac-Lift-Cube-Franka-IK-Rel-v0 \
+  --num-envs 32 \
+  --seed 0 \
+  --total-env-steps 2500000 \
+  --warmup-steps 5000 \
+  --batch-size 256 \
+  --replay-capacity 240000 \
+  --ram-budget-gib 80 \
+  --device cuda:0 \
+  --learning-rate 3e-4 \
+  --polyak-tau 0.005 \
+  --utd-ratio 1 \
+  --initial-alpha 0.2 \
+  --alpha-min 0.02 \
+  --target-entropy auto \
+  --image-normalization none \
+  --lr-scheduler warmup_cosine \
+  --lr-warmup-updates 9000 \
+  --lr-min-lr 1e-4 \
+  --settle-steps 550 \
+  --per-lane-settle-steps 20 \
+  --same-env-eval-lanes 4 \
+  --same-env-eval-start-env-steps 50000 \
+  --rollout-metrics-window 20 \
+  --eval-every-env-steps 0 \
+  --reward-probe-steps 200 \
+  --disable-reward-curriculum \
+  --reward-curriculum reach_grip_lift_goal \
+  --curriculum-gating eval_dual_gate \
+  --curriculum-gate-eval-window-episodes 20 \
+  --curriculum-gate-min-eval-episodes 20 \
+  --curriculum-gate-eval-thresholds 0.50,0.30,0.05,0.10 \
+  --curriculum-gate-min-train-exposures 400,100,20,20 \
+  --curriculum-gate-lift-success-height-m 0.02 \
+  --curriculum-gate-min-stage-env-steps 50000 \
+  --curriculum-gate-consecutive-eval-passes 3 \
+  --curriculum-gate-reach-metric dwell_rate \
+  --curriculum-gate-reach-min-consecutive-steps 20 \
+  --reach-progress-stage-scales 0.0,0.0,0.0,0.0 \
+  --reach-progress-clip-m 0.01 \
+  --reach-dwell-stage-scales 0.8,0.3,0.0,0.0 \
+  --reach-dwell-sigma-m 0.08 \
+  --reach-dwell-threshold-m 0.05 \
+  --grasp-like-stage-scales 0.0,0.4,0.2,0.0 \
+  --grasp-like-near-sigma-m 0.05 \
+  --grasp-like-empty-width-m 0.010 \
+  --grasp-like-width-band-m 0.015,0.046,0.065 \
+  --grasp-like-max-collapse-m 0.002 \
+  --tiny-lift-delta-stage-scales 0.0,0.5,1.0,0.0 \
+  --tiny-lift-delta-deadband-m 0.0001 \
+  --tiny-lift-delta-height-m 0.0010 \
+  --tiny-lift-delta-near-sigma-m 0.08 \
+  --target-progress-stage-scales 0.0,0.0,0.3,1.0 \
+  --target-progress-clip-m 0.010 \
+  --target-progress-deadband-m 0.0002 \
+  --target-progress-lift-gate-m 0.020 \
+  --target-progress-lift-gate-band-m 0.020 \
+  --target-dwell-stage-scales 0.0,0.0,0.4,1.6 \
+  --target-dwell-sigma-m 0.04 \
+  --target-overlift-penalty-scale 0.05 \
+  --target-overlift-penalty-stages stock_like \
+  --target-overlift-margin-m 0.05 \
+  --target-success-bonus-stage-scales 0.0,0.0,0.5,2.0 \
+  --target-success-threshold-m 0.020 \
+  --target-away-penalty-stage-scales 0.0,0.0,0.1,0.6 \
+  --target-away-deadband-m 0.0001 \
+  --target-away-clip-m 0.010 \
+  --near-target-action-penalty-stage-scales 0.0,0.0,0.0,0.08 \
+  --near-target-action-threshold-m 0.040 \
+  --near-target-action-band-m 0.020 \
+  --near-target-rotation-weight 1.0 \
+  --target-z-alignment-penalty-stage-scales 0.0,0.0,0.1,0.5 \
+  --target-z-alignment-clip-m 0.050 \
+  --target-hold-consecutive-steps 8 \
+  --vertical-alignment-penalty-scale 0.02 \
+  --vertical-alignment-penalty-stages reach \
+  --vertical-alignment-deadband-m 0.04 \
+  --rotation-action-penalty-scale 0.001 \
+  --rotation-action-penalty-stages reach \
+  --lift-progress-deadband-m 0.0005 \
+  --lift-progress-height-m 0.02 \
+  --prioritize-replay \
+  --priority-replay-ratio 0.5 \
+  --priority-score-weights 0.40,0.25,0.20,0.15 \
+  --priority-rarity-power 0.5 \
+  --priority-rarity-eps 1.0 \
+  --protect-rare-transitions \
+  --protected-score-weights 0.80,0.10,0.10 \
+  --protected-replay-fraction 0.02 \
+  --protected-max-age-env-steps 100000 \
+  --protected-refresh-every-env-steps 10000 \
+  --protected-stage-local \
+  --protected-stage-grace-env-steps 50000 \
+  --protected-old-stage-retain-fraction 0.5 \
+  --checkpoint-every-env-steps 50000 \
+  --keep-last-checkpoints 10 \
+  --save-best-by stage_aware:target_stability_success_return \
+  --progress \
+  --log-every-train-steps 100 \
+  --log-every-env-steps 1000 \
+  --checkpoint-dir ./checkpoints \
+  --checkpoint-name "${RUN_NAME}" \
+  --logs-dir ./logs \
+  --jsonl-log "./logs/${RUN_NAME}_train.jsonl" \
+  --progress-log "./logs/${RUN_NAME}_progress.log" \
+  --tb-log-dir "./logs/tb/${RUN_NAME}" \
+  --wandb-project isaac-arm \
+  --wandb-run-name "${RUN_NAME}" \
+  --wandb-mode online \
+  2>&1 | tee "./logs/${RUN_NAME}_stdout_stderr.log"
+
 # Visualize Evaluation Learned Policy
 python -m scripts.record_gif_continuous \
   --backend isaac \
