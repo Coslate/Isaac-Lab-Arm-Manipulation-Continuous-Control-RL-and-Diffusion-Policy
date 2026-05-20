@@ -120,6 +120,14 @@ class SACTrainLoopConfig:
     target_progress_deadband_m: float = 0.0002
     target_progress_lift_gate_m: float = 0.020
     target_progress_lift_gate_band_m: float = 0.020
+    target_funnel_thresholds_m: tuple[float, float, float, float] = (0.20, 0.10, 0.05, 0.02)
+    target_funnel_proximity_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_funnel_proximity_sigma_m: float = 0.15
+    target_funnel_progress_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_funnel_progress_deadband_m: float = 0.0002
+    target_funnel_progress_clip_m: float = 0.020
+    target_funnel_band_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_funnel_band_weights: tuple[float, float, float, float] = (0.10, 0.25, 0.50, 0.0)
     target_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     target_dwell_sigma_m: float = 0.08
     target_overlift_penalty_scale: float = 0.0
@@ -350,6 +358,14 @@ def run_sac_train_loop(
         target_progress_deadband_m=cfg.target_progress_deadband_m,
         target_progress_lift_gate_m=cfg.target_progress_lift_gate_m,
         target_progress_lift_gate_band_m=cfg.target_progress_lift_gate_band_m,
+        target_funnel_thresholds_m=cfg.target_funnel_thresholds_m,
+        target_funnel_proximity_stage_scales=cfg.target_funnel_proximity_stage_scales,
+        target_funnel_proximity_sigma_m=cfg.target_funnel_proximity_sigma_m,
+        target_funnel_progress_stage_scales=cfg.target_funnel_progress_stage_scales,
+        target_funnel_progress_deadband_m=cfg.target_funnel_progress_deadband_m,
+        target_funnel_progress_clip_m=cfg.target_funnel_progress_clip_m,
+        target_funnel_band_stage_scales=cfg.target_funnel_band_stage_scales,
+        target_funnel_band_weights=cfg.target_funnel_band_weights,
         target_dwell_stage_scales=cfg.target_dwell_stage_scales,
         target_dwell_sigma_m=cfg.target_dwell_sigma_m,
         target_overlift_penalty_scale=cfg.target_overlift_penalty_scale,
@@ -391,7 +407,7 @@ def run_sac_train_loop(
             target_approach_min_delta_m=cfg.curriculum_gate_target_approach_min_delta_m,
         )
     )
-    progress_bucket_config = ProgressBucketConfig()
+    progress_bucket_config = ProgressBucketConfig(target_funnel_thresholds_m=cfg.target_funnel_thresholds_m)
     lane_reset_cube_z = proprios[:, CUBE_POS_BASE.stop - 1].astype(np.float32, copy=True)
     lane_episode_returns = np.zeros((num_envs,), dtype=np.float32)
     env_steps = 0
@@ -415,6 +431,7 @@ def run_sac_train_loop(
         reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
         target_success_threshold_m=cfg.target_success_threshold_m,
         target_hold_consecutive_steps=cfg.target_hold_consecutive_steps,
+        target_funnel_thresholds_m=cfg.target_funnel_thresholds_m,
     )
     same_env_eval_tracker = (
         LaneEpisodeMetricTracker(
@@ -435,6 +452,7 @@ def run_sac_train_loop(
             reach_dwell_threshold_m=cfg.reach_dwell_threshold_m,
             target_success_threshold_m=cfg.target_success_threshold_m,
             target_hold_consecutive_steps=cfg.target_hold_consecutive_steps,
+            target_funnel_thresholds_m=cfg.target_funnel_thresholds_m,
         )
         if same_env_eval_indices.size > 0
         else None
@@ -1157,6 +1175,18 @@ def _run_sac_periodic_eval(
             "eval/target_success_step_rate": float(metrics.target_success_step_rate),
             "eval/target_hold_episode_rate": float(metrics.target_hold_episode_rate),
             "eval/target_hold_max_consecutive_steps": float(metrics.target_hold_max_consecutive_steps),
+            "eval/target_20cm_step_rate": float(metrics.target_20cm_step_rate),
+            "eval/target_10cm_step_rate": float(metrics.target_10cm_step_rate),
+            "eval/target_5cm_step_rate": float(metrics.target_5cm_step_rate),
+            "eval/target_2cm_step_rate": float(metrics.target_2cm_step_rate),
+            "eval/target_20cm_episode_rate": float(metrics.target_20cm_episode_rate),
+            "eval/target_10cm_episode_rate": float(metrics.target_10cm_episode_rate),
+            "eval/target_5cm_episode_rate": float(metrics.target_5cm_episode_rate),
+            "eval/target_2cm_episode_rate": float(metrics.target_2cm_episode_rate),
+            "eval/target_20cm_max_consecutive_steps": float(metrics.target_20cm_max_consecutive_steps),
+            "eval/target_10cm_max_consecutive_steps": float(metrics.target_10cm_max_consecutive_steps),
+            "eval/target_5cm_max_consecutive_steps": float(metrics.target_5cm_max_consecutive_steps),
+            "eval/target_2cm_max_consecutive_steps": float(metrics.target_2cm_max_consecutive_steps),
             "eval/mean_cube_to_target_m": float(metrics.mean_cube_to_target_m),
             "eval/p50_cube_to_target_m": float(metrics.p50_cube_to_target_m),
             "eval/final_cube_to_target_m": float(metrics.final_cube_to_target_m),

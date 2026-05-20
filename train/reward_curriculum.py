@@ -28,7 +28,14 @@ GRIP_GATE_METRIC_GRIP_EFFECT = "grip_effect"
 GRIP_GATE_METRIC_BLOCKED_GRASP = "blocked_grasp"
 SUPPORTED_GRIP_GATE_METRICS = (GRIP_GATE_METRIC_GRIP_EFFECT, GRIP_GATE_METRIC_BLOCKED_GRASP)
 
-PROGRESS_BUCKETS = ("normal", "reach", "grip", "lift", "goal")
+TARGET_FUNNEL_THRESHOLDS_M = (0.20, 0.10, 0.05, 0.02)
+TARGET_FUNNEL_PROXIMITY_SIGMA_M = 0.15
+TARGET_FUNNEL_PROGRESS_DEADBAND_M = 0.0002
+TARGET_FUNNEL_PROGRESS_CLIP_M = 0.020
+TARGET_FUNNEL_BAND_WEIGHTS = (0.10, 0.25, 0.50, 0.0)
+TARGET_FUNNEL_BUCKETS = ("target_20cm", "target_10cm", "target_5cm", "target_2cm")
+
+PROGRESS_BUCKETS = ("normal", "reach", "grip", "lift", "goal", *TARGET_FUNNEL_BUCKETS)
 BUCKET_INDEX = {name: index for index, name in enumerate(PROGRESS_BUCKETS)}
 DIAGNOSTIC_BUCKETS = ("grip_attempt", "grip_effect")
 DIAGNOSTIC_BUCKET_INDEX = {name: index for index, name in enumerate(DIAGNOSTIC_BUCKETS)}
@@ -153,6 +160,14 @@ class RewardCurriculumConfig:
     target_progress_deadband_m: float = TARGET_PROGRESS_DEADBAND_M
     target_progress_lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M
     target_progress_lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M
+    target_funnel_thresholds_m: tuple[float, float, float, float] = TARGET_FUNNEL_THRESHOLDS_M
+    target_funnel_proximity_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_funnel_proximity_sigma_m: float = TARGET_FUNNEL_PROXIMITY_SIGMA_M
+    target_funnel_progress_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_funnel_progress_deadband_m: float = TARGET_FUNNEL_PROGRESS_DEADBAND_M
+    target_funnel_progress_clip_m: float = TARGET_FUNNEL_PROGRESS_CLIP_M
+    target_funnel_band_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    target_funnel_band_weights: tuple[float, float, float, float] = TARGET_FUNNEL_BAND_WEIGHTS
     target_dwell_stage_scales: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     target_dwell_sigma_m: float = TARGET_DWELL_SIGMA_M
     target_overlift_penalty_scale: float = 0.0
@@ -229,6 +244,29 @@ class RewardCurriculumConfig:
             raise ValueError("target_progress_lift_gate_m must be non-negative")
         if self.target_progress_lift_gate_band_m <= 0.0:
             raise ValueError("target_progress_lift_gate_band_m must be positive")
+        _validate_target_funnel_thresholds(self.target_funnel_thresholds_m)
+        if len(self.target_funnel_proximity_stage_scales) != 4:
+            raise ValueError("target_funnel_proximity_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_funnel_proximity_stage_scales):
+            raise ValueError("target_funnel_proximity_stage_scales must be non-negative")
+        if self.target_funnel_proximity_sigma_m <= 0.0:
+            raise ValueError("target_funnel_proximity_sigma_m must be positive")
+        if len(self.target_funnel_progress_stage_scales) != 4:
+            raise ValueError("target_funnel_progress_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_funnel_progress_stage_scales):
+            raise ValueError("target_funnel_progress_stage_scales must be non-negative")
+        if self.target_funnel_progress_deadband_m < 0.0:
+            raise ValueError("target_funnel_progress_deadband_m must be non-negative")
+        if self.target_funnel_progress_clip_m <= 0.0:
+            raise ValueError("target_funnel_progress_clip_m must be positive")
+        if len(self.target_funnel_band_stage_scales) != 4:
+            raise ValueError("target_funnel_band_stage_scales must contain four values")
+        if any(float(scale) < 0.0 for scale in self.target_funnel_band_stage_scales):
+            raise ValueError("target_funnel_band_stage_scales must be non-negative")
+        _validate_target_funnel_band_weights(
+            self.target_funnel_band_weights,
+            expected_len=len(self.target_funnel_thresholds_m),
+        )
         if len(self.target_dwell_stage_scales) != 4:
             raise ValueError("target_dwell_stage_scales must contain four values")
         if any(float(scale) < 0.0 for scale in self.target_dwell_stage_scales):
@@ -298,6 +336,7 @@ class ProgressBucketConfig:
     lift_progress_deadband_m: float = 0.002
     cube_motion_effect_threshold_m: float = 0.005
     goal_threshold_m: float = 0.08
+    target_funnel_thresholds_m: tuple[float, float, float, float] = TARGET_FUNNEL_THRESHOLDS_M
 
     def __post_init__(self) -> None:
         if self.reach_threshold_m <= 0.0:
@@ -314,6 +353,7 @@ class ProgressBucketConfig:
             raise ValueError("cube_motion_effect_threshold_m must be positive")
         if self.goal_threshold_m <= 0.0:
             raise ValueError("goal_threshold_m must be positive")
+        _validate_target_funnel_thresholds(self.target_funnel_thresholds_m)
 
 
 @dataclass(frozen=True)
@@ -810,6 +850,22 @@ def parse_stage_scales(value: str | Sequence[float]) -> tuple[float, float, floa
     return scales  # type: ignore[return-value]
 
 
+def parse_target_funnel_thresholds(value: str | Sequence[float]) -> tuple[float, float, float, float]:
+    """Parse four descending target funnel radii in meters."""
+
+    thresholds = _parse_four_float_values(value, field_name="target funnel thresholds")
+    _validate_target_funnel_thresholds(thresholds)
+    return thresholds
+
+
+def parse_target_funnel_band_weights(value: str | Sequence[float]) -> tuple[float, float, float, float]:
+    """Parse four non-negative bonuses for the target funnel radii."""
+
+    weights = _parse_four_float_values(value, field_name="target funnel band weights")
+    _validate_target_funnel_band_weights(weights, expected_len=4)
+    return weights
+
+
 def parse_grasp_like_width_band(value: str | Sequence[float]) -> tuple[float, float, float]:
     """Parse low/peak/high finger-width values for the blocked-gap score."""
 
@@ -845,6 +901,36 @@ def _validate_stage_fracs(fracs: Sequence[float]) -> None:
     a, b, c = (float(x) for x in fracs)
     if not (0.0 < a < b < c < 1.0):
         raise ValueError("stage fractions must satisfy 0 < a < b < c < 1")
+
+
+def _parse_four_float_values(value: str | Sequence[float], *, field_name: str) -> tuple[float, float, float, float]:
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if len(parts) != 4:
+            raise ValueError(f"{field_name} must contain exactly four comma-separated values")
+        values = tuple(float(part) for part in parts)
+    else:
+        if len(value) != 4:
+            raise ValueError(f"{field_name} must contain exactly four values")
+        values = tuple(float(part) for part in value)
+    return values  # type: ignore[return-value]
+
+
+def _validate_target_funnel_thresholds(thresholds: Sequence[float]) -> None:
+    if len(thresholds) != 4:
+        raise ValueError("target_funnel_thresholds_m must contain exactly four values")
+    values = tuple(float(value) for value in thresholds)
+    if any(value <= 0.0 for value in values):
+        raise ValueError("target_funnel_thresholds_m must be positive")
+    if any(left <= right for left, right in zip(values, values[1:])):
+        raise ValueError("target_funnel_thresholds_m must be strictly descending")
+
+
+def _validate_target_funnel_band_weights(weights: Sequence[float], *, expected_len: int) -> None:
+    if len(weights) != expected_len:
+        raise ValueError("target_funnel_band_weights must match target funnel threshold count")
+    if any(float(weight) < 0.0 for weight in weights):
+        raise ValueError("target_funnel_band_weights must be non-negative")
 
 
 def _validate_stage_names(names: Sequence[str], field_name: str) -> None:
@@ -1143,6 +1229,106 @@ def compute_target_progress_proxy(
     return (context * progress).astype(np.float32)
 
 
+def compute_target_funnel_proximity(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    sigma_m: float = TARGET_FUNNEL_PROXIMITY_SIGMA_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Dense lifted-cube target proximity over a wider funnel than the 2cm success basin."""
+
+    if sigma_m <= 0.0:
+        raise ValueError("sigma_m must be positive")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    return (context * np.exp(-next_dist / float(sigma_m))).astype(np.float32)
+
+
+def compute_target_funnel_progress(
+    proprios: np.ndarray,
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    deadband_m: float = TARGET_FUNNEL_PROGRESS_DEADBAND_M,
+    clip_m: float = TARGET_FUNNEL_PROGRESS_CLIP_M,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Per-step progress toward target, gated by lift and tuned for the funnel phase."""
+
+    if deadband_m < 0.0:
+        raise ValueError("deadband_m must be non-negative")
+    if clip_m <= 0.0:
+        raise ValueError("clip_m must be positive")
+    proprio_array = _as_2d_float(proprios, name="proprios")
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    if proprio_array.shape[0] != next_proprio_array.shape[0]:
+        raise ValueError("proprios and next_proprios must share batch size")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    prev_dist = np.linalg.norm(proprio_array[:, CUBE_TO_TARGET], axis=1)
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    progress = np.clip(
+        (prev_dist - next_dist - float(deadband_m)) / float(clip_m),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    return (context * progress).astype(np.float32)
+
+
+def compute_target_funnel_band_bonus(
+    next_proprios: np.ndarray,
+    cube_reset_z: np.ndarray,
+    *,
+    thresholds_m: Sequence[float] = TARGET_FUNNEL_THRESHOLDS_M,
+    band_weights: Sequence[float] = TARGET_FUNNEL_BAND_WEIGHTS,
+    lift_gate_m: float = TARGET_PROGRESS_LIFT_GATE_M,
+    lift_gate_band_m: float = TARGET_PROGRESS_LIFT_GATE_BAND_M,
+) -> np.ndarray:
+    """Step bonus for crossing wider target-distance bands before the final 2cm success."""
+
+    _validate_target_funnel_thresholds(thresholds_m)
+    _validate_target_funnel_band_weights(band_weights, expected_len=len(thresholds_m))
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    context = compute_lift_context(
+        next_proprio_array,
+        cube_reset_z,
+        lift_gate_m=lift_gate_m,
+        lift_gate_band_m=lift_gate_band_m,
+    )
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    thresholds = np.asarray(thresholds_m, dtype=np.float32)
+    weights = np.asarray(band_weights, dtype=np.float32)
+    hits = (next_dist[:, None] <= thresholds[None, :]).astype(np.float32)
+    return (context * np.sum(hits * weights[None, :], axis=1)).astype(np.float32)
+
+
+def compute_target_funnel_hits(
+    next_proprios: np.ndarray,
+    *,
+    thresholds_m: Sequence[float] = TARGET_FUNNEL_THRESHOLDS_M,
+) -> np.ndarray:
+    """Return per-threshold target-distance hit labels for funnel metrics and replay buckets."""
+
+    _validate_target_funnel_thresholds(thresholds_m)
+    next_proprio_array = _as_2d_float(next_proprios, name="next_proprios")
+    next_dist = np.linalg.norm(next_proprio_array[:, CUBE_TO_TARGET], axis=1)
+    thresholds = np.asarray(thresholds_m, dtype=np.float32)
+    return next_dist[:, None] <= thresholds[None, :]
+
+
 def compute_target_dwell_proxy(
     next_proprios: np.ndarray,
     cube_reset_z: np.ndarray,
@@ -1351,6 +1537,9 @@ def compute_pr611_shaping_terms(
             "grasp_like_proxy": zeros,
             "tiny_lift_delta_proxy": zeros,
             "target_progress_proxy": zeros,
+            "target_funnel_proximity": zeros,
+            "target_funnel_progress": zeros,
+            "target_funnel_band_bonus": zeros,
             "target_dwell_proxy": zeros,
             "target_overlift_penalty": zeros,
             "target_success_bonus": zeros,
@@ -1369,6 +1558,9 @@ def compute_pr611_shaping_terms(
         grasp_like_proxy = np.zeros((batch_size,), dtype=np.float32)
         tiny_lift_delta_proxy = np.zeros((batch_size,), dtype=np.float32)
         target_progress_proxy = np.zeros((batch_size,), dtype=np.float32)
+        target_funnel_proximity = np.zeros((batch_size,), dtype=np.float32)
+        target_funnel_progress = np.zeros((batch_size,), dtype=np.float32)
+        target_funnel_band_bonus = np.zeros((batch_size,), dtype=np.float32)
         target_dwell_proxy = np.zeros((batch_size,), dtype=np.float32)
         target_overlift_penalty = np.zeros((batch_size,), dtype=np.float32)
         target_success_bonus = np.zeros((batch_size,), dtype=np.float32)
@@ -1399,6 +1591,9 @@ def compute_pr611_shaping_terms(
         )
         if cube_reset_z is None:
             target_progress_proxy = np.zeros((batch_size,), dtype=np.float32)
+            target_funnel_proximity = np.zeros((batch_size,), dtype=np.float32)
+            target_funnel_progress = np.zeros((batch_size,), dtype=np.float32)
+            target_funnel_band_bonus = np.zeros((batch_size,), dtype=np.float32)
             target_dwell_proxy = np.zeros((batch_size,), dtype=np.float32)
             target_success_bonus = np.zeros((batch_size,), dtype=np.float32)
             target_away_penalty = np.zeros((batch_size,), dtype=np.float32)
@@ -1411,6 +1606,30 @@ def compute_pr611_shaping_terms(
                 cube_reset_z,
                 deadband_m=config.target_progress_deadband_m,
                 clip_m=config.target_progress_clip_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_funnel_proximity = compute_target_funnel_proximity(
+                next_proprios,
+                cube_reset_z,
+                sigma_m=config.target_funnel_proximity_sigma_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_funnel_progress = compute_target_funnel_progress(
+                proprio_array,
+                next_proprios,
+                cube_reset_z,
+                deadband_m=config.target_funnel_progress_deadband_m,
+                clip_m=config.target_funnel_progress_clip_m,
+                lift_gate_m=config.target_progress_lift_gate_m,
+                lift_gate_band_m=config.target_progress_lift_gate_band_m,
+            )
+            target_funnel_band_bonus = compute_target_funnel_band_bonus(
+                next_proprios,
+                cube_reset_z,
+                thresholds_m=config.target_funnel_thresholds_m,
+                band_weights=config.target_funnel_band_weights,
                 lift_gate_m=config.target_progress_lift_gate_m,
                 lift_gate_band_m=config.target_progress_lift_gate_band_m,
             )
@@ -1474,6 +1693,15 @@ def compute_pr611_shaping_terms(
     target_progress_proxy = (
         float(config.target_progress_stage_scales[stage_index]) * target_progress_proxy
     ).astype(np.float32)
+    target_funnel_proximity = (
+        float(config.target_funnel_proximity_stage_scales[stage_index]) * target_funnel_proximity
+    ).astype(np.float32)
+    target_funnel_progress = (
+        float(config.target_funnel_progress_stage_scales[stage_index]) * target_funnel_progress
+    ).astype(np.float32)
+    target_funnel_band_bonus = (
+        float(config.target_funnel_band_stage_scales[stage_index]) * target_funnel_band_bonus
+    ).astype(np.float32)
     target_dwell_proxy = (
         float(config.target_dwell_stage_scales[stage_index]) * target_dwell_proxy
     ).astype(np.float32)
@@ -1525,6 +1753,9 @@ def compute_pr611_shaping_terms(
         "grasp_like_proxy": grasp_like_proxy,
         "tiny_lift_delta_proxy": tiny_lift_delta_proxy,
         "target_progress_proxy": target_progress_proxy,
+        "target_funnel_proximity": target_funnel_proximity,
+        "target_funnel_progress": target_funnel_progress,
+        "target_funnel_band_bonus": target_funnel_band_bonus,
         "target_dwell_proxy": target_dwell_proxy,
         "target_overlift_penalty": target_overlift_penalty,
         "target_success_bonus": target_success_bonus,
@@ -1599,6 +1830,9 @@ def shape_rewards(
         + pr611_terms["grasp_like_proxy"]
         + pr611_terms["tiny_lift_delta_proxy"]
         + pr611_terms["target_progress_proxy"]
+        + pr611_terms["target_funnel_proximity"]
+        + pr611_terms["target_funnel_progress"]
+        + pr611_terms["target_funnel_band_bonus"]
         + pr611_terms["target_dwell_proxy"]
         + pr611_terms["target_overlift_penalty"]
         + pr611_terms["target_success_bonus"]
@@ -1625,6 +1859,15 @@ def shape_rewards(
         ),
         "reward/train/target_progress_proxy": (
             float(np.mean(pr611_terms["target_progress_proxy"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_funnel_proximity": (
+            float(np.mean(pr611_terms["target_funnel_proximity"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_funnel_progress": (
+            float(np.mean(pr611_terms["target_funnel_progress"])) if shaped.size else 0.0
+        ),
+        "reward/train/target_funnel_band_bonus": (
+            float(np.mean(pr611_terms["target_funnel_band_bonus"])) if shaped.size else 0.0
         ),
         "reward/train/target_dwell_proxy": (
             float(np.mean(pr611_terms["target_dwell_proxy"])) if shaped.size else 0.0
@@ -1744,6 +1987,9 @@ def assign_progress_labels(
     labels[:, BUCKET_INDEX["grip"]] = grip
     labels[:, BUCKET_INDEX["lift"]] = lift
     labels[:, BUCKET_INDEX["goal"]] = goal
+    target_hits = cube_to_target[:, None] <= np.asarray(cfg.target_funnel_thresholds_m, dtype=np.float32)[None, :]
+    for index, bucket_name in enumerate(TARGET_FUNNEL_BUCKETS):
+        labels[:, BUCKET_INDEX[bucket_name]] = lift & target_hits[:, index]
     labels[:, BUCKET_INDEX["normal"]] = ~np.any(labels[:, 1:], axis=1)
     return labels
 
@@ -1901,6 +2147,12 @@ __all__ = [
     "TARGET_DWELL_SIGMA_M",
     "TARGET_AWAY_CLIP_M",
     "TARGET_AWAY_DEADBAND_M",
+    "TARGET_FUNNEL_BAND_WEIGHTS",
+    "TARGET_FUNNEL_BUCKETS",
+    "TARGET_FUNNEL_PROGRESS_CLIP_M",
+    "TARGET_FUNNEL_PROGRESS_DEADBAND_M",
+    "TARGET_FUNNEL_PROXIMITY_SIGMA_M",
+    "TARGET_FUNNEL_THRESHOLDS_M",
     "TARGET_OVERLIFT_MARGIN_M",
     "TARGET_PROGRESS_CLIP_M",
     "TARGET_PROGRESS_DEADBAND_M",
@@ -1937,6 +2189,10 @@ __all__ = [
     "compute_near_target_action_penalty",
     "compute_target_away_penalty",
     "compute_target_dwell_proxy",
+    "compute_target_funnel_band_bonus",
+    "compute_target_funnel_hits",
+    "compute_target_funnel_progress",
+    "compute_target_funnel_proximity",
     "compute_target_overlift_penalty",
     "compute_target_progress_proxy",
     "compute_target_success_bonus",
@@ -1951,5 +2207,7 @@ __all__ = [
     "parse_stage_names",
     "parse_stage_scales",
     "parse_stage_fracs",
+    "parse_target_funnel_band_weights",
+    "parse_target_funnel_thresholds",
     "shape_rewards",
 ]

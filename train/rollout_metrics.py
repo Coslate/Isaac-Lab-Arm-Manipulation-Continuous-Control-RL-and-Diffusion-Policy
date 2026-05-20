@@ -10,6 +10,7 @@ import numpy as np
 
 
 DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M = 0.02
+DEFAULT_TARGET_FUNNEL_THRESHOLDS_M = (0.20, 0.10, 0.05, 0.02)
 PROPRIO_CUBE_POS_BASE_SLICE = slice(21, 24)
 PROPRIO_GRIPPER_FINGER_POS_SLICE = slice(14, 16)
 PROPRIO_EE_TO_CUBE_SLICE = slice(27, 30)
@@ -17,6 +18,15 @@ PROPRIO_CUBE_TO_TARGET_SLICE = slice(30, 33)
 ACTION_GRIPPER_INDEX = 6
 BLOCKED_GRASP_EMPTY_WIDTH_M = 0.010
 BLOCKED_GRASP_WIDTH_BAND_M = (0.015, 0.046, 0.065)
+
+
+def target_funnel_metric_names(
+    thresholds_m: tuple[float, float, float, float] | tuple[float, ...] = DEFAULT_TARGET_FUNNEL_THRESHOLDS_M,
+) -> tuple[str, ...]:
+    """Return stable metric suffixes such as target_20cm for target-funnel radii."""
+
+    _validate_target_funnel_thresholds(thresholds_m)
+    return tuple(f"target_{int(round(float(threshold) * 100.0))}cm" for threshold in thresholds_m)
 
 
 class LaneEpisodeMetricTracker:
@@ -113,6 +123,7 @@ class LaneLiftDiagnosticTracker:
         reach_dwell_threshold_m: float = 0.05,
         target_success_threshold_m: float = DEFAULT_SUCCESS_DISTANCE_THRESHOLD_M,
         target_hold_consecutive_steps: int = 5,
+        target_funnel_thresholds_m: tuple[float, float, float, float] | tuple[float, ...] = DEFAULT_TARGET_FUNNEL_THRESHOLDS_M,
     ) -> None:
         if num_lanes <= 0:
             raise ValueError("num_lanes must be positive")
@@ -126,6 +137,7 @@ class LaneLiftDiagnosticTracker:
             raise ValueError("target_success_threshold_m must be positive")
         if target_hold_consecutive_steps <= 0:
             raise ValueError("target_hold_consecutive_steps must be positive")
+        _validate_target_funnel_thresholds(target_funnel_thresholds_m)
         self.num_lanes = int(num_lanes)
         self.prefix = prefix.rstrip("/")
         self.window_size = int(window_size)
@@ -134,6 +146,9 @@ class LaneLiftDiagnosticTracker:
         self.reach_dwell_threshold_m = float(reach_dwell_threshold_m)
         self.target_success_threshold_m = float(target_success_threshold_m)
         self.target_hold_consecutive_steps = int(target_hold_consecutive_steps)
+        self.target_funnel_thresholds_m = tuple(float(value) for value in target_funnel_thresholds_m)
+        self.target_funnel_metric_names = target_funnel_metric_names(self.target_funnel_thresholds_m)
+        target_funnel_count = len(self.target_funnel_thresholds_m)
         self._max_cube_lift = np.full((self.num_lanes,), -np.inf, dtype=np.float64)
         self._min_ee_to_cube = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._min_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
@@ -144,6 +159,9 @@ class LaneLiftDiagnosticTracker:
         self._target_success_counts = np.zeros((self.num_lanes,), dtype=np.int64)
         self._target_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
         self._max_target_consecutive_steps = np.zeros((self.num_lanes,), dtype=np.int64)
+        self._target_funnel_counts = np.zeros((self.num_lanes, target_funnel_count), dtype=np.int64)
+        self._target_funnel_consecutive_steps = np.zeros((self.num_lanes, target_funnel_count), dtype=np.int64)
+        self._max_target_funnel_consecutive_steps = np.zeros((self.num_lanes, target_funnel_count), dtype=np.int64)
         self._target_distance_sums = np.zeros((self.num_lanes,), dtype=np.float64)
         self._final_cube_to_target = np.full((self.num_lanes,), np.inf, dtype=np.float64)
         self._cube_to_target_distances: list[list[float]] = [[] for _ in range(self.num_lanes)]
@@ -160,6 +178,15 @@ class LaneLiftDiagnosticTracker:
         self._completed_target_success_step_rates: deque[float] = deque(maxlen=self.window_size)
         self._completed_target_hold_episodes: deque[bool] = deque(maxlen=self.window_size)
         self._completed_target_hold_max_consecutive_steps: deque[int] = deque(maxlen=self.window_size)
+        self._completed_target_funnel_step_rates: dict[str, deque[float]] = {
+            name: deque(maxlen=self.window_size) for name in self.target_funnel_metric_names
+        }
+        self._completed_target_funnel_episode_hits: dict[str, deque[bool]] = {
+            name: deque(maxlen=self.window_size) for name in self.target_funnel_metric_names
+        }
+        self._completed_target_funnel_max_consecutive_steps: dict[str, deque[int]] = {
+            name: deque(maxlen=self.window_size) for name in self.target_funnel_metric_names
+        }
         self._completed_mean_cube_to_target: deque[float] = deque(maxlen=self.window_size)
         self._completed_p50_cube_to_target: deque[float] = deque(maxlen=self.window_size)
         self._completed_final_cube_to_target: deque[float] = deque(maxlen=self.window_size)
@@ -194,6 +221,10 @@ class LaneLiftDiagnosticTracker:
         ee_to_cube = np.linalg.norm(proprios[:, PROPRIO_EE_TO_CUBE_SLICE], axis=1)
         cube_to_target = np.linalg.norm(next_proprios[:, PROPRIO_CUBE_TO_TARGET_SLICE], axis=1)
         target_success = cube_to_target <= self.target_success_threshold_m
+        target_funnel_hits = (
+            cube_to_target[:, None]
+            <= np.asarray(self.target_funnel_thresholds_m, dtype=np.float64)[None, :]
+        )
         close_near = (
             (ee_to_cube <= self.grip_threshold_m)
             & (actions[:, ACTION_GRIPPER_INDEX] < self.close_command_threshold)
@@ -223,6 +254,7 @@ class LaneLiftDiagnosticTracker:
             self._reach_consecutive_steps[active],
         )
         self._target_success_counts[active] += target_success[active].astype(np.int64)
+        self._target_funnel_counts[active] += target_funnel_hits[active].astype(np.int64)
         active_target_success = active & target_success
         active_target_miss = active & ~target_success
         self._target_consecutive_steps[active_target_success] += 1
@@ -230,6 +262,15 @@ class LaneLiftDiagnosticTracker:
         self._max_target_consecutive_steps[active] = np.maximum(
             self._max_target_consecutive_steps[active],
             self._target_consecutive_steps[active],
+        )
+        self._target_funnel_consecutive_steps[active] = np.where(
+            target_funnel_hits[active],
+            self._target_funnel_consecutive_steps[active] + 1,
+            0,
+        )
+        self._max_target_funnel_consecutive_steps[active] = np.maximum(
+            self._max_target_funnel_consecutive_steps[active],
+            self._target_funnel_consecutive_steps[active],
         )
         self._target_distance_sums[active] += cube_to_target[active]
         self._final_cube_to_target[active] = cube_to_target[active]
@@ -259,6 +300,15 @@ class LaneLiftDiagnosticTracker:
             self._completed_target_hold_episodes.append(
                 bool(self._max_target_consecutive_steps[lane] >= self.target_hold_consecutive_steps)
             )
+            for threshold_index, metric_name in enumerate(self.target_funnel_metric_names):
+                count = int(self._target_funnel_counts[lane, threshold_index])
+                self._completed_target_funnel_step_rates[metric_name].append(
+                    float(count) / float(steps)
+                )
+                self._completed_target_funnel_episode_hits[metric_name].append(count > 0)
+                self._completed_target_funnel_max_consecutive_steps[metric_name].append(
+                    int(self._max_target_funnel_consecutive_steps[lane, threshold_index])
+                )
             self._completed_mean_cube_to_target.append(
                 float(np.mean(distances)) if distances.size else float(self._final_cube_to_target[lane])
             )
@@ -277,7 +327,7 @@ class LaneLiftDiagnosticTracker:
     def summary(self) -> dict[str, float]:
         if not self._completed_max_cube_lift:
             return {}
-        return {
+        logs = {
             self._metric_key("max_cube_lift_m"): float(np.max(self._completed_max_cube_lift)),
             self._metric_key("min_ee_to_cube_m"): float(np.min(self._completed_min_ee_to_cube)),
             self._metric_key("min_cube_to_target_m"): float(np.min(self._completed_min_cube_to_target)),
@@ -300,6 +350,17 @@ class LaneLiftDiagnosticTracker:
             self._metric_key("final_cube_to_target_m"): float(np.mean(self._completed_final_cube_to_target)),
             self._metric_key("mean_action_jerk"): float(np.mean(self._completed_mean_action_jerks)),
         }
+        for metric_name in self.target_funnel_metric_names:
+            logs[self._metric_key(f"{metric_name}_step_rate")] = float(
+                np.mean(self._completed_target_funnel_step_rates[metric_name])
+            )
+            logs[self._metric_key(f"{metric_name}_episode_rate")] = float(
+                np.mean(self._completed_target_funnel_episode_hits[metric_name])
+            )
+            logs[self._metric_key(f"{metric_name}_max_consecutive_steps")] = float(
+                np.mean(self._completed_target_funnel_max_consecutive_steps[metric_name])
+            )
+        return logs
 
     def _reset_lane(self, lane: int) -> None:
         self._max_cube_lift[lane] = -np.inf
@@ -312,6 +373,9 @@ class LaneLiftDiagnosticTracker:
         self._target_success_counts[lane] = 0
         self._target_consecutive_steps[lane] = 0
         self._max_target_consecutive_steps[lane] = 0
+        self._target_funnel_counts[lane, :] = 0
+        self._target_funnel_consecutive_steps[lane, :] = 0
+        self._max_target_funnel_consecutive_steps[lane, :] = 0
         self._target_distance_sums[lane] = 0.0
         self._final_cube_to_target[lane] = np.inf
         self._cube_to_target_distances[lane].clear()
@@ -530,6 +594,16 @@ def _blocked_finger_gap_score(width: np.ndarray) -> np.ndarray:
     rising = (width_array - low) / max(peak - low, np.finfo(np.float32).eps)
     falling = (high - width_array) / max(high - peak, np.finfo(np.float32).eps)
     return np.clip(np.minimum(rising, falling), 0.0, 1.0).astype(np.float32)
+
+
+def _validate_target_funnel_thresholds(thresholds_m: tuple[float, ...]) -> None:
+    if len(thresholds_m) != 4:
+        raise ValueError("target_funnel_thresholds_m must contain exactly four values")
+    values = tuple(float(value) for value in thresholds_m)
+    if any(value <= 0.0 for value in values):
+        raise ValueError("target_funnel_thresholds_m must be positive")
+    if any(left <= right for left, right in zip(values, values[1:])):
+        raise ValueError("target_funnel_thresholds_m must be strictly descending")
 
 
 def split_train_eval_lanes(num_envs: int, eval_lanes: int) -> tuple[np.ndarray, np.ndarray]:

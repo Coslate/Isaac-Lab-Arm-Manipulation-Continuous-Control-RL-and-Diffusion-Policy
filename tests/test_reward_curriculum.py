@@ -42,6 +42,10 @@ from train.reward_curriculum import (
     compute_near_target_action_penalty,
     compute_target_away_penalty,
     compute_target_dwell_proxy,
+    compute_target_funnel_band_bonus,
+    compute_target_funnel_hits,
+    compute_target_funnel_progress,
+    compute_target_funnel_proximity,
     compute_target_overlift_penalty,
     compute_target_progress_proxy,
     compute_target_success_bonus,
@@ -56,6 +60,8 @@ from train.reward_curriculum import (
     parse_stage_names,
     parse_stage_scales,
     parse_stage_fracs,
+    parse_target_funnel_band_weights,
+    parse_target_funnel_thresholds,
     shape_rewards,
 )
 from train.rollout_metrics import LaneEvalSubskillTracker
@@ -99,6 +105,21 @@ def test_parse_pr611_stage_controls_validate_values() -> None:
         parse_stage_scales("0.5,-0.1,0,0")
     with pytest.raises(ValueError, match="unsupported"):
         parse_stage_names("reach,bogus")
+
+
+def test_parse_target_funnel_controls_validate_descending_thresholds_and_weights() -> None:
+    assert parse_target_funnel_thresholds("0.20,0.10,0.05,0.02") == pytest.approx(
+        (0.20, 0.10, 0.05, 0.02)
+    )
+    assert parse_target_funnel_band_weights("0.10,0.25,0.50,0.0") == pytest.approx(
+        (0.10, 0.25, 0.50, 0.0)
+    )
+    with pytest.raises(ValueError, match="strictly descending"):
+        parse_target_funnel_thresholds("0.20,0.05,0.10,0.02")
+    with pytest.raises(ValueError, match="positive"):
+        parse_target_funnel_thresholds("0.20,0.10,0.05,0.0")
+    with pytest.raises(ValueError, match="non-negative"):
+        parse_target_funnel_band_weights("0.10,-0.25,0.50,0.0")
 
 
 def test_parse_grasp_like_width_band_requires_ordered_low_peak_high() -> None:
@@ -377,6 +398,41 @@ def test_target_progress_proxy_rewards_lifted_cube_distance_reduction_only() -> 
     )
 
 
+def test_target_funnel_terms_reward_outer_basin_progress_and_band_hits() -> None:
+    proprios = np.zeros((5, 40), dtype=np.float32)
+    next_proprios = np.zeros((5, 40), dtype=np.float32)
+    reset_z = np.zeros((5,), dtype=np.float32)
+    proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.25, 0.0, 0.0], [0.12, 0.0, 0.0], [0.06, 0.0, 0.0], [0.03, 0.0, 0.0], [0.25, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    next_proprios[:, CUBE_TO_TARGET] = np.array(
+        [[0.19, 0.0, 0.0], [0.09, 0.0, 0.0], [0.04, 0.0, 0.0], [0.019, 0.0, 0.0], [0.04, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    next_proprios[:, CUBE_POS_BASE.stop - 1] = np.array([0.04, 0.04, 0.04, 0.04, 0.01], dtype=np.float32)
+
+    proximity = compute_target_funnel_proximity(next_proprios, reset_z, sigma_m=0.15)
+    progress = compute_target_funnel_progress(proprios, next_proprios, reset_z, deadband_m=0.0002, clip_m=0.02)
+    band = compute_target_funnel_band_bonus(next_proprios, reset_z)
+    hits = compute_target_funnel_hits(next_proprios)
+
+    np.testing.assert_allclose(
+        proximity,
+        np.array([np.exp(-0.19 / 0.15), np.exp(-0.09 / 0.15), np.exp(-0.04 / 0.15), np.exp(-0.019 / 0.15), 0.0]),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(progress, np.array([1.0, 1.0, 0.99, 0.54, 0.0], dtype=np.float32), atol=1e-5)
+    np.testing.assert_allclose(band, np.array([0.10, 0.35, 0.85, 0.85, 0.0], dtype=np.float32), atol=1e-6)
+    assert hits.tolist() == [
+        [True, False, False, False],
+        [True, True, False, False],
+        [True, True, True, False],
+        [True, True, True, True],
+        [True, True, True, False],
+    ]
+
+
 def test_target_dwell_proxy_uses_lift_context_and_target_distance() -> None:
     next_proprios = np.zeros((3, 40), dtype=np.float32)
     reset_z = np.zeros((3,), dtype=np.float32)
@@ -557,6 +613,55 @@ def test_target_terms_are_stage_weighted_and_logged() -> None:
     assert logs["reward/train/target_progress_proxy"] == pytest.approx(terms["target_progress_proxy"][0])
     assert logs["reward/train/target_dwell_proxy"] == pytest.approx(terms["target_dwell_proxy"][0])
     assert logs["reward/train/target_overlift_penalty"] == pytest.approx(-0.00025)
+
+
+def test_target_funnel_terms_are_stage_weighted_and_logged() -> None:
+    proprios = np.zeros((1, 40), dtype=np.float32)
+    next_proprios = np.zeros((1, 40), dtype=np.float32)
+    actions = np.zeros((1, 7), dtype=np.float32)
+    proprios[0, CUBE_TO_TARGET] = np.array([0.12, 0.0, 0.0], dtype=np.float32)
+    next_proprios[0, CUBE_TO_TARGET] = np.array([0.04, 0.0, 0.0], dtype=np.float32)
+    next_proprios[0, CUBE_POS_BASE.stop - 1] = 0.04
+    config = RewardCurriculumConfig(
+        mode=REWARD_CURRICULUM_REACH_GRIP_LIFT_GOAL,
+        reach_progress_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        reach_dwell_stage_scales=(0.0, 0.0, 0.0, 0.0),
+        target_funnel_proximity_stage_scales=(0.0, 0.0, 0.0, 1.0),
+        target_funnel_proximity_sigma_m=0.20,
+        target_funnel_progress_stage_scales=(0.0, 0.0, 0.0, 2.0),
+        target_funnel_progress_clip_m=0.020,
+        target_funnel_band_stage_scales=(0.0, 0.0, 0.0, 3.0),
+        target_funnel_band_weights=(0.10, 0.25, 0.50, 0.0),
+    )
+
+    terms = compute_pr611_shaping_terms(
+        proprios,
+        next_proprios,
+        actions,
+        config=config,
+        stage_index=3,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+    )
+    shaped, logs, _lift = shape_rewards(
+        np.array([0.0], dtype=np.float32),
+        {},
+        proprios,
+        actions,
+        env_steps=90,
+        total_env_steps=100,
+        config=config,
+        next_proprios=next_proprios,
+        cube_reset_z=np.array([0.0], dtype=np.float32),
+        stage_index_override=3,
+    )
+
+    assert terms["target_funnel_proximity"][0] == pytest.approx(np.exp(-0.04 / 0.20))
+    assert terms["target_funnel_progress"][0] == pytest.approx(2.0)
+    assert terms["target_funnel_band_bonus"][0] == pytest.approx(3.0 * 0.85)
+    assert shaped[0] == pytest.approx(sum(term[0] for term in terms.values()))
+    assert logs["reward/train/target_funnel_proximity"] == pytest.approx(terms["target_funnel_proximity"][0])
+    assert logs["reward/train/target_funnel_progress"] == pytest.approx(2.0)
+    assert logs["reward/train/target_funnel_band_bonus"] == pytest.approx(2.55)
 
 
 def test_pr615_target_stability_terms_are_stage_weighted_and_logged() -> None:
@@ -839,6 +944,10 @@ def test_progress_labels_are_multilabel_without_bucket_order() -> None:
     assert not labels[1, BUCKET_INDEX["normal"]]
     assert labels[2, BUCKET_INDEX["lift"]]
     assert labels[2, BUCKET_INDEX["goal"]]
+    assert labels[2, BUCKET_INDEX["target_20cm"]]
+    assert labels[2, BUCKET_INDEX["target_10cm"]]
+    assert labels[2, BUCKET_INDEX["target_5cm"]]
+    assert labels[2, BUCKET_INDEX["target_2cm"]]
 
 
 def test_progress_diagnostic_labels_separate_grip_attempt_and_effect() -> None:

@@ -16,6 +16,7 @@ CUBE_POS_BASE_SLICE = slice(21, 24)
 TARGET_POS_BASE_SLICE = slice(24, 27)
 CUBE_TO_TARGET_SLICE = slice(30, 33)
 DEFAULT_SUCCESS_THRESHOLD_M = 0.02
+DEFAULT_TARGET_FUNNEL_THRESHOLDS_M = (0.20, 0.10, 0.05, 0.02)
 DEFAULT_CONSECUTIVE_SUCCESS_STEPS = 1
 SUCCESS_SOURCE_INFO = "info_success"
 SUCCESS_SOURCE_PROPRIO = "proprio_cube_to_target_norm"
@@ -48,6 +49,18 @@ class EvalMetrics:
     target_success_step_rate: float = 0.0
     target_hold_episode_rate: float = 0.0
     target_hold_max_consecutive_steps: float = 0.0
+    target_20cm_step_rate: float = 0.0
+    target_10cm_step_rate: float = 0.0
+    target_5cm_step_rate: float = 0.0
+    target_2cm_step_rate: float = 0.0
+    target_20cm_episode_rate: float = 0.0
+    target_10cm_episode_rate: float = 0.0
+    target_5cm_episode_rate: float = 0.0
+    target_2cm_episode_rate: float = 0.0
+    target_20cm_max_consecutive_steps: float = 0.0
+    target_10cm_max_consecutive_steps: float = 0.0
+    target_5cm_max_consecutive_steps: float = 0.0
+    target_2cm_max_consecutive_steps: float = 0.0
     mean_cube_to_target_m: float = 0.0
     p50_cube_to_target_m: float = 0.0
     final_cube_to_target_m: float = 0.0
@@ -126,6 +139,18 @@ def evaluate_rollout_dataset(
         target_success_step_rate=target_hold["target_success_step_rate"],
         target_hold_episode_rate=target_hold["target_hold_episode_rate"],
         target_hold_max_consecutive_steps=target_hold["target_hold_max_consecutive_steps"],
+        target_20cm_step_rate=target_hold["target_20cm_step_rate"],
+        target_10cm_step_rate=target_hold["target_10cm_step_rate"],
+        target_5cm_step_rate=target_hold["target_5cm_step_rate"],
+        target_2cm_step_rate=target_hold["target_2cm_step_rate"],
+        target_20cm_episode_rate=target_hold["target_20cm_episode_rate"],
+        target_10cm_episode_rate=target_hold["target_10cm_episode_rate"],
+        target_5cm_episode_rate=target_hold["target_5cm_episode_rate"],
+        target_2cm_episode_rate=target_hold["target_2cm_episode_rate"],
+        target_20cm_max_consecutive_steps=target_hold["target_20cm_max_consecutive_steps"],
+        target_10cm_max_consecutive_steps=target_hold["target_10cm_max_consecutive_steps"],
+        target_5cm_max_consecutive_steps=target_hold["target_5cm_max_consecutive_steps"],
+        target_2cm_max_consecutive_steps=target_hold["target_2cm_max_consecutive_steps"],
         mean_cube_to_target_m=target_hold["mean_cube_to_target_m"],
         p50_cube_to_target_m=target_hold["p50_cube_to_target_m"],
         final_cube_to_target_m=target_hold["final_cube_to_target_m"],
@@ -351,6 +376,7 @@ def target_hold_metrics(
     *,
     success_threshold_m: float = DEFAULT_SUCCESS_THRESHOLD_M,
     target_hold_consecutive_steps: int = 5,
+    target_funnel_thresholds_m: tuple[float, float, float, float] | tuple[float, ...] = DEFAULT_TARGET_FUNNEL_THRESHOLDS_M,
 ) -> dict[str, float | int]:
     """Compute target hold and cube-to-target distribution metrics from episodes."""
 
@@ -358,9 +384,14 @@ def target_hold_metrics(
         raise ValueError("success_threshold_m must be positive")
     if target_hold_consecutive_steps <= 0:
         raise ValueError("target_hold_consecutive_steps must be positive")
+    _validate_target_funnel_thresholds(target_funnel_thresholds_m)
+    target_funnel_names = _target_funnel_metric_names(target_funnel_thresholds_m)
     success_step_rates: list[float] = []
     max_consecutive_steps: list[int] = []
     hold_episodes: list[bool] = []
+    target_funnel_step_rates: dict[str, list[float]] = {name: [] for name in target_funnel_names}
+    target_funnel_episode_hits: dict[str, list[bool]] = {name: [] for name in target_funnel_names}
+    target_funnel_max_consecutive_steps: dict[str, list[int]] = {name: [] for name in target_funnel_names}
     mean_distances: list[float] = []
     p50_distances: list[float] = []
     final_distances: list[float] = []
@@ -373,10 +404,15 @@ def target_hold_metrics(
         success_step_rates.append(float(np.mean(step_successes)))
         max_consecutive_steps.append(max_run)
         hold_episodes.append(bool(max_run >= int(target_hold_consecutive_steps)))
+        for threshold, name in zip(target_funnel_thresholds_m, target_funnel_names, strict=True):
+            hits = distances <= float(threshold)
+            target_funnel_step_rates[name].append(float(np.mean(hits)))
+            target_funnel_episode_hits[name].append(bool(np.any(hits)))
+            target_funnel_max_consecutive_steps[name].append(_max_consecutive_true(hits))
         mean_distances.append(float(np.mean(distances)))
         p50_distances.append(float(np.median(distances)))
         final_distances.append(float(distances[-1]))
-    return {
+    metrics = {
         "target_hold_consecutive_steps": int(target_hold_consecutive_steps),
         "target_success_step_rate": float(np.mean(success_step_rates)) if success_step_rates else 0.0,
         "target_hold_episode_rate": float(np.mean(hold_episodes)) if hold_episodes else 0.0,
@@ -385,6 +421,19 @@ def target_hold_metrics(
         "p50_cube_to_target_m": float(np.median(p50_distances)) if p50_distances else 0.0,
         "final_cube_to_target_m": float(np.mean(final_distances)) if final_distances else 0.0,
     }
+    for name in target_funnel_names:
+        metrics[f"{name}_step_rate"] = (
+            float(np.mean(target_funnel_step_rates[name])) if target_funnel_step_rates[name] else 0.0
+        )
+        metrics[f"{name}_episode_rate"] = (
+            float(np.mean(target_funnel_episode_hits[name])) if target_funnel_episode_hits[name] else 0.0
+        )
+        metrics[f"{name}_max_consecutive_steps"] = (
+            float(np.mean(target_funnel_max_consecutive_steps[name]))
+            if target_funnel_max_consecutive_steps[name]
+            else 0.0
+        )
+    return metrics
 
 
 def _max_consecutive_true(values: np.ndarray) -> int:
@@ -398,6 +447,20 @@ def _max_consecutive_true(values: np.ndarray) -> int:
         else:
             current_run = 0
     return int(max_run)
+
+
+def _target_funnel_metric_names(thresholds_m: tuple[float, ...]) -> tuple[str, ...]:
+    return tuple(f"target_{int(round(float(threshold) * 100.0))}cm" for threshold in thresholds_m)
+
+
+def _validate_target_funnel_thresholds(thresholds_m: tuple[float, ...]) -> None:
+    if len(thresholds_m) != 4:
+        raise ValueError("target_funnel_thresholds_m must contain exactly four values")
+    values = tuple(float(value) for value in thresholds_m)
+    if any(value <= 0.0 for value in values):
+        raise ValueError("target_funnel_thresholds_m must be positive")
+    if any(left <= right for left, right in zip(values, values[1:])):
+        raise ValueError("target_funnel_thresholds_m must be strictly descending")
 
 
 def _as_episode_proprio(proprios: np.ndarray) -> np.ndarray:

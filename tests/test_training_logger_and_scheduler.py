@@ -27,6 +27,7 @@ from train.checkpoint_manager import (
     COMPOSITE_SUCCESS_LIFT_RETURN,
     STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
     STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
+    STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN,
     STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN,
     TrainingCheckpointManager,
 )
@@ -985,6 +986,64 @@ def test_training_checkpoint_manager_target_stability_requires_metrics(tmp_path:
         )
 
 
+def test_training_checkpoint_manager_target_funnel_stage3_prefers_funnel_before_distance(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_funnel",
+        save_best_by=STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    base = {
+        "curriculum/stage_index": 3.0,
+        "eval_rollout/success_rate": 0.2,
+        "eval_rollout/target_hold_episode_rate": 0.1,
+        "eval_rollout/target_5cm_episode_rate": 0.2,
+        "eval_rollout/target_10cm_episode_rate": 0.4,
+        "eval_rollout/target_20cm_episode_rate": 0.8,
+        "eval_rollout/p50_cube_to_target_m": 0.03,
+        "eval_rollout/mean_action_jerk": 0.5,
+        "eval_rollout/mean_return": 10.0,
+    }
+    better_outer = dict(base, **{"eval_rollout/target_20cm_episode_rate": 0.9, "eval_rollout/p50_cube_to_target_m": 0.20})
+    better_inner = dict(better_outer, **{"eval_rollout/target_5cm_episode_rate": 0.3, "eval_rollout/p50_cube_to_target_m": 0.10})
+
+    manager(agent, 100, base, None)
+    manager(agent, 200, better_outer, None)
+    manager(agent, 300, better_inner, None)
+
+    stage3_payload = load_checkpoint(tmp_path / "sac_stage_target_funnel_best_stage3.pt", expected_agent_type="sac")
+    global_payload = load_checkpoint(tmp_path / "sac_stage_target_funnel_best.pt", expected_agent_type="sac")
+    assert stage3_payload.metadata.num_env_steps == 300
+    assert global_payload.metadata.num_env_steps == 300
+    assert manager.stage_best_metric_values[3] == pytest.approx((0.2, 0.1, 0.3, 0.4, 0.9, -0.10, -0.5, 10.0))
+
+
+def test_training_checkpoint_manager_target_funnel_requires_funnel_metrics(tmp_path: Path):
+    agent = SACAgent(_tiny_sac_config())
+    manager = TrainingCheckpointManager(
+        checkpoint_dir=tmp_path,
+        checkpoint_name="sac_stage_target_funnel_bad",
+        save_best_by=STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN,
+        env_id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
+    )
+
+    with pytest.raises(ValueError, match="requires"):
+        manager(
+            agent,
+            10,
+            {
+                "curriculum/stage_index": 3.0,
+                "eval_rollout/success_rate": 0.0,
+                "eval_rollout/target_hold_episode_rate": 0.0,
+                "eval_rollout/target_5cm_episode_rate": 0.0,
+                "eval_rollout/p50_cube_to_target_m": 0.05,
+            },
+            None,
+        )
+
+
 def test_train_script_parsers_accept_checkpoint_curriculum_and_alpha_controls():
     sac_args = parse_sac_args(
         [
@@ -1426,6 +1485,59 @@ def test_train_script_parsers_accept_pr615_target_stability_controls():
     assert td3_args.target_hold_consecutive_steps == 6
 
 
+def test_train_script_parsers_accept_pr616_target_funnel_controls():
+    sac_args = parse_sac_args(
+        [
+            "--backend",
+            "fake",
+            "--target-funnel-thresholds-m",
+            "0.20,0.10,0.05,0.02",
+            "--target-funnel-proximity-stage-scales",
+            "0,0,0.3,0.8",
+            "--target-funnel-proximity-sigma-m",
+            "0.12",
+            "--target-funnel-progress-stage-scales",
+            "0,0,0.5,1.0",
+            "--target-funnel-progress-deadband-m",
+            "0.0003",
+            "--target-funnel-progress-clip-m",
+            "0.03",
+            "--target-funnel-band-stage-scales",
+            "0,0,0.4,1.2",
+            "--target-funnel-band-weights",
+            "0.1,0.2,0.4,0.0",
+        ]
+    )
+    td3_args = parse_td3_args(
+        [
+            "--backend",
+            "fake",
+            "--target_funnel_thresholds_m",
+            "0.20,0.10,0.05,0.02",
+            "--target_funnel_proximity_stage_scales",
+            "0,0,0.2,0.7",
+            "--target_funnel_progress_stage_scales",
+            "0,0,0.4,0.9",
+            "--target_funnel_band_stage_scales",
+            "0,0,0.3,1.1",
+            "--target_funnel_band_weights",
+            "0.1,0.25,0.5,0.0",
+        ]
+    )
+
+    _validate_sac_pr68_args(sac_args)
+    _validate_td3_pr68_args(td3_args)
+    assert sac_args.target_funnel_thresholds_m == "0.20,0.10,0.05,0.02"
+    assert sac_args.target_funnel_proximity_stage_scales == "0,0,0.3,0.8"
+    assert sac_args.target_funnel_proximity_sigma_m == pytest.approx(0.12)
+    assert sac_args.target_funnel_progress_stage_scales == "0,0,0.5,1.0"
+    assert sac_args.target_funnel_progress_deadband_m == pytest.approx(0.0003)
+    assert sac_args.target_funnel_progress_clip_m == pytest.approx(0.03)
+    assert sac_args.target_funnel_band_stage_scales == "0,0,0.4,1.2"
+    assert sac_args.target_funnel_band_weights == "0.1,0.2,0.4,0.0"
+    assert td3_args.target_funnel_proximity_stage_scales == "0,0,0.2,0.7"
+
+
 @pytest.mark.parametrize(
     ("argv", "validator", "message"),
     [
@@ -1461,6 +1573,26 @@ def test_train_script_parsers_accept_pr615_target_stability_controls():
             ["--backend", "fake", "--target-dwell-sigma-m", "0"],
             _validate_sac_pr68_args,
             "target-dwell-sigma-m",
+        ),
+        (
+            ["--backend", "fake", "--target-funnel-thresholds-m", "0.20,0.05,0.10,0.02"],
+            _validate_sac_pr68_args,
+            "strictly descending",
+        ),
+        (
+            ["--backend", "fake", "--target-funnel-proximity-sigma-m", "0"],
+            _validate_sac_pr68_args,
+            "target-funnel-proximity-sigma-m",
+        ),
+        (
+            ["--backend", "fake", "--target-funnel-progress-clip-m", "0"],
+            _validate_sac_pr68_args,
+            "target-funnel-progress-clip-m",
+        ),
+        (
+            ["--backend", "fake", "--target-funnel-band-weights", "0.1,-0.2,0.3,0"],
+            _validate_sac_pr68_args,
+            "non-negative",
         ),
         (
             ["--backend", "fake", "--target-overlift-penalty-stages", "bogus"],

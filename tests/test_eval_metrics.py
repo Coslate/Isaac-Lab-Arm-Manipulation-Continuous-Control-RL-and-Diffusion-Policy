@@ -89,6 +89,18 @@ def test_evaluate_rollout_dataset_computes_project_success_rate(tmp_path) -> Non
         "target_success_step_rate",
         "target_hold_episode_rate",
         "target_hold_max_consecutive_steps",
+        "target_20cm_step_rate",
+        "target_10cm_step_rate",
+        "target_5cm_step_rate",
+        "target_2cm_step_rate",
+        "target_20cm_episode_rate",
+        "target_10cm_episode_rate",
+        "target_5cm_episode_rate",
+        "target_2cm_episode_rate",
+        "target_20cm_max_consecutive_steps",
+        "target_10cm_max_consecutive_steps",
+        "target_5cm_max_consecutive_steps",
+        "target_2cm_max_consecutive_steps",
         "mean_cube_to_target_m",
         "p50_cube_to_target_m",
         "final_cube_to_target_m",
@@ -129,6 +141,10 @@ def test_evaluate_rollout_dataset_computes_project_success_rate(tmp_path) -> Non
     assert payload["target_success_step_rate"] == pytest.approx(1.0 / 6.0)
     assert payload["target_hold_episode_rate"] == pytest.approx(0.0)
     assert payload["target_hold_max_consecutive_steps"] == pytest.approx(0.5)
+    assert payload["target_20cm_step_rate"] == pytest.approx(1.0)
+    assert payload["target_10cm_step_rate"] == pytest.approx(1.0)
+    assert payload["target_5cm_step_rate"] == pytest.approx(1.0)
+    assert payload["target_2cm_step_rate"] == pytest.approx(1.0 / 6.0)
     assert payload["mean_cube_to_target_m"] == pytest.approx(((0.05 + 0.01 + 0.04) / 3.0 + (0.03 + 0.025) / 2.0) / 2.0)
     assert payload["p50_cube_to_target_m"] == pytest.approx(np.median([0.04, 0.0275]))
     assert payload["final_cube_to_target_m"] == pytest.approx((0.04 + 0.025) / 2.0)
@@ -188,6 +204,12 @@ def test_target_hold_metrics_are_stricter_than_any_step_success() -> None:
     assert metrics["target_success_step_rate"] == pytest.approx(0.5)
     assert metrics["target_hold_episode_rate"] == pytest.approx(0.5)
     assert metrics["target_hold_max_consecutive_steps"] == pytest.approx(1.5)
+    assert metrics["target_20cm_step_rate"] == pytest.approx(1.0)
+    assert metrics["target_10cm_step_rate"] == pytest.approx(1.0)
+    assert metrics["target_5cm_step_rate"] == pytest.approx(1.0)
+    assert metrics["target_2cm_step_rate"] == pytest.approx(0.5)
+    assert metrics["target_2cm_episode_rate"] == pytest.approx(1.0)
+    assert metrics["target_2cm_max_consecutive_steps"] == pytest.approx(1.5)
     assert metrics["mean_cube_to_target_m"] == pytest.approx(((0.03 + 0.01 + 0.03) / 3.0 + (0.03 + 0.01 + 0.015) / 3.0) / 2.0)
     assert metrics["p50_cube_to_target_m"] == pytest.approx(np.median([0.03, 0.015]))
     assert metrics["final_cube_to_target_m"] == pytest.approx((0.03 + 0.015) / 2.0)

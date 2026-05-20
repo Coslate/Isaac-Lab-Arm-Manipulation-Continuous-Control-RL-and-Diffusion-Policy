@@ -29,7 +29,17 @@ DEFAULT_ACTION_DIM = 7
 DEFAULT_RAM_BUDGET_GIB = 32.0
 DEFAULT_PRIORITY_SCORE_WEIGHTS: tuple[float, float, float, float] = (0.40, 0.25, 0.20, 0.15)
 DEFAULT_PROTECTED_SCORE_WEIGHTS: tuple[float, float, float] = (0.60, 0.25, 0.15)
-PROGRESS_BUCKETS: tuple[str, ...] = ("normal", "reach", "grip", "lift", "goal")
+PROGRESS_BUCKETS: tuple[str, ...] = (
+    "normal",
+    "reach",
+    "grip",
+    "lift",
+    "goal",
+    "target_20cm",
+    "target_10cm",
+    "target_5cm",
+    "target_2cm",
+)
 DIAGNOSTIC_BUCKETS: tuple[str, ...] = ("grip_attempt", "grip_effect")
 
 

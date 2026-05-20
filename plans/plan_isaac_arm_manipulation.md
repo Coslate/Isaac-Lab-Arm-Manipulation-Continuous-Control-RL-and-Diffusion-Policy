@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-05-06. The repository has completed the interview/demo vertical slice from
+Updated 2026-05-20. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -59,14 +59,14 @@ The current code base proves the robot-learning data and evaluation loop against
 Isaac backend, and now has SAC/TD3 train, logger, checkpoint-eval, live-monitor scaffolding,
 running normalization, reward diagnostics, periodic/best checkpoints, reward curriculum, and
 bucket-rarity prioritized replay, and eval-subskill dual-gated curriculum advancement. The
-latest SAC diagnostics still have `success_rate=0`: PR6.8 made reach/grip/lift/goal
+early SAC diagnostics had `success_rate=0`: PR6.8 made reach/grip/lift/goal
 events observable and replayable, PR6.9 added dense lift progress diagnostics, PR6.10
 added current-policy eval/exposure dual gates, PR6.11 added reach shaping/action
 diagnostics plus robust checkpoint selection, and PR6.12 added reach-dwell shaping plus a
 sustained-near-cube gate. The v8b run improved reach/grip signals
 (`bucket_reach=3837`, `bucket_grip=653`, `bucket_grip_effect=276`) and produced a best visual
 rollout with `min_ee_to_cube_m ~= 0.046`, but still did not lift (`max_cube_lift_m ~= 0.0014`,
-`success_rate=0`). The next serious SAC run should use PR6.12's dwell-mode reach gate,
+`success_rate=0`). That led to PR6.12's dwell-mode reach gate,
 nonzero `reach_dwell_proxy`, and zeroed legacy `reach_progress` to test whether a stable
 approach policy can unlock grip/lift learning. The v9b run reached stage 2 but exposed a
 reward-hacking failure mode: the old `grip_proxy` rewarded near-cube close commands without
@@ -78,11 +78,18 @@ reward. The v11 run confirmed that SAC can learn the full reach -> grip -> lift 
 chain, but fresh checkpoint evaluation and GIF/MP4 review show that target-phase success is
 still unstable: `final.pt` outperformed `best.pt`, several failures reached within roughly
 3-5 cm of the target, and the policy often pulled/rotated the lifted cube near the reticle
-instead of settling inside the 2 cm success region. PR6.15 records the next planned code-level
-fix: target-success-aligned reward shaping, near-target action stabilization, z-alignment
-penalty, target-hold metrics, and a stability-aware best-checkpoint comparator. The remaining
-research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
-DAgger.
+instead of settling inside the 2 cm success region. PR6.15 implemented the code-level
+fix for that failure mode: target-success-aligned reward shaping, near-target action
+stabilization, z-alignment penalty, target-hold metrics, and a stability-aware best-checkpoint
+comparator. The v12
+targethold run proved that this can succeed when exploration reaches the final target basin, but
+the same-command/same-hyperparameter v12 targethold rerun learned robust reach/grip/lift while
+never entering the 2 cm target success/hold basin. In that rerun, the late target signals
+(`target_success_bonus`, `target_dwell`, and near-target stabilization) stayed effectively dark,
+so PR6.16 records the next planned fix: a target-distance funnel at 20 cm -> 10 cm -> 5 cm ->
+2 cm, with wider stage3 distance-to-target shaping, target-near metrics/gates, replay buckets,
+and a funnel-aware checkpoint selector. The remaining research-training stack is PPO, pure GRPO,
+SAC expert demonstrations, Diffusion Policy BC, and DAgger.
 
 Runtime requirement for live Isaac commands:
 - On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
@@ -134,6 +141,7 @@ Implementation permission rule:
 | PR 6.13 - Post-v9b grasp-like + tiny-lift shaping | Done on 2026-05-03 | Replaces close-command reward hacking with opt-in grasp-like finger-width evidence, opt-in tiny step-to-step cube-lift reward, finger-width W&B diagnostics, and a recommended next-run stage-2 dwell removal | Targeted PR6.13 slice -> `118 passed`; full pytest in `isaac_arm` -> `346 passed, 1 skipped` | Tuned/improvement PR, not a controlled rerun. Intended to teach "near cube -> stable non-empty grasp-like closure -> first millimeters of cube lift" without reintroducing `grip_proxy`. |
 | PR 6.14 - Post-v10 target-approach shaping + stage-aware LR restart | Planned | Target progress/dwell shaping, target over-lift guardrail, target-aware stage/global best mode, ability-based target-approach eval gate, optional curriculum-advance LR restart | Planned tests: `tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`, `tests/test_sac_continuous.py`, `tests/test_td3_continuous.py`, optional `tests/test_checkpoint_manager.py` | Documentation-first until implementation is explicitly requested; no forced curriculum advancement. |
 | PR 6.15 - Post-v11 target success + stability shaping | Done on 2026-05-06 | Target-success bonus aligned to 2 cm eval success, target-away penalty, near-target action penalty, target z-alignment penalty, target-hold metrics, stability-aware best-checkpoint mode | Targeted PR6.15 slice -> `158 passed`; SAC/TD3 continuous slice -> `37 passed`; full pytest in `isaac_arm` -> `390 passed, 1 skipped` | Tuned/improvement PR after v11. Goal: convert "gets near target" into "enters and quietly holds target." |
+| PR 6.16 - Post-v12 target funnel shaping | Planned | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Planned tests: `tests/test_reward_curriculum.py`, `tests/test_rollout_metrics.py`, `tests/test_training_logger_and_scheduler.py`, `tests/test_checkpoint_manager.py`, `tests/test_eval_metrics.py`, `tests/test_eval_sac_td3_checkpoints.py`, `tests/test_visual_sac_td3_checkpoints.py`, `tests/test_sac_continuous.py`, `tests/test_td3_continuous.py` | Documentation-first until implementation is explicitly requested. Goal: make stage3 learn from 20/10/5 cm target progress instead of depending on the first lucky 2 cm hit. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -6304,6 +6312,524 @@ Implementation commit body:
 Add success-aligned target reward, target-away and near-target action penalties, cube-target
 z-alignment shaping, target-hold rollout/eval metrics, and a stability-aware best checkpoint
 mode. Keep old reward and checkpoint-selection modes backward compatible by default.
+```
+
+---
+
+### PR 6.16 - Post-v12 Target Funnel Shaping + Success-Basin Curriculum
+
+**Status**
+
+Planned on 2026-05-20 after comparing the v12 targethold run against the same-command,
+same-hyperparameter v12 targethold rerun:
+
+```text
+blue: sac_franka_2m5_seed0_v12_targethold
+red:  sac_franka_2m5_seed0_v12_targethold_rerun
+```
+
+This is a documentation-first PR description. Do not modify implementation files until the user
+explicitly asks for the implementation.
+
+**Why This PR Exists**
+
+The v12 targethold rerun showed that the current target phase is too dependent on rare discovery
+of the final 2 cm basin.
+
+Observed W&B evidence:
+
+```text
+shared:
+  same command, same seed, same major hparams, same LR/update/replay schedule
+
+blue old run:
+  eventually entered the 2 cm target basin
+  target_success_bonus, target_dwell, near-target action penalty, success, and hold signals woke up
+  train/eval success and target-hold metrics became nonzero late in training
+
+red rerun:
+  learned strong reach/grip/lift behavior
+  had high reach dwell, grip attempt/effect, blocked-grasp, and lift exposure
+  stage3 remained active for a long window
+  target_success_bonus and target_dwell stayed effectively zero
+  eval_rollout/success_rate and target_hold_episode_rate stayed zero
+```
+
+The difference is not evidence that the command was mistyped. Isaac/PhysX GPU dynamics, CUDA
+kernel/reduction order, vectorized reset/contact details, and SAC action sampling are not
+bit-exact deterministic at this horizon. Prioritized replay then amplifies early differences:
+one run discovers rare target-near transitions and protects/samples them; another run can learn
+reach/grip/lift well but never enters the sparse 2 cm success basin.
+
+PR6.15 made the final objective correct. PR6.16 should make the path into that final objective
+learnable by adding a target-distance funnel:
+
+```text
+20 cm -> 10 cm -> 5 cm -> 2 cm
+```
+
+The formal success condition remains 2 cm. The change is to give stage3 useful reward,
+curriculum diagnostics, replay protection, and checkpoint ranking before the policy gets lucky
+enough to touch 2 cm.
+
+**Non-Goals**
+
+- Do not change the evaluator's formal success threshold from 2 cm.
+- Do not reintroduce the removed `grip_proxy` reward.
+- Do not replace PR6.15 success/hold shaping; keep it as the final basin objective.
+- Do not add a new Isaac runtime dependency or import Isaac at module import time.
+- Do not assume same-seed Isaac SAC reruns are bit-exact reproducible.
+- Do not advance curriculum stages on a single lucky target-near episode.
+
+**Design Position**
+
+Keep the four existing high-level curriculum stages:
+
+```text
+reach -> grip_pre_lift -> lift -> stock_like/target
+```
+
+PR6.16 should not add another top-level stage unless implementation review proves it is simpler.
+Instead, stage3 receives an internal target funnel: reward and logs distinguish 20 cm, 10 cm,
+5 cm, and 2 cm target behavior while the final stage index remains stable. This avoids breaking
+existing checkpoint naming, stage-local protected replay, and W&B comparisons.
+
+**Code Change 1: Target Funnel Reward**
+
+Add opt-in target-funnel shaping that is active only after lift context is positive.
+
+Use the existing proprio contract:
+
+```text
+cube_to_target_vec = proprio[:, 30:33]
+next_cube_to_target_vec = next_proprio[:, 30:33]
+
+prev_dist = norm(cube_to_target_vec)
+next_dist = norm(next_cube_to_target_vec)
+lift_context = compute_lift_context(next_proprio, cube_reset_z)
+```
+
+Add a wide proximity term:
+
+```text
+target_funnel_proximity =
+  lift_context * exp(-next_dist / target_funnel_proximity_sigma_m)
+```
+
+Recommended default:
+
+```text
+target_funnel_proximity_sigma_m = 0.15
+target_funnel_proximity_stage_scales = 0.0,0.0,0.2,1.0
+```
+
+Rationale:
+- PR6.15 `target_dwell_sigma_m = 0.04` is good near the final basin but nearly dark at
+  20-30 cm;
+- the wider proximity term makes "lifted cube is getting globally closer to target" visible;
+- stage2 gets only a small preview, while stage3 gets the main pressure.
+
+Add a progress term that rewards getting closer across a wider stage3 range:
+
+```text
+target_funnel_progress =
+  lift_context
+  * clip((prev_dist - next_dist - target_funnel_progress_deadband_m)
+         / target_funnel_progress_clip_m, 0, 1)
+```
+
+Recommended default:
+
+```text
+target_funnel_progress_deadband_m = 0.0002
+target_funnel_progress_clip_m = 0.020
+target_funnel_progress_stage_scales = 0.0,0.0,0.2,1.2
+```
+
+Add threshold-band reward/diagnostics for the funnel:
+
+```text
+target_funnel_thresholds_m = 0.20,0.10,0.05,0.02
+target_funnel_band_hits[i] = lift_context * 1[next_dist <= threshold_i]
+target_funnel_band_bonus = sum_i(weight_i * target_funnel_band_hits[i])
+```
+
+Recommended default:
+
+```text
+target_funnel_band_stage_scales = 0.0,0.0,0.2,1.0
+target_funnel_band_weights = 0.10,0.25,0.50,0.0
+```
+
+The 2 cm threshold is part of the funnel metrics and gates, but its default band weight is zero
+because PR6.15 `target_success_bonus` already owns the final success reward. If implementation
+chooses to merge the final 2 cm funnel band into `target_success_bonus`, tests must prove the
+2 cm reward is not double-counted.
+
+Update shaped reward:
+
+```text
+shaped =
+  PR6.15 shaped reward
+  + target_funnel_proximity_stage_scale[stage] * target_funnel_proximity
+  + target_funnel_progress_stage_scale[stage] * target_funnel_progress
+  + target_funnel_band_stage_scale[stage] * target_funnel_band_bonus
+```
+
+Defaults must preserve PR6.15 behavior exactly when all new stage scales are zero.
+
+**Code Change 2: Target Funnel Metrics + Curriculum Diagnostics**
+
+Add train/eval rollout metrics for each funnel threshold:
+
+```text
+target_20cm_step_rate
+target_10cm_step_rate
+target_5cm_step_rate
+target_2cm_step_rate
+
+target_20cm_episode_rate
+target_10cm_episode_rate
+target_5cm_episode_rate
+target_2cm_episode_rate
+
+target_20cm_max_consecutive_steps
+target_10cm_max_consecutive_steps
+target_5cm_max_consecutive_steps
+target_2cm_max_consecutive_steps
+```
+
+Log keys:
+
+```text
+train_rollout/target_20cm_episode_rate
+train_rollout/target_10cm_episode_rate
+train_rollout/target_5cm_episode_rate
+train_rollout/target_2cm_episode_rate
+train_rollout/target_20cm_max_consecutive_steps
+train_rollout/target_10cm_max_consecutive_steps
+train_rollout/target_5cm_max_consecutive_steps
+train_rollout/target_2cm_max_consecutive_steps
+
+eval_rollout/target_20cm_episode_rate
+eval_rollout/target_10cm_episode_rate
+eval_rollout/target_5cm_episode_rate
+eval_rollout/target_2cm_episode_rate
+eval_rollout/target_20cm_max_consecutive_steps
+eval_rollout/target_10cm_max_consecutive_steps
+eval_rollout/target_5cm_max_consecutive_steps
+eval_rollout/target_2cm_max_consecutive_steps
+```
+
+Keep existing PR6.15 target-hold fields. `target_2cm_episode_rate` can equal the any-step 2 cm
+episode metric; `target_hold_episode_rate` remains stricter because it requires consecutive
+steps inside the basin.
+
+Add curriculum/gate diagnostic logs:
+
+```text
+curriculum/gate/eval_target_20cm_episode_rate
+curriculum/gate/eval_target_10cm_episode_rate
+curriculum/gate/eval_target_5cm_episode_rate
+curriculum/gate/eval_target_2cm_episode_rate
+curriculum/gate/eval_target_funnel_level
+```
+
+Do not use these target-funnel diagnostics to leave stage3 in the first implementation. Use them
+to prove whether the policy is progressing from 20 cm to 10 cm to 5 cm to 2 cm, and use them in
+checkpoint ranking. If a later PR splits target into substages, it should be based on these logs.
+
+**Code Change 3: Target-Near Replay Buckets**
+
+Add target-near bucket labels so rare target approach transitions are not mixed into one broad
+goal bucket.
+
+Proposed bucket labels:
+
+```text
+target_20cm
+target_10cm
+target_5cm
+target_2cm
+```
+
+Bucket assignment should require lift context so a cube that starts geometrically near target
+without being lifted does not become a false target-transition sample.
+
+Priority/protection behavior:
+- existing reach/grip/lift/goal buckets remain unchanged;
+- target-near buckets participate in priority replay rarity scoring;
+- protected rare-transition retention can protect `target_5cm` and `target_2cm` transitions;
+- `target_20cm` and `target_10cm` should be sampled enough to teach approach, but should not
+  evict true `target_2cm` success/hold samples once they appear.
+
+Log keys:
+
+```text
+priority_replay/bucket_count/target_20cm
+priority_replay/bucket_count/target_10cm
+priority_replay/bucket_count/target_5cm
+priority_replay/bucket_count/target_2cm
+
+priority_replay/bucket_rarity/target_20cm
+priority_replay/bucket_rarity/target_10cm
+priority_replay/bucket_rarity/target_5cm
+priority_replay/bucket_rarity/target_2cm
+```
+
+**Code Change 4: Funnel-Aware Best Checkpoint Selection**
+
+Add a new mode rather than changing existing modes:
+
+```text
+stage_aware:target_funnel_success_return
+```
+
+Stage3/global comparator priority:
+
+```text
+eval_rollout/success_rate
+eval_rollout/target_hold_episode_rate
+eval_rollout/target_5cm_episode_rate
+eval_rollout/target_10cm_episode_rate
+eval_rollout/target_20cm_episode_rate
+-eval_rollout/p50_cube_to_target_m
+-eval_rollout/mean_action_jerk
+eval_rollout/mean_return
+```
+
+Rationale:
+- if both runs have zero final success, prefer the checkpoint entering 5 cm more often;
+- if 5 cm ties, prefer 10 cm, then 20 cm;
+- if all funnel rates tie, use p50 distance, smoothness, then return;
+- do not let `max_cube_lift_m` dominate target-stage selection.
+
+If the new comparator is explicitly requested, missing funnel metrics should fail readably in
+tests instead of silently falling back to an older comparator.
+
+**Code Change 5: CLI, Validation, Logs, And Metadata**
+
+Add SAC and TD3 flags with both kebab-case and snake_case aliases where the surrounding parser
+does that already:
+
+```text
+--target-funnel-thresholds-m FLOAT,FLOAT,FLOAT,FLOAT          default: 0.20,0.10,0.05,0.02
+--target-funnel-proximity-stage-scales FLOAT,FLOAT,FLOAT,FLOAT default: 0.0,0.0,0.0,0.0
+--target-funnel-proximity-sigma-m FLOAT                       default: 0.15
+--target-funnel-progress-stage-scales FLOAT,FLOAT,FLOAT,FLOAT default: 0.0,0.0,0.0,0.0
+--target-funnel-progress-deadband-m FLOAT                     default: 0.0002
+--target-funnel-progress-clip-m FLOAT                         default: 0.020
+--target-funnel-band-stage-scales FLOAT,FLOAT,FLOAT,FLOAT     default: 0.0,0.0,0.0,0.0
+--target-funnel-band-weights FLOAT,FLOAT,FLOAT,FLOAT          default: 0.10,0.25,0.50,0.0
+```
+
+Validation:
+- thresholds must have exactly four positive values and be strictly descending;
+- stage-scale flags must contain exactly four nonnegative values;
+- band weights must match threshold count and be nonnegative;
+- sigma and clip must be positive;
+- deadband must be nonnegative;
+- defaults must keep old PR6.15 reward values and existing smoke tests unchanged.
+
+Reward log keys:
+
+```text
+reward/train/target_funnel_proximity
+reward/train/target_funnel_progress
+reward/train/target_funnel_band_bonus
+
+reward/eval_rollout/target_funnel_proximity
+reward/eval_rollout/target_funnel_progress
+reward/eval_rollout/target_funnel_band_bonus
+```
+
+Checkpoint metadata must store nondefault funnel hparams so later eval/visual scripts can report
+which target-funnel contract produced the checkpoint.
+
+**Recommended Use After Implementation**
+
+This next run is a tuned/improvement run after v12 targethold and its rerun, not a clean ablation.
+
+Do not present the final long command until implementation lands and parser tests verify the
+actual CLI names. The expected high-level deltas from v12 targethold are:
+
+```text
+add:
+  --target-funnel-thresholds-m 0.20,0.10,0.05,0.02
+  --target-funnel-proximity-stage-scales 0.0,0.0,0.2,1.0
+  --target-funnel-proximity-sigma-m 0.15
+  --target-funnel-progress-stage-scales 0.0,0.0,0.2,1.2
+  --target-funnel-progress-deadband-m 0.0002
+  --target-funnel-progress-clip-m 0.020
+  --target-funnel-band-stage-scales 0.0,0.0,0.2,1.0
+  --target-funnel-band-weights 0.10,0.25,0.50,0.0
+
+change:
+  --save-best-by stage_aware:target_stability_success_return
+  -> --save-best-by stage_aware:target_funnel_success_return
+
+keep:
+  PR6.15 target_success_bonus, target_dwell, target_away, z-alignment,
+  and near-target action stabilization as the final 2 cm basin objective
+```
+
+Suggested aligned run name after implementation:
+
+```text
+sac_franka_2m5_seed0_v13_targetfunnel
+```
+
+**Pytest Coverage Matrix**
+
+Every code change in PR6.16 must land with targeted pytest coverage before any long Isaac run.
+
+`tests/test_reward_curriculum.py`:
+- `target_funnel_proximity` is zero before lift context and positive after lift.
+- `target_funnel_proximity` is larger at 10 cm than at 20 cm.
+- `target_funnel_progress` is positive when distance decreases beyond deadband.
+- `target_funnel_progress` is zero when distance is unchanged or improves below deadband.
+- `target_funnel_progress` is zero or negative-free when distance increases.
+- `target_funnel_progress` clips at `target_funnel_progress_clip_m`.
+- band hits are true at 20/10/5/2 cm thresholds and false just outside each threshold.
+- band bonus applies weights in threshold order.
+- default 2 cm band weight does not double-count PR6.15 `target_success_bonus`.
+- new stage scales affect only configured stages.
+- all new stage scales disabled preserve PR6.15 shaped reward exactly.
+- train/eval reward-summary paths include the three new funnel reward keys.
+- invalid threshold count, non-descending thresholds, nonpositive thresholds, invalid stage-scale
+  length, negative stage scales, negative weights, nonpositive sigma/clip, and negative deadband
+  fail validation.
+
+`tests/test_rollout_metrics.py`:
+- step rates are computed correctly for 20/10/5/2 cm thresholds.
+- episode rates are computed correctly for no-hit, one-hit, and mixed-lane rollouts.
+- max consecutive target-near steps are computed for every threshold.
+- `target_2cm_episode_rate` matches any-step 2 cm success semantics.
+- `target_hold_episode_rate` remains stricter than `target_2cm_episode_rate` when hold steps
+  are greater than one.
+- metrics handle empty or incomplete fake rollout buffers readably.
+
+`tests/test_training_logger_and_scheduler.py`:
+- SAC parser accepts every PR6.16 CLI flag.
+- TD3 parser accepts every PR6.16 CLI flag.
+- parser validation rejects every invalid PR6.16 value listed above.
+- JSONL/TensorBoard/W&B logger path receives the new reward, rollout, curriculum, and priority
+  replay keys.
+- progress-log formatter maps the new target-funnel keys to readable short names.
+- fake same-env eval lanes log target-funnel metrics after clean eval episodes.
+- default flags keep PR6.15 reward and logging behavior unchanged except for documented zero-valued
+  metrics.
+
+`tests/test_checkpoint_manager.py`:
+- `stage_aware:target_funnel_success_return` is accepted as a `--save-best-by` mode.
+- the new mode rejects missing target-funnel metrics when explicitly requested.
+- stage3 comparator prefers higher `success_rate` first.
+- when success ties, comparator prefers higher `target_hold_episode_rate`.
+- when hold ties, comparator prefers higher `target_5cm_episode_rate`.
+- when 5 cm ties, comparator prefers higher `target_10cm_episode_rate`.
+- when 10 cm ties, comparator prefers higher `target_20cm_episode_rate`.
+- when funnel rates tie, comparator prefers lower `p50_cube_to_target_m`.
+- when p50 ties, comparator prefers lower `mean_action_jerk`.
+- when jerk ties, comparator uses `mean_return`.
+- higher `max_cube_lift_m` alone does not win stage3 when funnel/success metrics are worse.
+- old checkpoint modes remain behavior-compatible.
+
+`tests/test_eval_metrics.py` and `tests/test_eval_sac_td3_checkpoints.py`:
+- PR11-lite/PR11a metrics JSON includes target-funnel fields.
+- formal `success_rate` remains unchanged.
+- fake SAC and TD3 checkpoint eval writes the new fields for deterministic fake rollouts.
+- legacy metrics payloads without funnel fields fail only when the new comparator or explicit
+  validation mode requires them.
+
+`tests/test_visual_sac_td3_checkpoints.py`:
+- `record_gif_continuous` metrics payload includes target-funnel fields for the recorded lane.
+- external metrics-payload validation accepts matching PR6.16 fields.
+- PR6.16 does not weaken existing checkpoint/seed/settle validation.
+
+`tests/test_sac_continuous.py` and `tests/test_td3_continuous.py`:
+- fake backend smoke train completes with all PR6.16 defaults disabled.
+- fake backend smoke train completes with PR6.16 target-funnel shaping enabled.
+- checkpoint metadata stores PR6.16 hparams when nondefault flags are used.
+- loading a checkpoint with PR6.16 hparams preserves eval/checkpoint-policy behavior.
+
+Replay/bucket tests, in `tests/test_reward_curriculum.py`, `tests/test_replay_buffer.py`, or the
+existing replay test file:
+- target-near buckets are assigned from `next_proprio[:, 30:33]` and lift context.
+- target-near buckets are not assigned before lift context.
+- `target_5cm` and `target_2cm` transitions can be protected as rare transitions.
+- existing reach/grip/lift/goal bucket labels and rarity behavior stay compatible.
+- priority replay logs include target-funnel bucket counts and rarities.
+
+**Test Commands**
+
+Targeted verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_reward_curriculum.py \
+  tests/test_rollout_metrics.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_checkpoint_manager.py \
+  tests/test_eval_metrics.py \
+  tests/test_eval_sac_td3_checkpoints.py \
+  tests/test_visual_sac_td3_checkpoints.py \
+  tests/test_sac_continuous.py \
+  tests/test_td3_continuous.py
+```
+
+If target-near replay bucket coverage lands in a separate replay test file, add that file to the
+targeted command and record the exact command in the implementation PR summary.
+
+Full verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+Live Isaac smoke remains opt-in and is not required for PR6.16 unit completion:
+
+```bash
+RUN_ISAAC_RUNTIME_SMOKE=1 timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_isaac_runtime_smoke.py
+```
+
+**Definition Of Done**
+
+PR6.16 is complete when:
+- target-funnel proximity, progress, and threshold-band shaping are implemented with defaults
+  disabled;
+- SAC and TD3 parser/config paths expose and validate the new hparams;
+- train/eval reward logs expose every new target-funnel reward term;
+- rollout/eval metrics expose every 20/10/5/2 cm step, episode, and consecutive metric;
+- curriculum/gate logs expose target-funnel progress during stage3;
+- priority replay exposes and can protect target-near buckets;
+- the new funnel-aware checkpoint mode is implemented without changing older modes;
+- targeted tests cover every formula, log field, parser validation, metric, replay bucket, and
+  comparator rule;
+- full pytest passes in the `isaac_arm` environment;
+- the next v13 command can be written with exact implemented flags.
+
+**Suggested Commit Messages**
+
+For the plan-only PR description commit:
+
+```text
+docs(plan): specify post-v12 target funnel PR
+```
+
+For the later implementation commit:
+
+```text
+feat(rl): add target funnel shaping
+```
+
+Implementation commit body:
+
+```text
+Add target-distance funnel shaping, 20/10/5/2 cm rollout metrics, target-near replay buckets,
+and a funnel-aware checkpoint selector so stage3 can learn approach-to-target behavior before
+the first 2 cm success transition appears. Keep PR6.15 success/hold shaping as the final target
+basin objective and preserve old defaults.
 ```
 
 ---

@@ -50,6 +50,12 @@ def test_lane_lift_diagnostic_tracker_logs_target_hold_distance_and_jerk_metrics
     assert summary["eval_rollout/target_success_step_rate"] == pytest.approx(2.0 / 3.0)
     assert summary["eval_rollout/target_hold_max_consecutive_steps"] == pytest.approx(2.0)
     assert summary["eval_rollout/target_hold_episode_rate"] == pytest.approx(1.0)
+    assert summary["eval_rollout/target_20cm_step_rate"] == pytest.approx(1.0)
+    assert summary["eval_rollout/target_10cm_step_rate"] == pytest.approx(1.0)
+    assert summary["eval_rollout/target_5cm_step_rate"] == pytest.approx(1.0)
+    assert summary["eval_rollout/target_2cm_step_rate"] == pytest.approx(2.0 / 3.0)
+    assert summary["eval_rollout/target_2cm_max_consecutive_steps"] == pytest.approx(2.0)
+    assert summary["eval_rollout/target_2cm_episode_rate"] == pytest.approx(1.0)
     assert summary["eval_rollout/mean_cube_to_target_m"] == pytest.approx((0.015 + 0.010 + 0.030) / 3.0)
     assert summary["eval_rollout/p50_cube_to_target_m"] == pytest.approx(0.015)
     assert summary["eval_rollout/final_cube_to_target_m"] == pytest.approx(0.030)
@@ -84,6 +90,8 @@ def test_lane_lift_diagnostic_tracker_target_hold_requires_consecutive_hits() ->
     assert summary["train_rollout/target_success_step_rate"] == pytest.approx(2.0 / 3.0)
     assert summary["train_rollout/target_hold_max_consecutive_steps"] == pytest.approx(1.0)
     assert summary["train_rollout/target_hold_episode_rate"] == pytest.approx(0.0)
+    assert summary["train_rollout/target_5cm_step_rate"] == pytest.approx(1.0)
+    assert summary["train_rollout/target_2cm_max_consecutive_steps"] == pytest.approx(1.0)
 
 
 def test_lane_lift_diagnostic_tracker_rejects_invalid_target_hold_controls() -> None:
@@ -91,3 +99,9 @@ def test_lane_lift_diagnostic_tracker_rejects_invalid_target_hold_controls() -> 
         LaneLiftDiagnosticTracker(num_lanes=1, prefix="eval_rollout", target_success_threshold_m=0.0)
     with pytest.raises(ValueError, match="target_hold_consecutive_steps"):
         LaneLiftDiagnosticTracker(num_lanes=1, prefix="eval_rollout", target_hold_consecutive_steps=0)
+    with pytest.raises(ValueError, match="strictly descending"):
+        LaneLiftDiagnosticTracker(
+            num_lanes=1,
+            prefix="eval_rollout",
+            target_funnel_thresholds_m=(0.20, 0.05, 0.10, 0.02),
+        )

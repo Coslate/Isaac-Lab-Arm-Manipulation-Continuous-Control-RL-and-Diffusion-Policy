@@ -46,6 +46,8 @@ from train.reward_curriculum import (
     parse_stage_names,
     parse_stage_scales,
     parse_stage_fracs,
+    parse_target_funnel_band_weights,
+    parse_target_funnel_thresholds,
 )
 from train.reward_probe import probe_reward_signal
 from train.td3_loop import TD3TrainLoopConfig, run_td3_train_loop
@@ -178,6 +180,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-progress-deadband-m", dest="target_progress_deadband_m", type=float, default=0.0002)
     parser.add_argument("--target-progress-lift-gate-m", dest="target_progress_lift_gate_m", type=float, default=0.020)
     parser.add_argument("--target-progress-lift-gate-band-m", dest="target_progress_lift_gate_band_m", type=float, default=0.020)
+    parser.add_argument("--target-funnel-thresholds-m", "--target_funnel_thresholds_m", dest="target_funnel_thresholds_m", default="0.20,0.10,0.05,0.02")
+    parser.add_argument("--target-funnel-proximity-stage-scales", "--target_funnel_proximity_stage_scales", dest="target_funnel_proximity_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-funnel-proximity-sigma-m", "--target_funnel_proximity_sigma_m", dest="target_funnel_proximity_sigma_m", type=float, default=0.15)
+    parser.add_argument("--target-funnel-progress-stage-scales", "--target_funnel_progress_stage_scales", dest="target_funnel_progress_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-funnel-progress-deadband-m", "--target_funnel_progress_deadband_m", dest="target_funnel_progress_deadband_m", type=float, default=0.0002)
+    parser.add_argument("--target-funnel-progress-clip-m", "--target_funnel_progress_clip_m", dest="target_funnel_progress_clip_m", type=float, default=0.020)
+    parser.add_argument("--target-funnel-band-stage-scales", "--target_funnel_band_stage_scales", dest="target_funnel_band_stage_scales", default="0.0,0.0,0.0,0.0")
+    parser.add_argument("--target-funnel-band-weights", "--target_funnel_band_weights", dest="target_funnel_band_weights", default="0.10,0.25,0.50,0.0")
     parser.add_argument("--target-dwell-stage-scales", dest="target_dwell_stage_scales", default="0.0,0.0,0.0,0.0")
     parser.add_argument("--target-dwell-sigma-m", dest="target_dwell_sigma_m", type=float, default=0.08)
     parser.add_argument("--target-overlift-penalty-scale", dest="target_overlift_penalty_scale", type=float, default=0.0)
@@ -313,6 +323,14 @@ def run_with_env(env: Any, agent: TD3Agent, args: argparse.Namespace) -> dict[st
         target_progress_deadband_m=args.target_progress_deadband_m,
         target_progress_lift_gate_m=args.target_progress_lift_gate_m,
         target_progress_lift_gate_band_m=args.target_progress_lift_gate_band_m,
+        target_funnel_thresholds_m=parse_target_funnel_thresholds(args.target_funnel_thresholds_m),
+        target_funnel_proximity_stage_scales=parse_stage_scales(args.target_funnel_proximity_stage_scales),
+        target_funnel_proximity_sigma_m=args.target_funnel_proximity_sigma_m,
+        target_funnel_progress_stage_scales=parse_stage_scales(args.target_funnel_progress_stage_scales),
+        target_funnel_progress_deadband_m=args.target_funnel_progress_deadband_m,
+        target_funnel_progress_clip_m=args.target_funnel_progress_clip_m,
+        target_funnel_band_stage_scales=parse_stage_scales(args.target_funnel_band_stage_scales),
+        target_funnel_band_weights=parse_target_funnel_band_weights(args.target_funnel_band_weights),
         target_dwell_stage_scales=parse_stage_scales(args.target_dwell_stage_scales),
         target_dwell_sigma_m=args.target_dwell_sigma_m,
         target_overlift_penalty_scale=args.target_overlift_penalty_scale,
@@ -537,6 +555,11 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
     parse_grasp_like_width_band(args.grasp_like_width_band_m)
     parse_stage_scales(args.tiny_lift_delta_stage_scales)
     parse_stage_scales(args.target_progress_stage_scales)
+    parse_target_funnel_thresholds(args.target_funnel_thresholds_m)
+    parse_stage_scales(args.target_funnel_proximity_stage_scales)
+    parse_stage_scales(args.target_funnel_progress_stage_scales)
+    parse_stage_scales(args.target_funnel_band_stage_scales)
+    parse_target_funnel_band_weights(args.target_funnel_band_weights)
     parse_stage_scales(args.target_dwell_stage_scales)
     parse_stage_scales(args.target_success_bonus_stage_scales)
     parse_stage_scales(args.target_away_penalty_stage_scales)
@@ -571,6 +594,12 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--target-progress-lift-gate-m must be non-negative")
     if args.target_progress_lift_gate_band_m <= 0.0:
         raise ValueError("--target-progress-lift-gate-band-m must be positive")
+    if args.target_funnel_proximity_sigma_m <= 0.0:
+        raise ValueError("--target-funnel-proximity-sigma-m must be positive")
+    if args.target_funnel_progress_deadband_m < 0.0:
+        raise ValueError("--target-funnel-progress-deadband-m must be non-negative")
+    if args.target_funnel_progress_clip_m <= 0.0:
+        raise ValueError("--target-funnel-progress-clip-m must be positive")
     if args.target_dwell_sigma_m <= 0.0:
         raise ValueError("--target-dwell-sigma-m must be positive")
     if args.target_overlift_penalty_scale < 0.0:

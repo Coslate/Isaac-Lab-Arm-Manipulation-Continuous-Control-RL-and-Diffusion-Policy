@@ -195,6 +195,12 @@ def test_evaluate_episodes_reports_target_hold_and_distance_distribution_metrics
     assert metrics.target_success_step_rate == pytest.approx(3.0 / 5.0)
     assert metrics.target_hold_episode_rate == pytest.approx(1.0)
     assert metrics.target_hold_max_consecutive_steps == pytest.approx(2.0)
+    assert metrics.target_20cm_step_rate == pytest.approx(1.0)
+    assert metrics.target_10cm_step_rate == pytest.approx(1.0)
+    assert metrics.target_5cm_step_rate == pytest.approx(1.0)
+    assert metrics.target_2cm_step_rate == pytest.approx(3.0 / 5.0)
+    assert metrics.target_2cm_episode_rate == pytest.approx(1.0)
+    assert metrics.target_2cm_max_consecutive_steps == pytest.approx(2.0)
     assert metrics.mean_cube_to_target_m == pytest.approx((0.05 + 0.015 + 0.010 + 0.030 + 0.018) / 5.0)
     assert metrics.p50_cube_to_target_m == pytest.approx(0.018)
     assert metrics.final_cube_to_target_m == pytest.approx(0.018)
@@ -238,6 +244,18 @@ def test_eval_sac_checkpoint_writes_required_metrics_fields(tmp_path, monkeypatc
         "target_success_step_rate",
         "target_hold_episode_rate",
         "target_hold_max_consecutive_steps",
+        "target_20cm_step_rate",
+        "target_10cm_step_rate",
+        "target_5cm_step_rate",
+        "target_2cm_step_rate",
+        "target_20cm_episode_rate",
+        "target_10cm_episode_rate",
+        "target_5cm_episode_rate",
+        "target_2cm_episode_rate",
+        "target_20cm_max_consecutive_steps",
+        "target_10cm_max_consecutive_steps",
+        "target_5cm_max_consecutive_steps",
+        "target_2cm_max_consecutive_steps",
         "mean_cube_to_target_m",
         "p50_cube_to_target_m",
         "final_cube_to_target_m",

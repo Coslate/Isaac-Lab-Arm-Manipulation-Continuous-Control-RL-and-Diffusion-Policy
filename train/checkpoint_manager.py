@@ -11,12 +11,16 @@ COMPOSITE_SUCCESS_LIFT_RETURN = "composite:success_lift_return"
 STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN = "stage_aware:reach_lift_success_return"
 STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN = "stage_aware:reach_grip_lift_target_return"
 STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN = "stage_aware:target_stability_success_return"
+STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN = "stage_aware:target_funnel_success_return"
 COMPOSITE_SUCCESS_KEY = "eval_rollout/success_rate"
 COMPOSITE_LIFT_KEY = "eval_rollout/max_cube_lift_m"
 COMPOSITE_RETURN_KEY = "eval_rollout/mean_return"
 MIN_CUBE_TO_TARGET_KEY = "eval_rollout/min_cube_to_target_m"
 P50_CUBE_TO_TARGET_KEY = "eval_rollout/p50_cube_to_target_m"
 TARGET_HOLD_EPISODE_RATE_KEY = "eval_rollout/target_hold_episode_rate"
+TARGET_20CM_EPISODE_RATE_KEY = "eval_rollout/target_20cm_episode_rate"
+TARGET_10CM_EPISODE_RATE_KEY = "eval_rollout/target_10cm_episode_rate"
+TARGET_5CM_EPISODE_RATE_KEY = "eval_rollout/target_5cm_episode_rate"
 MEAN_ACTION_JERK_KEY = "eval_rollout/mean_action_jerk"
 STAGE_KEY = "curriculum/stage_index"
 STAGE0_REACH_KEY = "curriculum/gate/eval_reach_episode_rate"
@@ -42,6 +46,16 @@ STAGE_AWARE_TARGET_GLOBAL_KEYS = (
 STAGE_AWARE_TARGET_STABILITY_GLOBAL_KEYS = (
     COMPOSITE_SUCCESS_KEY,
     TARGET_HOLD_EPISODE_RATE_KEY,
+    P50_CUBE_TO_TARGET_KEY,
+    MEAN_ACTION_JERK_KEY,
+    COMPOSITE_RETURN_KEY,
+)
+STAGE_AWARE_TARGET_FUNNEL_GLOBAL_KEYS = (
+    COMPOSITE_SUCCESS_KEY,
+    TARGET_HOLD_EPISODE_RATE_KEY,
+    TARGET_5CM_EPISODE_RATE_KEY,
+    TARGET_10CM_EPISODE_RATE_KEY,
+    TARGET_20CM_EPISODE_RATE_KEY,
     P50_CUBE_TO_TARGET_KEY,
     MEAN_ACTION_JERK_KEY,
     COMPOSITE_RETURN_KEY,
@@ -109,8 +123,11 @@ class TrainingCheckpointManager:
             STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN,
             STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN,
             STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN,
+            STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN,
         ):
-            if self.save_best_by == STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN:
+            if self.save_best_by == STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN:
+                stage_candidate = self._stage_aware_target_funnel_best_candidate(metrics)
+            elif self.save_best_by == STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN:
                 stage_candidate = self._stage_aware_target_stability_best_candidate(metrics)
             elif self.save_best_by == STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN:
                 stage_candidate = self._stage_aware_target_best_candidate(metrics)
@@ -128,7 +145,9 @@ class TrainingCheckpointManager:
                         metric_value=comparator,
                         scheduler_state=scheduler_state,
                     )
-            if self.save_best_by == STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN:
+            if self.save_best_by == STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN:
+                global_candidate = self._stage_aware_target_funnel_global_best_candidate(metrics)
+            elif self.save_best_by == STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN:
                 global_candidate = self._stage_aware_target_stability_global_best_candidate(metrics)
             elif self.save_best_by == STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN:
                 global_candidate = self._stage_aware_target_global_best_candidate(metrics)
@@ -381,6 +400,49 @@ class TrainingCheckpointManager:
             return None
         return values
 
+    def _stage_aware_target_funnel_best_candidate(
+        self,
+        metrics: dict[str, float],
+    ) -> tuple[int, tuple[float, ...]] | None:
+        if STAGE_KEY not in metrics:
+            return None
+        stage_index = int(float(metrics[STAGE_KEY]))
+        if not 0 <= stage_index <= 3:
+            raise ValueError(f"{STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN} requires stage_index in [0, 3]")
+        if stage_index < 3:
+            return self._stage_aware_target_best_candidate(metrics)
+        if not any(key.startswith("eval_rollout/") for key in metrics):
+            return None
+        values = _required_metric_tuple(
+            metrics,
+            STAGE_AWARE_TARGET_FUNNEL_GLOBAL_KEYS,
+            transform=(1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0),
+            mode=STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN,
+        )
+        if not values:
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return stage_index, values
+
+    def _stage_aware_target_funnel_global_best_candidate(
+        self,
+        metrics: dict[str, float],
+    ) -> tuple[float, ...] | None:
+        if not any(key.startswith("eval_rollout/") for key in metrics):
+            return None
+        values = _required_metric_tuple(
+            metrics,
+            STAGE_AWARE_TARGET_FUNNEL_GLOBAL_KEYS,
+            transform=(1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0),
+            mode=STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN,
+        )
+        if not values:
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return values
+
     def _save_periodic(self, agent: Any, *, env_steps: int, scheduler_state: dict[str, Any] | None) -> None:
         path = self.checkpoint_dir / f"{self.checkpoint_name}_step_{env_steps:09d}.pt"
         self._save(agent, path, env_steps=env_steps, scheduler_state=scheduler_state)
@@ -483,6 +545,7 @@ __all__ = [
     "COMPOSITE_SUCCESS_LIFT_RETURN",
     "STAGE_AWARE_REACH_GRIP_LIFT_TARGET_RETURN",
     "STAGE_AWARE_REACH_LIFT_SUCCESS_RETURN",
+    "STAGE_AWARE_TARGET_FUNNEL_SUCCESS_RETURN",
     "STAGE_AWARE_TARGET_STABILITY_SUCCESS_RETURN",
     "TrainingCheckpointManager",
 ]

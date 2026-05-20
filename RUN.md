@@ -926,7 +926,7 @@ python -u -m scripts.train_sac_continuous \
   --wandb-mode online \
   2>&1 | tee ./logs/sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001_stdout_stderr.log
 
-RUN_NAME=sac_franka_2m5_seed0_v12_targethold
+RUN_NAME=sac_franka_2m5_seed0_v12_targethold_rerun
 
 python -u -m scripts.train_sac_continuous \
   --backend isaac \

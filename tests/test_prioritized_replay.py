@@ -170,6 +170,34 @@ def test_replay_buffer_logs_grip_attempt_and_effect_diagnostic_counts() -> None:
     assert logs["priority_replay/bucket_count/grip_effect"] == pytest.approx(1.0)
 
 
+def test_replay_buffer_logs_target_funnel_bucket_counts_and_rarity() -> None:
+    rng = np.random.default_rng(9)
+    buffer = ReplayBuffer(
+        capacity=8,
+        ram_budget_gib=8.0,
+        seed=0,
+        prioritize_replay=True,
+        priority_replay_ratio=0.5,
+    )
+
+    for _ in range(3):
+        buffer.push(**make_dummy_transition(rng=rng), bucket_labels=_label("normal"), episode_return=0.0)
+    buffer.push(**make_dummy_transition(rng=rng), bucket_labels=_label("lift", "target_20cm"), episode_return=1.0)
+    buffer.push(
+        **make_dummy_transition(rng=rng),
+        bucket_labels=_label("lift", "target_20cm", "target_10cm", "target_5cm"),
+        episode_return=2.0,
+    )
+
+    logs = buffer.priority_logs()
+
+    assert logs["priority_replay/bucket_count/target_20cm"] == pytest.approx(2.0)
+    assert logs["priority_replay/bucket_count/target_10cm"] == pytest.approx(1.0)
+    assert logs["priority_replay/bucket_count/target_5cm"] == pytest.approx(1.0)
+    assert logs["priority_replay/bucket_count/target_2cm"] == pytest.approx(0.0)
+    assert logs["priority_replay/bucket_rarity/target_2cm"] > logs["priority_replay/bucket_rarity/target_20cm"]
+
+
 def test_replay_buffer_stores_protected_refresh_metadata() -> None:
     rng = np.random.default_rng(5)
     buffer = ReplayBuffer(capacity=4, ram_budget_gib=8.0, seed=0)
