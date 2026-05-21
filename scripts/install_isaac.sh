@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "[install_isaac] pip install -r ${REPO_ROOT}/requirement.txt"
 pip install -r "${REPO_ROOT}/requirement.txt"
+pip install wheel==0.45.1
 
 ISAACLAB_SITE="$(python -m pip show isaaclab | awk -F': ' '/^Location:/ {print $2}')"
 if [[ -z "${ISAACLAB_SITE}" ]]; then
