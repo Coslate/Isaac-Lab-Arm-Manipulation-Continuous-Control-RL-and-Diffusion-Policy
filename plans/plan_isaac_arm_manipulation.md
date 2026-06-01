@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-05-20. The repository has completed the interview/demo vertical slice from
+Updated 2026-06-01. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -85,11 +85,23 @@ comparator. The v12
 targethold run proved that this can succeed when exploration reaches the final target basin, but
 the same-command/same-hyperparameter v12 targethold rerun learned robust reach/grip/lift while
 never entering the 2 cm target success/hold basin. In that rerun, the late target signals
-(`target_success_bonus`, `target_dwell`, and near-target stabilization) stayed effectively dark,
-so PR6.16 records the next planned fix: a target-distance funnel at 20 cm -> 10 cm -> 5 cm ->
-2 cm, with wider stage3 distance-to-target shaping, target-near metrics/gates, replay buckets,
-and a funnel-aware checkpoint selector. The remaining research-training stack is PPO, pure GRPO,
-SAC expert demonstrations, Diffusion Policy BC, and DAgger.
+(`target_success_bonus`, `target_dwell`, and near-target stabilization) stayed effectively dark.
+PR6.16 is now implemented: target-distance funnel shaping at 20 cm -> 10 cm -> 5 cm -> 2 cm,
+target-near rollout/eval metrics, target-near replay buckets, and the
+`stage_aware:target_funnel_success_return` checkpoint selector are in the active code path. The
+restored `isaac_arm` conda environment currently passes the full fake-backend pytest suite
+(`401 passed, 1 skipped`) and the opt-in Isaac runtime smoke; PyTorch CUDA was confirmed on the
+RTX 3090 runtime.
+
+The latest diagnostic run is `sac_franka_2m5_seed0_v13_targetfunnel`. Its W&B plots show that
+the funnel worked as an exploration bridge: reach is reliable, lift and target-near buckets wake
+up late, and train/eval success/target-hold metrics become meaningfully nonzero. The remaining
+failure mode is not a missing target reward; it is late SAC value instability after roughly
+2.0M env steps (`td_error_mean`, `critic_loss`, `q_mean`, and negative `actor_loss` all grow while
+entropy collapses and `alpha` sits on its floor). The next planned code PR is PR6.17: add an
+optional Huber/SmoothL1 SAC critic-loss mode, defaulting to the current MSE behavior. The remaining
+research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
+DAgger.
 
 Runtime requirement for live Isaac commands:
 - On the vast.ai bare-metal runtime, use `DISPLAY=:0` and set `XAUTHORITY` to the active SDDM cookie under `/var/run/sddm/`.
@@ -141,7 +153,8 @@ Implementation permission rule:
 | PR 6.13 - Post-v9b grasp-like + tiny-lift shaping | Done on 2026-05-03 | Replaces close-command reward hacking with opt-in grasp-like finger-width evidence, opt-in tiny step-to-step cube-lift reward, finger-width W&B diagnostics, and a recommended next-run stage-2 dwell removal | Targeted PR6.13 slice -> `118 passed`; full pytest in `isaac_arm` -> `346 passed, 1 skipped` | Tuned/improvement PR, not a controlled rerun. Intended to teach "near cube -> stable non-empty grasp-like closure -> first millimeters of cube lift" without reintroducing `grip_proxy`. |
 | PR 6.14 - Post-v10 target-approach shaping + stage-aware LR restart | Planned | Target progress/dwell shaping, target over-lift guardrail, target-aware stage/global best mode, ability-based target-approach eval gate, optional curriculum-advance LR restart | Planned tests: `tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`, `tests/test_sac_continuous.py`, `tests/test_td3_continuous.py`, optional `tests/test_checkpoint_manager.py` | Documentation-first until implementation is explicitly requested; no forced curriculum advancement. |
 | PR 6.15 - Post-v11 target success + stability shaping | Done on 2026-05-06 | Target-success bonus aligned to 2 cm eval success, target-away penalty, near-target action penalty, target z-alignment penalty, target-hold metrics, stability-aware best-checkpoint mode | Targeted PR6.15 slice -> `158 passed`; SAC/TD3 continuous slice -> `37 passed`; full pytest in `isaac_arm` -> `390 passed, 1 skipped` | Tuned/improvement PR after v11. Goal: convert "gets near target" into "enters and quietly holds target." |
-| PR 6.16 - Post-v12 target funnel shaping | Planned | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Planned tests: `tests/test_reward_curriculum.py`, `tests/test_rollout_metrics.py`, `tests/test_training_logger_and_scheduler.py`, `tests/test_checkpoint_manager.py`, `tests/test_eval_metrics.py`, `tests/test_eval_sac_td3_checkpoints.py`, `tests/test_visual_sac_td3_checkpoints.py`, `tests/test_sac_continuous.py`, `tests/test_td3_continuous.py` | Documentation-first until implementation is explicitly requested. Goal: make stage3 learn from 20/10/5 cm target progress instead of depending on the first lucky 2 cm hit. |
+| PR 6.16 - Post-v12 target funnel shaping | Done by 2026-06-01 | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Targeted coverage across reward curriculum, rollout metrics, checkpoint manager, eval/visual, replay, SAC, and TD3 tests; full pytest in `isaac_arm` -> `401 passed, 1 skipped`; opt-in Isaac runtime smoke passed | v13 targetfunnel run proved the funnel unlocks late target behavior, but exposed late SAC critic/Q instability rather than a missing target-reward path. |
+| PR 6.17 - Optional SAC Huber critic loss | Planned | Add a SAC-only `critic_loss=mse|huber` option, defaulting to current MSE, plus `critic_huber_beta` for SmoothL1/Huber robustness against high-TD outliers | Planned tests: `tests/test_sac_continuous.py`, `tests/test_training_logger_and_scheduler.py`, optional checkpoint/eval regression if hparams are serialized outside existing metadata | First code-level stabilization candidate after v13. Do not change reward, curriculum, replay defaults, or TD3 in this PR. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -6320,16 +6333,20 @@ mode. Keep old reward and checkpoint-selection modes backward compatible by defa
 
 **Status**
 
-Planned on 2026-05-20 after comparing the v12 targethold run against the same-command,
-same-hyperparameter v12 targethold rerun:
+Implemented by 2026-06-01. This section is retained as the design contract and historical
+implementation checklist for the target-funnel code now used by the v13 targetfunnel run.
+
+Originally planned on 2026-05-20 after comparing the v12 targethold run against the
+same-command, same-hyperparameter v12 targethold rerun:
 
 ```text
 blue: sac_franka_2m5_seed0_v12_targethold
 red:  sac_franka_2m5_seed0_v12_targethold_rerun
 ```
 
-This is a documentation-first PR description. Do not modify implementation files until the user
-explicitly asks for the implementation.
+The original documentation-first warning has expired for PR6.16; implementation has landed.
+Future target-funnel changes should be new PRs or explicit follow-up edits, not silent changes to
+the implemented PR6.16 contract.
 
 **Why This PR Exists**
 
@@ -6830,6 +6847,223 @@ Add target-distance funnel shaping, 20/10/5/2 cm rollout metrics, target-near re
 and a funnel-aware checkpoint selector so stage3 can learn approach-to-target behavior before
 the first 2 cm success transition appears. Keep PR6.15 success/hold shaping as the final target
 basin objective and preserve old defaults.
+```
+
+---
+
+### PR 6.17 - Optional SAC Huber Critic Loss
+
+**Status**
+
+Planned on 2026-06-01 after reviewing the v13 targetfunnel W&B curves. This is a focused
+code-level stabilization PR. Do not change reward shaping, curriculum gates, replay defaults, or
+TD3 behavior in this PR.
+
+**Why This PR Exists**
+
+The v13 targetfunnel run learned the intended behavior chain, but the late SAC value-learning
+signals became unstable after roughly 2.0M env steps:
+
+```text
+td_error_mean rises sharply
+critic_loss spikes
+q_mean grows rapidly
+actor_loss becomes very negative
+entropy collapses while alpha sits on alpha_min
+```
+
+The active SAC implementation currently uses mean-squared error for both critics:
+
+```python
+critic_loss = 0.5 * (
+    mse_loss(current_q1, target)
+    + mse_loss(current_q2, target)
+)
+```
+
+MSE is sensitive to high-TD outliers because the error is squared. That is usually acceptable
+early in training, but v13 combines dense target-stage rewards with prioritized replay and many
+late high-return target transitions. Once a few high-TD target samples appear, MSE can let those
+samples dominate critic updates, which then encourages the actor to chase inflated Q estimates.
+
+Huber/SmoothL1 loss keeps the small-error behavior close to MSE while making large-error updates
+grow roughly linearly. This is a narrow stabilization layer around the critic update, not a new
+reward design.
+
+**Non-Goals**
+
+- Do not change the default SAC behavior: no flag should still use MSE.
+- Do not change TD3 unless a later TD3-specific run shows the same problem.
+- Do not change target-funnel reward scales, curriculum gates, alpha scheduling, or replay
+  sampling in this PR.
+- Do not change how TD errors are computed for logging or priority replay; keep raw absolute TD
+  errors comparable across MSE and Huber runs.
+- Do not add reward clipping, target-Q clipping, or critic gradient clipping in the same PR. Those
+  are valid later stabilizers if Huber is insufficient.
+
+**Code Change 1: SAC Config**
+
+Extend `SACConfig` with explicit critic-loss controls:
+
+```python
+critic_loss: str = "mse"          # allowed: "mse", "huber"
+critic_huber_beta: float = 1.0    # SmoothL1 transition point, used only for huber
+```
+
+Validation requirements:
+- `critic_loss` must be exactly `mse` or `huber`;
+- `critic_huber_beta` must be positive;
+- checkpoint hparams must include the new fields through the existing `hparam_dict()`;
+- default config must serialize as MSE and preserve current checkpoints/run behavior.
+
+**Code Change 2: SAC Critic Loss Helper**
+
+Add a small helper inside `agents/sac.py` or near the SAC agent implementation:
+
+```python
+def _critic_loss(pred: torch.Tensor, target: torch.Tensor, *, mode: str, huber_beta: float) -> torch.Tensor:
+    if mode == "mse":
+        return torch.nn.functional.mse_loss(pred, target)
+    if mode == "huber":
+        return torch.nn.functional.smooth_l1_loss(pred, target, beta=huber_beta)
+    raise ValueError(...)
+```
+
+Then replace the hardcoded MSE loss in `SACAgent.update()` with:
+
+```python
+critic_loss = 0.5 * (
+    _critic_loss(current_q1, target, mode=self.config.critic_loss, huber_beta=self.config.critic_huber_beta)
+    + _critic_loss(current_q2, target, mode=self.config.critic_loss, huber_beta=self.config.critic_huber_beta)
+)
+```
+
+Keep `td_errors`, `last_td_errors`, and the `train/td_error_mean` log based on raw absolute TD
+error, not on the Huber-transformed loss.
+
+**Code Change 3: SAC CLI Flags**
+
+Add SAC training flags only:
+
+```text
+--critic-loss {mse,huber}          default: mse
+--critic_huber_beta FLOAT          default: 1.0
+--critic-huber-beta FLOAT          alias for the same destination
+```
+
+Use the parser style already present in `scripts/train_sac_continuous.py`: kebab-case plus
+snake_case aliases where the project already supports both.
+
+The parser should reject:
+- unknown `critic_loss` values;
+- `critic_huber_beta <= 0`.
+
+**Code Change 4: Metadata And Diagnostics**
+
+No new W&B scalar is required for the first implementation. The selected mode and beta should be
+recoverable from checkpoint metadata/run hparams through existing config serialization. If a run
+config payload is already emitted to W&B or JSONL in the training loop, include these values there
+through the existing hparam path rather than creating a special log channel.
+
+**Pytest Coverage Matrix**
+
+Every implementation change in PR6.17 must land with corresponding pytest coverage.
+
+`tests/test_sac_continuous.py`:
+- default `SACConfig()` has `critic_loss == "mse"` and `critic_huber_beta == 1.0`.
+- invalid `critic_loss` raises a readable `ValueError`.
+- nonpositive `critic_huber_beta` raises a readable `ValueError`.
+- the internal helper returns the same value as `torch.nn.functional.mse_loss` in MSE mode.
+- the internal helper returns the same value as `torch.nn.functional.smooth_l1_loss(..., beta=...)`
+  in Huber mode.
+- for a synthetic large TD error, Huber loss is smaller than MSE loss, proving outlier damping.
+- a repeated synthetic SAC batch still reduces `train/critic_loss` in default MSE mode.
+- a repeated synthetic SAC batch can run and produce finite critic/actor/alpha logs in Huber mode.
+- `last_td_errors` remains raw absolute TD error in both modes, so priority replay feedback stays
+  comparable.
+- checkpoint metadata includes nondefault `critic_loss="huber"` and `critic_huber_beta` when used.
+
+`tests/test_training_logger_and_scheduler.py`:
+- SAC parser defaults to `critic_loss=mse` and `critic_huber_beta=1.0`.
+- SAC parser accepts `--critic-loss huber`.
+- SAC parser accepts the snake_case alias where applicable.
+- SAC parser accepts `--critic-huber-beta 0.5` and `--critic_huber_beta 0.5`.
+- parser validation rejects invalid modes and nonpositive beta values.
+- fake SAC smoke config can be constructed with default MSE without changing existing defaults.
+- fake SAC smoke config can be constructed with Huber enabled.
+
+Optional checkpoint/eval regression if metadata coverage is not already complete in
+`tests/test_sac_continuous.py`:
+- `tests/test_eval_sac_td3_checkpoints.py` verifies that loading/evaluating a SAC checkpoint with
+  Huber hparams still works and leaves policy inference unchanged.
+
+Do not add TD3 tests unless the implementation accidentally touches TD3. If TD3 is touched, add a
+regression proving TD3 parser/config behavior is unchanged.
+
+**Test Commands**
+
+Targeted verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_sac_continuous.py \
+  tests/test_training_logger_and_scheduler.py
+```
+
+If checkpoint/eval metadata coverage lands outside `tests/test_sac_continuous.py`, include the
+extra file:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_sac_continuous.py \
+  tests/test_training_logger_and_scheduler.py \
+  tests/test_eval_sac_td3_checkpoints.py
+```
+
+Full verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Definition Of Done**
+
+PR6.17 is complete when:
+- default SAC critic loss remains MSE and existing no-flag commands behave the same;
+- `critic_loss=huber` uses SmoothL1/Huber loss for both SAC critics;
+- Huber beta is validated and serialized;
+- raw TD-error logging and priority feedback remain unchanged;
+- SAC CLI exposes and validates the new option;
+- targeted tests cover config defaults, validation, helper math, outlier damping, CLI parsing,
+  update-loop smoke behavior, and checkpoint hparams;
+- full pytest passes in the `isaac_arm` environment.
+
+**Suggested Commit Messages**
+
+For this plan update:
+
+```text
+docs(plan): add optional SAC Huber critic-loss PR
+```
+
+For the later implementation:
+
+```text
+feat(sac): add optional Huber critic loss
+```
+
+Implementation commit body:
+
+```text
+Add a SAC critic-loss mode switch with MSE as the default and optional SmoothL1/Huber loss for
+large-TD robustness. Keep raw TD-error diagnostics and priority replay feedback unchanged, and
+serialize the selected loss mode in checkpoint hparams.
+```
+
+For the test-focused commit, if split from implementation:
+
+```text
+test(sac): cover critic loss mode selection
 ```
 
 ---
