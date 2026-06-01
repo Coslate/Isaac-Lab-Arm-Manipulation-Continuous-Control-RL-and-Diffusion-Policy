@@ -26,7 +26,7 @@ import numpy as np
 from agents.checkpointing import REPLAY_STORAGE_CPU_UINT8
 from agents.normalization import SUPPORTED_IMAGE_NORMALIZATION
 from agents.replay_buffer import DEFAULT_PRIORITY_SCORE_WEIGHTS, DEFAULT_PROTECTED_SCORE_WEIGHTS
-from agents.sac import SACAgent, SACConfig
+from agents.sac import SACAgent, SACConfig, SUPPORTED_SAC_CRITIC_LOSSES
 from configs import ISAAC_FRANKA_IK_REL_ENV_ID
 from train.checkpoint_manager import TrainingCheckpointManager
 from train.loggers import CompositeLogger, JSONLinesLogger, TensorBoardLogger, TrainLogger, WandbLogger
@@ -74,6 +74,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-alpha", dest="initial_alpha", type=float, default=0.2)
     parser.add_argument("--alpha-min", dest="alpha_min", type=float, default=0.0)
     parser.add_argument("--target-entropy", dest="target_entropy", default="auto")
+    parser.add_argument("--critic-loss", dest="critic_loss", choices=SUPPORTED_SAC_CRITIC_LOSSES, default="mse")
+    parser.add_argument("--critic-huber-beta", "--critic_huber_beta", dest="critic_huber_beta", type=float, default=1.0)
     parser.add_argument("--replay-storage", dest="replay_storage", choices=["cpu", REPLAY_STORAGE_CPU_UINT8], default="cpu")
     parser.add_argument("--lr-scheduler", dest="lr_scheduler", choices=SUPPORTED_SCHEDULERS, default="constant")
     parser.add_argument("--lr-warmup-updates", dest="lr_warmup_updates", type=int, default=0)
@@ -250,6 +252,8 @@ def build_agent(args: argparse.Namespace) -> SACAgent:
         target_entropy=_parse_target_entropy(args.target_entropy),
         apply_image_aug=args.apply_image_aug,
         image_normalization=args.image_normalization,
+        critic_loss=args.critic_loss,
+        critic_huber_beta=args.critic_huber_beta,
     )
     return SACAgent(cfg)
 
@@ -641,6 +645,8 @@ def _validate_pr68_args(args: argparse.Namespace) -> None:
         raise ValueError("--vertical-alignment-deadband-m must be non-negative")
     if args.rotation_action_penalty_scale < 0.0:
         raise ValueError("--rotation-action-penalty-scale must be non-negative")
+    if args.critic_huber_beta <= 0.0:
+        raise ValueError("--critic-huber-beta must be positive")
     if not 0.0 <= args.priority_replay_ratio <= 1.0:
         raise ValueError("--priority-replay-ratio must be in [0, 1]")
     if args.priority_rarity_power < 0.0:

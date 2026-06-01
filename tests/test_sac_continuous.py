@@ -12,7 +12,7 @@ import torch
 from agents.checkpointing import DETERMINISTIC_MODE_SAC, REPLAY_STORAGE_CPU_UINT8, load_checkpoint
 from agents.normalization import IMAGE_NORMALIZATION_PER_CHANNEL_RUNNING_MEAN_STD
 from agents.replay_buffer import ReplayBatch
-from agents.sac import SACAgent, SACConfig
+from agents.sac import SACAgent, SACConfig, _critic_loss
 from agents.torch_image_aug import PadAndRandomCropTorch
 from configs import ACTION_DIM
 from scripts.train_sac_continuous import _build_fake_env, _validate_periodic_eval_args, parse_args, run_with_env
@@ -70,6 +70,97 @@ def _make_batch(batch_size: int = SMALL_BATCH, *, terminal_step: int | None = No
         truncated=truncated,
         bootstrap_mask=bootstrap_mask,
     )
+
+
+# ---------------------------------------------------------------------------
+# Critic loss controls
+# ---------------------------------------------------------------------------
+
+
+def test_sac_config_defaults_to_mse_critic_loss():
+    cfg = SACConfig()
+    assert cfg.critic_loss == "mse"
+    assert cfg.critic_huber_beta == pytest.approx(1.0)
+    assert cfg.hparam_dict()["critic_loss"] == "mse"
+    assert cfg.hparam_dict()["critic_huber_beta"] == pytest.approx(1.0)
+
+
+def test_sac_config_rejects_invalid_critic_loss_controls():
+    with pytest.raises(ValueError, match="critic_loss"):
+        SACConfig(critic_loss="bogus")
+    with pytest.raises(ValueError, match="critic_huber_beta"):
+        SACConfig(critic_huber_beta=0.0)
+
+
+def test_sac_critic_loss_helper_matches_torch_losses_and_damps_outliers():
+    pred = torch.tensor([0.0, 2.0, 10.0])
+    target = torch.zeros_like(pred)
+
+    mse = _critic_loss(pred, target, mode="mse", huber_beta=1.0)
+    huber = _critic_loss(pred, target, mode="huber", huber_beta=1.0)
+
+    assert mse == pytest.approx(torch.nn.functional.mse_loss(pred, target).item())
+    assert huber == pytest.approx(torch.nn.functional.smooth_l1_loss(pred, target, beta=1.0).item())
+    assert float(huber.item()) < float(mse.item())
+
+
+def test_sac_huber_update_runs_with_finite_logs():
+    torch.manual_seed(0)
+    agent = SACAgent(
+        _tiny_config(
+            apply_image_aug=False,
+            critic_loss="huber",
+            critic_huber_beta=0.5,
+        )
+    )
+    batch = _make_batch()
+    latest: dict[str, float] | None = None
+    for _ in range(4):
+        latest = agent.update(batch)
+
+    assert latest is not None
+    for key in ("train/critic_loss", "train/actor_loss", "train/alpha_loss", "train/td_error_mean"):
+        assert math.isfinite(latest[key])
+    assert agent.last_td_errors is not None
+    assert torch.isfinite(agent.last_td_errors).all()
+
+
+def test_sac_last_td_errors_remain_raw_absolute_errors_with_huber_loss():
+    torch.manual_seed(0)
+    agent = SACAgent(_tiny_config(apply_image_aug=False, critic_loss="huber", critic_huber_beta=0.5))
+    batch = _make_batch()
+    device = agent.device
+
+    def _manual_td_errors() -> torch.Tensor:
+        images = batch.images.to(device)
+        proprios = agent.normalizers.normalize_proprio_torch(batch.proprios.to(device))
+        actions = agent.env_action_to_learner_torch(batch.actions.to(device))
+        rewards = batch.rewards.to(device).float()
+        next_images = batch.next_images.to(device)
+        next_proprios = agent.normalizers.normalize_proprio_torch(batch.next_proprios.to(device))
+        bootstrap_mask = batch.bootstrap_mask.to(device).float()
+        images_norm = agent._normalize_images(images)
+        next_images_norm = agent._normalize_images(next_images)
+        with torch.no_grad():
+            next_mean, next_log_std = agent.actor(next_images_norm, next_proprios)
+            from agents.distributions import SquashedGaussian
+
+            next_action, next_log_prob = SquashedGaussian(next_mean, next_log_std).sample()
+            target_q1 = agent.target_critic1(next_images_norm, next_proprios, next_action)
+            target_q2 = agent.target_critic2(next_images_norm, next_proprios, next_action)
+            target_q_min = torch.min(target_q1, target_q2) - agent.alpha.detach() * next_log_prob
+            target = rewards + agent.config.gamma * bootstrap_mask * target_q_min
+            current_q1 = agent.critic1(images_norm, proprios, actions)
+            current_q2 = agent.critic2(images_norm, proprios, actions)
+            return 0.5 * ((current_q1 - target).abs() + (current_q2 - target).abs())
+
+    torch.manual_seed(123)
+    expected = _manual_td_errors()
+    torch.manual_seed(123)
+    agent.update(batch)
+
+    assert agent.last_td_errors is not None
+    assert torch.allclose(agent.last_td_errors, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +353,8 @@ def test_sac_save_load_round_trip(tmp_path: Path):
     assert payload.metadata.replay_storage == REPLAY_STORAGE_CPU_UINT8
     assert "polyak_tau" in payload.metadata.algorithm_hparams
     assert "utd_ratio" in payload.metadata.algorithm_hparams
+    assert payload.metadata.algorithm_hparams["critic_loss"] == "mse"
+    assert payload.metadata.algorithm_hparams["critic_huber_beta"] == pytest.approx(1.0)
     assert payload.metadata.algorithm_hparams["target_entropy"] in (None, -ACTION_DIM, float(-ACTION_DIM))
     assert payload.metadata.normalizer_config["proprio"]["type"] == "running_mean_std"
     assert payload.metadata.normalizer_config["image"]["type"] == "none"
@@ -270,6 +363,14 @@ def test_sac_save_load_round_trip(tmp_path: Path):
     loaded = SACAgent.load(path, config=cfg)
     actual = loaded.act(images, proprios, deterministic=True)
     assert torch.allclose(expected, actual, atol=1e-5)
+
+
+def test_sac_checkpoint_metadata_records_huber_critic_loss(tmp_path: Path):
+    agent = SACAgent(_tiny_config(critic_loss="huber", critic_huber_beta=0.5))
+    path = agent.save(tmp_path / "sac_huber.pt", num_env_steps=5, seed=0)
+    payload = load_checkpoint(path, expected_agent_type="sac")
+    assert payload.metadata.algorithm_hparams["critic_loss"] == "huber"
+    assert payload.metadata.algorithm_hparams["critic_huber_beta"] == pytest.approx(0.5)
 
 
 def test_sac_load_resumes_optimizer_state(tmp_path: Path):
@@ -465,6 +566,45 @@ def test_train_sac_continuous_fake_backend_smoke(tmp_path: Path):
     assert payload.metadata.deterministic_action_mode == DETERMINISTIC_MODE_SAC
     assert payload.metadata.normalizer_config["image"]["type"] == "per_channel_running_mean_std"
     assert payload.extras["normalizer_state"]["image"]["rms"]["count"] > 0
+
+
+def test_train_sac_continuous_fake_backend_huber_smoke(tmp_path: Path):
+    args = parse_args(
+        [
+            "--backend",
+            "fake",
+            "--total-env-steps",
+            "24",
+            "--warmup-steps",
+            "8",
+            "--batch-size",
+            "4",
+            "--replay-capacity",
+            "64",
+            "--device",
+            "cpu",
+            "--checkpoint-dir",
+            str(tmp_path / "checkpoints"),
+            "--logs-dir",
+            str(tmp_path / "logs"),
+            "--ram-budget-gib",
+            "4",
+            "--reward-probe-steps",
+            "16",
+            "--checkpoint-name",
+            "sac_huber_smoke",
+            "--critic-loss",
+            "huber",
+            "--critic-huber-beta",
+            "0.5",
+        ]
+    )
+    env = _build_fake_env(num_envs=1, seed=args.seed)
+    agent = SACAgent(_tiny_config(critic_loss=args.critic_loss, critic_huber_beta=args.critic_huber_beta))
+    result = run_with_env(env, agent, args)
+    payload = load_checkpoint(Path(result["checkpoint"]), expected_agent_type="sac")
+    assert payload.metadata.algorithm_hparams["critic_loss"] == "huber"
+    assert payload.metadata.algorithm_hparams["critic_huber_beta"] == pytest.approx(0.5)
 
 
 def test_train_sac_rejects_in_process_isaac_periodic_eval():

@@ -27,6 +27,7 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from agents.backbone import ImageProprioBackbone, ImageProprioBackboneConfig
 from agents.checkpointing import (
@@ -46,6 +47,9 @@ from configs import ACTION_DIM, ISAAC_FRANKA_IK_REL_ENV_ID
 
 
 SAC_AGENT_TYPE = "sac"
+SAC_CRITIC_LOSS_MSE = "mse"
+SAC_CRITIC_LOSS_HUBER = "huber"
+SUPPORTED_SAC_CRITIC_LOSSES = (SAC_CRITIC_LOSS_MSE, SAC_CRITIC_LOSS_HUBER)
 
 
 @dataclass
@@ -68,6 +72,14 @@ class SACConfig:
     image_aug_pad: int = 8
     apply_image_aug: bool = True
     image_normalization: str = IMAGE_NORMALIZATION_NONE
+    critic_loss: str = SAC_CRITIC_LOSS_MSE
+    critic_huber_beta: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.critic_loss not in SUPPORTED_SAC_CRITIC_LOSSES:
+            raise ValueError(f"critic_loss must be one of {SUPPORTED_SAC_CRITIC_LOSSES}")
+        if self.critic_huber_beta <= 0.0:
+            raise ValueError("critic_huber_beta must be positive")
 
     def resolved_target_entropy(self) -> float:
         return float(-self.action_dim) if self.target_entropy is None else float(self.target_entropy)
@@ -91,6 +103,20 @@ def _build_head_cfg(cfg: SACConfig) -> HeadConfig:
         action_dim=cfg.action_dim,
         hidden_dim=cfg.hidden_dim,
     )
+
+
+def _critic_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    mode: str,
+    huber_beta: float,
+) -> torch.Tensor:
+    if mode == SAC_CRITIC_LOSS_MSE:
+        return F.mse_loss(pred, target)
+    if mode == SAC_CRITIC_LOSS_HUBER:
+        return F.smooth_l1_loss(pred, target, beta=huber_beta)
+    raise ValueError(f"critic_loss must be one of {SUPPORTED_SAC_CRITIC_LOSSES}")
 
 
 class _SACActor(nn.Module):
@@ -259,8 +285,18 @@ class SACAgent(nn.Module):
         td_errors = 0.5 * ((current_q1.detach() - target).abs() + (current_q2.detach() - target).abs())
         self.last_td_errors = td_errors.detach()
         critic_loss = 0.5 * (
-            torch.nn.functional.mse_loss(current_q1, target)
-            + torch.nn.functional.mse_loss(current_q2, target)
+            _critic_loss(
+                current_q1,
+                target,
+                mode=self.config.critic_loss,
+                huber_beta=self.config.critic_huber_beta,
+            )
+            + _critic_loss(
+                current_q2,
+                target,
+                mode=self.config.critic_loss,
+                huber_beta=self.config.critic_huber_beta,
+            )
         )
         self.critic_optimizer.zero_grad()
         critic_loss.backward()

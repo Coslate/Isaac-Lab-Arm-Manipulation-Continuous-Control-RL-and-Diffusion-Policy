@@ -90,7 +90,7 @@ PR6.16 is now implemented: target-distance funnel shaping at 20 cm -> 10 cm -> 5
 target-near rollout/eval metrics, target-near replay buckets, and the
 `stage_aware:target_funnel_success_return` checkpoint selector are in the active code path. The
 restored `isaac_arm` conda environment currently passes the full fake-backend pytest suite
-(`401 passed, 1 skipped`) and the opt-in Isaac runtime smoke; PyTorch CUDA was confirmed on the
+(`410 passed, 1 skipped`) and the opt-in Isaac runtime smoke; PyTorch CUDA was confirmed on the
 RTX 3090 runtime.
 
 The latest diagnostic run is `sac_franka_2m5_seed0_v13_targetfunnel`. Its W&B plots show that
@@ -98,8 +98,8 @@ the funnel worked as an exploration bridge: reach is reliable, lift and target-n
 up late, and train/eval success/target-hold metrics become meaningfully nonzero. The remaining
 failure mode is not a missing target reward; it is late SAC value instability after roughly
 2.0M env steps (`td_error_mean`, `critic_loss`, `q_mean`, and negative `actor_loss` all grow while
-entropy collapses and `alpha` sits on its floor). The next planned code PR is PR6.17: add an
-optional Huber/SmoothL1 SAC critic-loss mode, defaulting to the current MSE behavior. The remaining
+entropy collapses and `alpha` sits on its floor). PR6.17 is now implemented: SAC can opt into
+Huber/SmoothL1 critic loss with `--critic-loss huber` while the default remains MSE. The remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -154,7 +154,7 @@ Implementation permission rule:
 | PR 6.14 - Post-v10 target-approach shaping + stage-aware LR restart | Planned | Target progress/dwell shaping, target over-lift guardrail, target-aware stage/global best mode, ability-based target-approach eval gate, optional curriculum-advance LR restart | Planned tests: `tests/test_reward_curriculum.py`, `tests/test_training_logger_and_scheduler.py`, `tests/test_sac_continuous.py`, `tests/test_td3_continuous.py`, optional `tests/test_checkpoint_manager.py` | Documentation-first until implementation is explicitly requested; no forced curriculum advancement. |
 | PR 6.15 - Post-v11 target success + stability shaping | Done on 2026-05-06 | Target-success bonus aligned to 2 cm eval success, target-away penalty, near-target action penalty, target z-alignment penalty, target-hold metrics, stability-aware best-checkpoint mode | Targeted PR6.15 slice -> `158 passed`; SAC/TD3 continuous slice -> `37 passed`; full pytest in `isaac_arm` -> `390 passed, 1 skipped` | Tuned/improvement PR after v11. Goal: convert "gets near target" into "enters and quietly holds target." |
 | PR 6.16 - Post-v12 target funnel shaping | Done by 2026-06-01 | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Targeted coverage across reward curriculum, rollout metrics, checkpoint manager, eval/visual, replay, SAC, and TD3 tests; full pytest in `isaac_arm` -> `401 passed, 1 skipped`; opt-in Isaac runtime smoke passed | v13 targetfunnel run proved the funnel unlocks late target behavior, but exposed late SAC critic/Q instability rather than a missing target-reward path. |
-| PR 6.17 - Optional SAC Huber critic loss | Planned | Add a SAC-only `critic_loss=mse|huber` option, defaulting to current MSE, plus `critic_huber_beta` for SmoothL1/Huber robustness against high-TD outliers | Planned tests: `tests/test_sac_continuous.py`, `tests/test_training_logger_and_scheduler.py`, optional checkpoint/eval regression if hparams are serialized outside existing metadata | First code-level stabilization candidate after v13. Do not change reward, curriculum, replay defaults, or TD3 in this PR. |
+| PR 6.17 - Optional SAC Huber critic loss | Done on 2026-06-01 | SAC-only `critic_loss=mse|huber` option, defaulting to current MSE, plus `critic_huber_beta` for SmoothL1/Huber robustness against high-TD outliers | Targeted pytest in `isaac_arm`: `tests/test_sac_continuous.py tests/test_training_logger_and_scheduler.py` -> `106 passed`; full pytest -> `410 passed, 1 skipped` | First code-level stabilization candidate after v13. Reward, curriculum, replay defaults, TD-error priority feedback, and TD3 behavior are unchanged. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -6855,9 +6855,9 @@ basin objective and preserve old defaults.
 
 **Status**
 
-Planned on 2026-06-01 after reviewing the v13 targetfunnel W&B curves. This is a focused
-code-level stabilization PR. Do not change reward shaping, curriculum gates, replay defaults, or
-TD3 behavior in this PR.
+Implemented on 2026-06-01 after reviewing the v13 targetfunnel W&B curves. This is a focused
+code-level stabilization PR. It does not change reward shaping, curriculum gates, replay defaults,
+TD-error priority feedback, or TD3 behavior.
 
 **Why This PR Exists**
 
@@ -6999,6 +6999,24 @@ Optional checkpoint/eval regression if metadata coverage is not already complete
 
 Do not add TD3 tests unless the implementation accidentally touches TD3. If TD3 is touched, add a
 regression proving TD3 parser/config behavior is unchanged.
+
+Implemented coverage:
+
+```text
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_sac_continuous.py \
+  tests/test_training_logger_and_scheduler.py
+
+106 passed in 39.54s
+```
+
+Full verification:
+
+```text
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+
+410 passed, 1 skipped in 48.00s
+```
 
 **Test Commands**
 

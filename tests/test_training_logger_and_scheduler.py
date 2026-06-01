@@ -19,6 +19,7 @@ from scripts.train_sac_continuous import (
     _FakeSACEnv,
     _build_fake_env,
     _validate_pr68_args as _validate_sac_pr68_args,
+    build_agent as build_sac_agent,
     parse_args as parse_sac_args,
 )
 from scripts.train_td3_continuous import _validate_pr68_args as _validate_td3_pr68_args
@@ -1536,6 +1537,55 @@ def test_train_script_parsers_accept_pr616_target_funnel_controls():
     assert sac_args.target_funnel_band_stage_scales == "0,0,0.4,1.2"
     assert sac_args.target_funnel_band_weights == "0.1,0.2,0.4,0.0"
     assert td3_args.target_funnel_proximity_stage_scales == "0,0,0.2,0.7"
+
+
+def test_train_script_parser_accepts_pr617_sac_critic_loss_controls():
+    default_args = parse_sac_args(["--backend", "fake"])
+    _validate_sac_pr68_args(default_args)
+    default_agent = build_sac_agent(default_args)
+    assert default_args.critic_loss == "mse"
+    assert default_args.critic_huber_beta == pytest.approx(1.0)
+    assert default_agent.config.critic_loss == "mse"
+    assert default_agent.config.critic_huber_beta == pytest.approx(1.0)
+
+    huber_args = parse_sac_args(
+        [
+            "--backend",
+            "fake",
+            "--critic-loss",
+            "huber",
+            "--critic_huber_beta",
+            "0.5",
+        ]
+    )
+    _validate_sac_pr68_args(huber_args)
+    huber_agent = build_sac_agent(huber_args)
+    assert huber_args.critic_loss == "huber"
+    assert huber_args.critic_huber_beta == pytest.approx(0.5)
+    assert huber_agent.config.critic_loss == "huber"
+    assert huber_agent.config.critic_huber_beta == pytest.approx(0.5)
+
+    kebab_args = parse_sac_args(
+        [
+            "--backend",
+            "fake",
+            "--critic-loss",
+            "huber",
+            "--critic-huber-beta",
+            "0.75",
+        ]
+    )
+    _validate_sac_pr68_args(kebab_args)
+    assert kebab_args.critic_huber_beta == pytest.approx(0.75)
+
+
+def test_train_script_parser_rejects_invalid_pr617_sac_critic_loss_controls():
+    with pytest.raises(SystemExit):
+        parse_sac_args(["--backend", "fake", "--critic-loss", "bogus"])
+
+    beta_args = parse_sac_args(["--backend", "fake", "--critic-huber-beta", "0"])
+    with pytest.raises(ValueError, match="critic-huber-beta"):
+        _validate_sac_pr68_args(beta_args)
 
 
 @pytest.mark.parametrize(
