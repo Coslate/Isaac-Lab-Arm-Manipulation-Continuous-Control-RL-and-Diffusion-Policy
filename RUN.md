@@ -1504,6 +1504,57 @@ python -m scripts.record_gif_continuous \
   --target-overlay text-reticle \
   --headless
 
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_best.pt \
+  --save-gif out/v14_checkpoint_diagnostics_20260603_010637/best_visual_seed0.gif \
+  --save-mp4 out/v14_checkpoint_diagnostics_20260603_010637/best_visual_seed0.mp4 \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/best_visual_seed0_metrics.json \
+  --metrics-payload out/v14_checkpoint_diagnostics_20260603_010637/best_eval_100eps.json \
+  --save-debug-frames-dir out/v14_checkpoint_diagnostics_20260603_010637/best_visual_seed0_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_step_002450023.pt \
+  --save-gif out/v14_checkpoint_diagnostics_20260603_010637/step_2450023_visual_seed0.gif \
+  --save-mp4 out/v14_checkpoint_diagnostics_20260603_010637/step_2450023_visual_seed0.mp4 \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/step_2450023_visual_seed0_metrics.json \
+  --metrics-payload out/v14_checkpoint_diagnostics_20260603_010637/step_2450023_eval_100eps.json \
+  --save-debug-frames-dir out/v14_checkpoint_diagnostics_20260603_010637/step_2450023_visual_seed0_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_final.pt \
+  --save-gif out/v14_checkpoint_diagnostics_20260603_010637/final_visual_seed0.gif \
+  --save-mp4 out/v14_checkpoint_diagnostics_20260603_010637/final_visual_seed0.mp4 \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/final_visual_seed0_metrics.json \
+  --metrics-payload out/v14_checkpoint_diagnostics_20260603_010637/final_eval_100eps.json \
+  --save-debug-frames-dir out/v14_checkpoint_diagnostics_20260603_010637/final_visual_seed0_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
+
 python -m scripts.eval_checkpoint_continuous \
   --backend isaac \
   --agent-type sac \
@@ -1524,6 +1575,58 @@ python -m scripts.eval_checkpoint_continuous \
   --save-metrics ./logs/sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001_final_eval_8env_32eps.json \
   --num-envs 8 \
   --num-episodes 32 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --headless
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.eval_checkpoint_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_best.pt \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/best_eval_100eps.json \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --headless
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.eval_checkpoint_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_step_002400010.pt \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/step_2400010_eval_100eps.json \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --headless
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.eval_checkpoint_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_step_002450023.pt \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/step_2450023_eval_100eps.json \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --headless
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.eval_checkpoint_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m5_seed0_v14_huber_stable_final.pt \
+  --save-metrics out/v14_checkpoint_diagnostics_20260603_010637/final_eval_100eps.json \
+  --num-envs 8 \
+  --num-episodes 100 \
   --max-steps 230 \
   --seed 0 \
   --device cuda:0 \

@@ -1,0 +1,2751 @@
+{
+  "agent_type": "sac",
+  "backend": "isaac",
+  "checkpoint": "/root/Isaac-Lab-Arm-Manipulation-Continuous-Control-RL-and-Diffusion-Policy/checkpoints/sac_franka_2m5_seed0_v14_huber_stable_best.pt",
+  "closest_target_approach_by_episode": {
+    "episode_000": {
+      "closest_cube_position_base_m": [
+        0.4779062271118164,
+        -0.007451653480529785,
+        0.359510213136673
+      ],
+      "closest_distance_m": 0.004378289915621281,
+      "closest_step": 192,
+      "cube_to_target_base_m_at_closest_step": [
+        -9.000301361083984e-06,
+        -0.004172667860984802,
+        0.0013259649276733398
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4778972268104553,
+        -0.011624321341514587,
+        0.3608361780643463
+      ]
+    },
+    "episode_001": {
+      "closest_cube_position_base_m": [
+        0.526979923248291,
+        -0.18881690502166748,
+        0.3581598401069641
+      ],
+      "closest_distance_m": 0.005601741373538971,
+      "closest_step": 55,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0032256245613098145,
+        -0.004288703203201294,
+        -0.0016068220138549805
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5302055478096008,
+        -0.19310560822486877,
+        0.35655301809310913
+      ]
+    },
+    "episode_002": {
+      "closest_cube_position_base_m": [
+        0.5514733791351318,
+        0.24070429801940918,
+        0.44199150800704956
+      ],
+      "closest_distance_m": 0.014274965040385723,
+      "closest_step": 62,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0019009113311767578,
+        -0.013760209083557129,
+        0.00328904390335083
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5533742904663086,
+        0.22694408893585205,
+        0.4452805519104004
+      ]
+    },
+    "episode_003": {
+      "closest_cube_position_base_m": [
+        0.46554696559906006,
+        0.18303894996643066,
+        0.4792096018791199
+      ],
+      "closest_distance_m": 0.004025730770081282,
+      "closest_step": 64,
+      "cube_to_target_base_m_at_closest_step": [
+        0.003497898578643799,
+        -0.0006076991558074951,
+        0.0018978714942932129
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.46904486417770386,
+        0.18243125081062317,
+        0.4811074733734131
+      ]
+    },
+    "episode_004": {
+      "closest_cube_position_base_m": [
+        0.5901327729225159,
+        -0.1175457239151001,
+        0.48003634810447693
+      ],
+      "closest_distance_m": 0.003251731628552079,
+      "closest_step": 175,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0026268959045410156,
+        -0.0014955848455429077,
+        0.001198500394821167
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5875058770179749,
+        -0.119041308760643,
+        0.4812348484992981
+      ]
+    },
+    "episode_005": {
+      "closest_cube_position_base_m": [
+        0.5534079670906067,
+        0.07696723937988281,
+        0.36458152532577515
+      ],
+      "closest_distance_m": 0.00895032100379467,
+      "closest_step": 56,
+      "cube_to_target_base_m_at_closest_step": [
+        0.007937133312225342,
+        -0.004031121730804443,
+        0.0009274780750274658
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.561345100402832,
+        0.07293611764907837,
+        0.3655090034008026
+      ]
+    },
+    "episode_006": {
+      "closest_cube_position_base_m": [
+        0.4958302974700928,
+        -0.2139606475830078,
+        0.4419800341129303
+      ],
+      "closest_distance_m": 0.0053034513257443905,
+      "closest_step": 55,
+      "cube_to_target_base_m_at_closest_step": [
+        0.002184659242630005,
+        -0.004559904336929321,
+        -0.0016003549098968506
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4980149567127228,
+        -0.21852055191993713,
+        0.44037967920303345
+      ]
+    },
+    "episode_007": {
+      "closest_cube_position_base_m": [
+        0.43788599967956543,
+        0.0376359224319458,
+        0.37668466567993164
+      ],
+      "closest_distance_m": 0.004058588296175003,
+      "closest_step": 199,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.002056717872619629,
+        -0.0023232996463775635,
+        0.0026161670684814453
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4358292818069458,
+        0.03531262278556824,
+        0.3793008327484131
+      ]
+    },
+    "episode_008": {
+      "closest_cube_position_base_m": [
+        0.4845085144042969,
+        -0.13443505764007568,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4138696491718292,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.012636065483093262,
+        0.200922429561615,
+        0.36160558462142944
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.49714457988739014,
+        0.0664873719215393,
+        0.4166055917739868
+      ]
+    },
+    "episode_009": {
+      "closest_cube_position_base_m": [
+        0.596592903137207,
+        -0.2301769256591797,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.47800183296203613,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0607416033744812,
+        0.22003090381622314,
+        0.4199793040752411
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5358512997627258,
+        -0.010146021842956543,
+        0.47497931122779846
+      ]
+    },
+    "episode_010": {
+      "closest_cube_position_base_m": [
+        0.5605617761611938,
+        -0.1300731897354126,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3210291564464569,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0034934282302856445,
+        -0.056781262159347534,
+        0.3159484267234802
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5640552043914795,
+        -0.18685445189476013,
+        0.3709484338760376
+      ]
+    },
+    "episode_011": {
+      "closest_cube_position_base_m": [
+        0.5698637962341309,
+        0.035125732421875,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4676312506198883,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.1305605173110962,
+        0.0905579924583435,
+        0.43980926275253296
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.43930327892303467,
+        0.1256837248802185,
+        0.49480926990509033
+      ]
+    },
+    "episode_012": {
+      "closest_cube_position_base_m": [
+        0.5741938352584839,
+        -0.15980792045593262,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.34064996242523193,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.1148977279663086,
+        0.1248352974653244,
+        0.29539304971694946
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4592961072921753,
+        -0.034972622990608215,
+        0.35039305686950684
+      ]
+    },
+    "episode_013": {
+      "closest_cube_position_base_m": [
+        0.5612515211105347,
+        -0.22130239009857178,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.6204970479011536,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.07645940780639648,
+        0.45448002219200134,
+        0.41547372937202454
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4847921133041382,
+        0.23317763209342957,
+        0.4704737365245819
+      ]
+    },
+    "episode_014": {
+      "closest_cube_position_base_m": [
+        0.4304192066192627,
+        0.006166696548461914,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.34072184562683105,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.007121443748474121,
+        -0.10362952947616577,
+        0.32450205087661743
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4375406503677368,
+        -0.09746283292770386,
+        0.3795020580291748
+      ]
+    },
+    "episode_015": {
+      "closest_cube_position_base_m": [
+        0.47518229484558105,
+        -0.09204232692718506,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4115979075431824,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0018015503883361816,
+        0.0333145409822464,
+        0.41024351119995117
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.47698384523391724,
+        -0.05872778594493866,
+        0.46524351835250854
+      ]
+    },
+    "episode_016": {
+      "closest_cube_position_base_m": [
+        0.4754610061645508,
+        -0.15834665298461914,
+        0.34711581468582153
+      ],
+      "closest_distance_m": 0.003129319753497839,
+      "closest_step": 90,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0007791221141815186,
+        -0.002125352621078491,
+        -0.00216066837310791
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4762401282787323,
+        -0.16047200560569763,
+        0.3449551463127136
+      ]
+    },
+    "episode_017": {
+      "closest_cube_position_base_m": [
+        0.5503954887390137,
+        0.15664994716644287,
+        0.4899712800979614
+      ],
+      "closest_distance_m": 0.010262146592140198,
+      "closest_step": 66,
+      "cube_to_target_base_m_at_closest_step": [
+        0.005887329578399658,
+        -0.008274585008621216,
+        -0.0014772415161132812
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5562828183174133,
+        0.14837536215782166,
+        0.48849403858184814
+      ]
+    },
+    "episode_018": {
+      "closest_cube_position_base_m": [
+        0.5176715850830078,
+        0.19542598724365234,
+        0.2986372113227844
+      ],
+      "closest_distance_m": 0.009098973125219345,
+      "closest_step": 199,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0020380616188049316,
+        -0.0024923980236053467,
+        -0.008510321378707886
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5197096467018127,
+        0.192933589220047,
+        0.29012688994407654
+      ]
+    },
+    "episode_019": {
+      "closest_cube_position_base_m": [
+        0.45616817474365234,
+        -0.06583869457244873,
+        0.4604683816432953
+      ],
+      "closest_distance_m": 0.0022253149654716253,
+      "closest_step": 59,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0014765262603759766,
+        -0.0012488365173339844,
+        -0.0011010468006134033
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4576447010040283,
+        -0.06708753108978271,
+        0.4593673348426819
+      ]
+    },
+    "episode_020": {
+      "closest_cube_position_base_m": [
+        0.5377243757247925,
+        0.09408748149871826,
+        0.31137824058532715
+      ],
+      "closest_distance_m": 0.010459678247570992,
+      "closest_step": 45,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.002003014087677002,
+        -0.010261207818984985,
+        -0.00031688809394836426
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5357213616371155,
+        0.08382627367973328,
+        0.3110613524913788
+      ]
+    },
+    "episode_021": {
+      "closest_cube_position_base_m": [
+        0.500511646270752,
+        0.1372584104537964,
+        0.40517500042915344
+      ],
+      "closest_distance_m": 0.008600692264735699,
+      "closest_step": 53,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0008168816566467285,
+        -0.007534146308898926,
+        -0.004067093133926392
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4996947646141052,
+        0.12972426414489746,
+        0.40110790729522705
+      ]
+    },
+    "episode_022": {
+      "closest_cube_position_base_m": [
+        0.5609362125396729,
+        0.19013869762420654,
+        0.3962036371231079
+      ],
+      "closest_distance_m": 0.00649902131408453,
+      "closest_step": 48,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0014482736587524414,
+        0.006061673164367676,
+        -0.001842796802520752
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5623844861984253,
+        0.19620037078857422,
+        0.39436084032058716
+      ]
+    },
+    "episode_023": {
+      "closest_cube_position_base_m": [
+        0.44571352005004883,
+        0.00042366981506347656,
+        0.25641068816185
+      ],
+      "closest_distance_m": 0.008717616088688374,
+      "closest_step": 157,
+      "cube_to_target_base_m_at_closest_step": [
+        -3.555417060852051e-05,
+        0.008084774017333984,
+        -0.003260672092437744
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4456779658794403,
+        0.008508443832397461,
+        0.25315001606941223
+      ]
+    },
+    "episode_024": {
+      "closest_cube_position_base_m": [
+        0.43404579162597656,
+        -0.09704256057739258,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.44932544231414795,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.019223392009735107,
+        0.21696773171424866,
+        0.3929997682571411
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.41482239961624146,
+        0.11992517113685608,
+        0.4479997754096985
+      ]
+    },
+    "episode_025": {
+      "closest_cube_position_base_m": [
+        0.4227933883666992,
+        0.08282685279846191,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3253539204597473,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.1050843596458435,
+        -0.23666128516197205,
+        0.19698700308799744
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5278777480125427,
+        -0.15383443236351013,
+        0.2519870102405548
+      ]
+    },
+    "episode_026": {
+      "closest_cube_position_base_m": [
+        0.49553370475769043,
+        0.18329119682312012,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.2813761234283447,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.09284377098083496,
+        -0.0967346727848053,
+        0.24737614393234253
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5883774757385254,
+        0.08655652403831482,
+        0.3023761510848999
+      ]
+    },
+    "episode_027": {
+      "closest_cube_position_base_m": [
+        0.4421992301940918,
+        0.14231467247009277,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.29256531596183777,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.01620727777481079,
+        0.09524157643318176,
+        0.2761536240577698
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.425991952419281,
+        0.23755624890327454,
+        0.33115363121032715
+      ]
+    },
+    "episode_028": {
+      "closest_cube_position_base_m": [
+        0.4708127975463867,
+        0.006538867950439453,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3757479190826416,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.07952666282653809,
+        -0.11371247470378876,
+        0.34918689727783203
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5503394603729248,
+        -0.1071736067533493,
+        0.4041869044303894
+      ]
+    },
+    "episode_029": {
+      "closest_cube_position_base_m": [
+        0.5297562479972839,
+        0.08615386486053467,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.42781418561935425,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.10057207942008972,
+        -0.15200695395469666,
+        0.38704538345336914
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4291841685771942,
+        -0.06585308909416199,
+        0.4420453906059265
+      ]
+    },
+    "episode_030": {
+      "closest_cube_position_base_m": [
+        0.4293656349182129,
+        -0.19178855419158936,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4543231725692749,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.06342217326164246,
+        0.22422176599502563,
+        0.3900150954723358
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.49278780817985535,
+        0.03243321180343628,
+        0.4450151026248932
+      ]
+    },
+    "episode_031": {
+      "closest_cube_position_base_m": [
+        0.5698280334472656,
+        -0.06407999992370605,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.42263707518577576,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.013448178768157959,
+        0.2169244885444641,
+        0.36247071623802185
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5832762122154236,
+        0.15284448862075806,
+        0.4174707233905792
+      ]
+    },
+    "episode_032": {
+      "closest_cube_position_base_m": [
+        0.5185351371765137,
+        0.022892236709594727,
+        0.47452133893966675
+      ],
+      "closest_distance_m": 0.04644176736474037,
+      "closest_step": 194,
+      "cube_to_target_base_m_at_closest_step": [
+        0.03193974494934082,
+        -0.033619701862335205,
+        0.002530992031097412
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5504748821258545,
+        -0.010727465152740479,
+        0.47705233097076416
+      ]
+    },
+    "episode_033": {
+      "closest_cube_position_base_m": [
+        0.41553592681884766,
+        -0.08677089214324951,
+        0.40325674414634705
+      ],
+      "closest_distance_m": 0.005933074280619621,
+      "closest_step": 164,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.001437067985534668,
+        0.005716457962989807,
+        -0.0006769895553588867
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.414098858833313,
+        -0.0810544341802597,
+        0.40257975459098816
+      ]
+    },
+    "episode_034": {
+      "closest_cube_position_base_m": [
+        0.47340095043182373,
+        -0.21117544174194336,
+        0.33824044466018677
+      ],
+      "closest_distance_m": 0.004933596588671207,
+      "closest_step": 47,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0005266070365905762,
+        -0.0009492635726928711,
+        -0.004812687635421753
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.47287434339523315,
+        -0.21212470531463623,
+        0.333427757024765
+      ]
+    },
+    "episode_035": {
+      "closest_cube_position_base_m": [
+        0.342013955116272,
+        0.1719273328781128,
+        0.02239273302257061
+      ],
+      "closest_distance_m": 0.6078107953071594,
+      "closest_step": 39,
+      "cube_to_target_base_m_at_closest_step": [
+        0.13262870907783508,
+        -0.39701759815216064,
+        0.44070470333099365
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.47464266419410706,
+        -0.22509028017520905,
+        0.4630974233150482
+      ]
+    },
+    "episode_036": {
+      "closest_cube_position_base_m": [
+        0.4593488574028015,
+        0.048251986503601074,
+        0.40220609307289124
+      ],
+      "closest_distance_m": 0.01918325014412403,
+      "closest_step": 63,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.01787140965461731,
+        -0.006411612033843994,
+        0.0027388036251068115
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4414774477481842,
+        0.04184037446975708,
+        0.40494489669799805
+      ]
+    },
+    "episode_037": {
+      "closest_cube_position_base_m": [
+        0.41125404834747314,
+        0.0719611644744873,
+        0.3050124943256378
+      ],
+      "closest_distance_m": 0.009962956421077251,
+      "closest_step": 141,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0009805560111999512,
+        0.007779508829116821,
+        -0.0061464011669158936
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4102734923362732,
+        0.07974067330360413,
+        0.2988660931587219
+      ]
+    },
+    "episode_038": {
+      "closest_cube_position_base_m": [
+        0.46102404594421387,
+        0.14404785633087158,
+        0.34184423089027405
+      ],
+      "closest_distance_m": 0.02681075409054756,
+      "closest_step": 73,
+      "cube_to_target_base_m_at_closest_step": [
+        0.02352282404899597,
+        -0.0013013482093811035,
+        0.012798428535461426
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.48454686999320984,
+        0.14274650812149048,
+        0.3546426594257355
+      ]
+    },
+    "episode_039": {
+      "closest_cube_position_base_m": [
+        0.521477460861206,
+        0.014635562896728516,
+        0.38152557611465454
+      ],
+      "closest_distance_m": 0.007470100652426481,
+      "closest_step": 53,
+      "cube_to_target_base_m_at_closest_step": [
+        0.001838982105255127,
+        -0.005826622247695923,
+        -0.004297792911529541
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5233164429664612,
+        0.008808940649032593,
+        0.377227783203125
+      ]
+    },
+    "episode_040": {
+      "closest_cube_position_base_m": [
+        0.5369434356689453,
+        0.010353326797485352,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.44921308755874634,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.012898862361907959,
+        0.11951306462287903,
+        0.43283095955848694
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5498422980308533,
+        0.12986639142036438,
+        0.4878309667110443
+      ]
+    },
+    "episode_041": {
+      "closest_cube_position_base_m": [
+        0.47246217727661133,
+        0.08490335941314697,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.37583714723587036,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.09954613447189331,
+        -0.12439081072807312,
+        0.340398371219635
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5720083117485046,
+        -0.03948745131492615,
+        0.3953983783721924
+      ]
+    },
+    "episode_042": {
+      "closest_cube_position_base_m": [
+        0.5610731840133667,
+        0.05058145523071289,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4901867210865021,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.15921276807785034,
+        -0.278154194355011,
+        0.37089693546295166
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.40186041593551636,
+        -0.2275727242231369,
+        0.42589694261550903
+      ]
+    },
+    "episode_043": {
+      "closest_cube_position_base_m": [
+        0.43088066577911377,
+        -0.028627991676330566,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.2809267044067383,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.019127577543258667,
+        0.06388634443283081,
+        0.2728964686393738
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4117530882358551,
+        0.035258352756500244,
+        0.32789647579193115
+      ]
+    },
+    "episode_044": {
+      "closest_cube_position_base_m": [
+        0.41792505979537964,
+        0.04920244216918945,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.32315006852149963,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.026950061321258545,
+        -0.0739949643611908,
+        0.3134077191352844
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4448751211166382,
+        -0.024792522192001343,
+        0.3684077262878418
+      ]
+    },
+    "episode_045": {
+      "closest_cube_position_base_m": [
+        0.4182753562927246,
+        -0.1284773349761963,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3702813982963562,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.01193729043006897,
+        0.16127660870552063,
+        0.3331000804901123
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.40633806586265564,
+        0.03279927372932434,
+        0.3881000876426697
+      ]
+    },
+    "episode_046": {
+      "closest_cube_position_base_m": [
+        0.5633788108825684,
+        -0.1777174472808838,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3483663499355316,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.1583971381187439,
+        -0.02623744308948517,
+        0.30916187167167664
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.40498167276382446,
+        -0.20395489037036896,
+        0.364161878824234
+      ]
+    },
+    "episode_047": {
+      "closest_cube_position_base_m": [
+        0.425762414932251,
+        0.20190656185150146,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.19815018773078918,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.007221609354019165,
+        0.029753804206848145,
+        0.19577041268348694
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4185408055782318,
+        0.2316603660583496,
+        0.2507704198360443
+      ]
+    },
+    "episode_048": {
+      "closest_cube_position_base_m": [
+        0.4256625175476074,
+        0.018192052841186523,
+        0.39447179436683655
+      ],
+      "closest_distance_m": 0.00779540091753006,
+      "closest_step": 59,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.005018860101699829,
+        -0.004122018814086914,
+        0.004311412572860718
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4206436574459076,
+        0.01407003402709961,
+        0.39878320693969727
+      ]
+    },
+    "episode_049": {
+      "closest_cube_position_base_m": [
+        0.5955820083618164,
+        0.001196146011352539,
+        0.308049738407135
+      ],
+      "closest_distance_m": 0.006277846172451973,
+      "closest_step": 46,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0025451183319091797,
+        0.004172950983047485,
+        -0.003939568996429443
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5981271266937256,
+        0.005369096994400024,
+        0.30411016941070557
+      ]
+    },
+    "episode_050": {
+      "closest_cube_position_base_m": [
+        0.48832225799560547,
+        0.2016892433166504,
+        0.259855717420578
+      ],
+      "closest_distance_m": 0.013651030138134956,
+      "closest_step": 43,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.009106218814849854,
+        0.009841054677963257,
+        -0.002565354108810425
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4792160391807556,
+        0.21153029799461365,
+        0.2572903633117676
+      ]
+    },
+    "episode_051": {
+      "closest_cube_position_base_m": [
+        0.46472597122192383,
+        -0.23827075958251953,
+        0.2756909132003784
+      ],
+      "closest_distance_m": 0.006720871198922396,
+      "closest_step": 199,
+      "cube_to_target_base_m_at_closest_step": [
+        0.006023675203323364,
+        -0.0011932551860809326,
+        0.0027315914630889893
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4707496464252472,
+        -0.23946401476860046,
+        0.2784225046634674
+      ]
+    },
+    "episode_052": {
+      "closest_cube_position_base_m": [
+        0.5937225818634033,
+        -0.1049807071685791,
+        0.37085801362991333
+      ],
+      "closest_distance_m": 0.006931016221642494,
+      "closest_step": 48,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0027042627334594727,
+        0.0031165778636932373,
+        0.0055689215660095215
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5964268445968628,
+        -0.10186412930488586,
+        0.37642693519592285
+      ]
+    },
+    "episode_053": {
+      "closest_cube_position_base_m": [
+        0.4499298930168152,
+        -0.2085474729537964,
+        0.44217821955680847
+      ],
+      "closest_distance_m": 0.001192206982523203,
+      "closest_step": 69,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0008402764797210693,
+        -0.00037963688373565674,
+        0.0007557570934295654
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.45077016949653625,
+        -0.20892710983753204,
+        0.44293397665023804
+      ]
+    },
+    "episode_054": {
+      "closest_cube_position_base_m": [
+        0.4612772464752197,
+        -0.13258075714111328,
+        0.29918262362480164
+      ],
+      "closest_distance_m": 0.004086247645318508,
+      "closest_step": 114,
+      "cube_to_target_base_m_at_closest_step": [
+        0.003188878297805786,
+        -0.00010138750076293945,
+        -0.0025530755519866943
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4644661247730255,
+        -0.13268214464187622,
+        0.29662954807281494
+      ]
+    },
+    "episode_055": {
+      "closest_cube_position_base_m": [
+        0.4166111946105957,
+        -0.08236753940582275,
+        0.3658146858215332
+      ],
+      "closest_distance_m": 0.006364924367517233,
+      "closest_step": 116,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0009791851043701172,
+        0.005746796727180481,
+        0.002554953098297119
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4156320095062256,
+        -0.07662074267864227,
+        0.3683696389198303
+      ]
+    },
+    "episode_056": {
+      "closest_cube_position_base_m": [
+        0.589787483215332,
+        -0.06584703922271729,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4532599151134491,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.1826569139957428,
+        0.16657471656799316,
+        0.37991297245025635
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.40713056921958923,
+        0.10072767734527588,
+        0.4349129796028137
+      ]
+    },
+    "episode_057": {
+      "closest_cube_position_base_m": [
+        0.40325117111206055,
+        0.12622547149658203,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.37812063097953796,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0001920759677886963,
+        -0.3090795576572418,
+        0.2178187370300293
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.40344324707984924,
+        -0.1828540861606598,
+        0.27281874418258667
+      ]
+    },
+    "episode_058": {
+      "closest_cube_position_base_m": [
+        0.5772552490234375,
+        0.20406794548034668,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.35953956842422485,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.012928009033203125,
+        -0.21168877184391022,
+        0.29032641649246216
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5643272399902344,
+        -0.007620826363563538,
+        0.34532642364501953
+      ]
+    },
+    "episode_059": {
+      "closest_cube_position_base_m": [
+        0.44200706481933594,
+        -0.040786147117614746,
+        0.04107506200671196
+      ],
+      "closest_distance_m": 0.2686629593372345,
+      "closest_step": 29,
+      "cube_to_target_base_m_at_closest_step": [
+        0.03574693202972412,
+        0.1344173550605774,
+        0.22985629737377167
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.47775399684906006,
+        0.09363120794296265,
+        0.2709313631057739
+      ]
+    },
+    "episode_060": {
+      "closest_cube_position_base_m": [
+        0.48471730947494507,
+        0.17459678649902344,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.2280847728252411,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.108334481716156,
+        -0.025387436151504517,
+        0.19910243153572083
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5930517911911011,
+        0.14920935034751892,
+        0.2541024386882782
+      ]
+    },
+    "episode_061": {
+      "closest_cube_position_base_m": [
+        0.4643663763999939,
+        -0.055107831954956055,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.23493099212646484,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.05179727077484131,
+        0.028125479817390442,
+        0.22741717100143433
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4125691056251526,
+        -0.026982352137565613,
+        0.2824171781539917
+      ]
+    },
+    "episode_062": {
+      "closest_cube_position_base_m": [
+        0.47806549072265625,
+        -0.10867929458618164,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4038779139518738,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0296323299407959,
+        0.2978842556476593,
+        0.2711167335510254
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.44843316078186035,
+        0.18920496106147766,
+        0.32611674070358276
+      ]
+    },
+    "episode_063": {
+      "closest_cube_position_base_m": [
+        0.4569730758666992,
+        -0.2083122730255127,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.42548322677612305,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.023614048957824707,
+        0.23595216870307922,
+        0.35327741503715515
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4333590269088745,
+        0.02763989567756653,
+        0.4082774221897125
+      ]
+    },
+    "episode_064": {
+      "closest_cube_position_base_m": [
+        0.42522430419921875,
+        0.008453369140625,
+        0.4776243269443512
+      ],
+      "closest_distance_m": 0.0088911522179842,
+      "closest_step": 65,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.008087366819381714,
+        -0.0018813908100128174,
+        0.003179222345352173
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.41713693737983704,
+        0.006571978330612183,
+        0.48080354928970337
+      ]
+    },
+    "episode_065": {
+      "closest_cube_position_base_m": [
+        0.4548978805541992,
+        -0.1019214391708374,
+        0.4115426540374756
+      ],
+      "closest_distance_m": 0.006645908113569021,
+      "closest_step": 65,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0052047669887542725,
+        0.0009456872940063477,
+        0.004022955894470215
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.44969311356544495,
+        -0.10097575187683105,
+        0.4155656099319458
+      ]
+    },
+    "episode_066": {
+      "closest_cube_position_base_m": [
+        0.5759378671646118,
+        -0.19691944122314453,
+        0.4569976031780243
+      ],
+      "closest_distance_m": 0.013692546635866165,
+      "closest_step": 61,
+      "cube_to_target_base_m_at_closest_step": [
+        0.005065321922302246,
+        -0.012470752000808716,
+        -0.0025117099285125732
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5810031890869141,
+        -0.20939019322395325,
+        0.4544858932495117
+      ]
+    },
+    "episode_067": {
+      "closest_cube_position_base_m": [
+        0.5409117937088013,
+        -0.14725303649902344,
+        0.46285104751586914
+      ],
+      "closest_distance_m": 0.008118318393826485,
+      "closest_step": 55,
+      "cube_to_target_base_m_at_closest_step": [
+        0.007605195045471191,
+        0.001260414719581604,
+        -0.002545475959777832
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5485169887542725,
+        -0.14599262177944183,
+        0.4603055715560913
+      ]
+    },
+    "episode_068": {
+      "closest_cube_position_base_m": [
+        0.5245440006256104,
+        0.02462780475616455,
+        0.463419109582901
+      ],
+      "closest_distance_m": 0.00437666941434145,
+      "closest_step": 63,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0038156509399414062,
+        0.0020395517349243164,
+        0.0006605088710784912
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5283596515655518,
+        0.026667356491088867,
+        0.4640796184539795
+      ]
+    },
+    "episode_069": {
+      "closest_cube_position_base_m": [
+        0.5805565714836121,
+        -0.14076411724090576,
+        0.42985448241233826
+      ],
+      "closest_distance_m": 0.008242854848504066,
+      "closest_step": 60,
+      "cube_to_target_base_m_at_closest_step": [
+        0.004671275615692139,
+        -0.006394118070602417,
+        -0.002288907766342163
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5852278470993042,
+        -0.14715823531150818,
+        0.4275655746459961
+      ]
+    },
+    "episode_070": {
+      "closest_cube_position_base_m": [
+        0.4896359443664551,
+        0.09728610515594482,
+        0.4889777600765228
+      ],
+      "closest_distance_m": 0.002236866159364581,
+      "closest_step": 60,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0017907917499542236,
+        -0.0013363957405090332,
+        0.00010335445404052734
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4914267361164093,
+        0.09594970941543579,
+        0.48908111453056335
+      ]
+    },
+    "episode_071": {
+      "closest_cube_position_base_m": [
+        0.5651354789733887,
+        -0.13207709789276123,
+        0.3573710322380066
+      ],
+      "closest_distance_m": 0.004443245939910412,
+      "closest_step": 55,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.0041356682777404785,
+        -0.0015328824520111084,
+        0.0005375444889068604
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5609998106956482,
+        -0.13360998034477234,
+        0.35790857672691345
+      ]
+    },
+    "episode_072": {
+      "closest_cube_position_base_m": [
+        0.5414528846740723,
+        0.05972743034362793,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3097505271434784,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.014463067054748535,
+        -0.09802640974521637,
+        0.2934740483760834
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5559159517288208,
+        -0.03829897940158844,
+        0.34847405552864075
+      ]
+    },
+    "episode_073": {
+      "closest_cube_position_base_m": [
+        0.5554895401000977,
+        0.12514400482177734,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.446250855922699,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.037725090980529785,
+        -0.2596481442451477,
+        0.3609701991081238
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5932146310806274,
+        -0.13450413942337036,
+        0.41597020626068115
+      ]
+    },
+    "episode_074": {
+      "closest_cube_position_base_m": [
+        0.47579944133758545,
+        -0.1896202564239502,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.5309432744979858,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.020421892404556274,
+        0.3643672466278076,
+        0.3856425881385803
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4553775489330292,
+        0.17474699020385742,
+        0.4406425952911377
+      ]
+    },
+    "episode_075": {
+      "closest_cube_position_base_m": [
+        0.45572590827941895,
+        -0.051134347915649414,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4241577982902527,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.01786196231842041,
+        0.07044216990470886,
+        0.417885959148407
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.43786394596099854,
+        0.019307821989059448,
+        0.47288596630096436
+      ]
+    },
+    "episode_076": {
+      "closest_cube_position_base_m": [
+        0.504881739616394,
+        -0.23649632930755615,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4958837330341339,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.10420966148376465,
+        0.3730103373527527,
+        0.30968421697616577
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4006720781326294,
+        0.13651400804519653,
+        0.36468422412872314
+      ]
+    },
+    "episode_077": {
+      "closest_cube_position_base_m": [
+        0.4290870428085327,
+        0.04797220230102539,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.4445900022983551,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.04299888014793396,
+        0.08179429173469543,
+        0.4348805248737335
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4720859229564667,
+        0.12976649403572083,
+        0.4898805320262909
+      ]
+    },
+    "episode_078": {
+      "closest_cube_position_base_m": [
+        0.5210661888122559,
+        0.07456386089324951,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.29054951667785645,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.007543504238128662,
+        -0.1867087334394455,
+        0.2224903702735901
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5286096930503845,
+        -0.11214487254619598,
+        0.27749037742614746
+      ]
+    },
+    "episode_079": {
+      "closest_cube_position_base_m": [
+        0.4342951774597168,
+        -0.011504650115966797,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.44204065203666687,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.06304329633712769,
+        -0.1620321273803711,
+        0.40641242265701294
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4973384737968445,
+        -0.1735367774963379,
+        0.4614124298095703
+      ]
+    },
+    "episode_080": {
+      "closest_cube_position_base_m": [
+        0.5911784172058105,
+        0.2190462350845337,
+        0.3197914958000183
+      ],
+      "closest_distance_m": 0.006307883653789759,
+      "closest_step": 126,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0010314583778381348,
+        -0.0010806620121002197,
+        -0.006128430366516113
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5922098755836487,
+        0.21796557307243347,
+        0.3136630654335022
+      ]
+    },
+    "episode_081": {
+      "closest_cube_position_base_m": [
+        0.4720287322998047,
+        -0.012864232063293457,
+        0.4057900011539459
+      ],
+      "closest_distance_m": 0.004985531326383352,
+      "closest_step": 63,
+      "cube_to_target_base_m_at_closest_step": [
+        0.004680633544921875,
+        -0.0016330033540725708,
+        -0.0005296170711517334
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.47670936584472656,
+        -0.014497235417366028,
+        0.4052603840827942
+      ]
+    },
+    "episode_082": {
+      "closest_cube_position_base_m": [
+        0.5827099084854126,
+        0.24530279636383057,
+        0.4223150312900543
+      ],
+      "closest_distance_m": 0.010956775397062302,
+      "closest_step": 53,
+      "cube_to_target_base_m_at_closest_step": [
+        0.009229898452758789,
+        0.004524141550064087,
+        0.003793686628341675
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5919398069381714,
+        0.24982693791389465,
+        0.426108717918396
+      ]
+    },
+    "episode_083": {
+      "closest_cube_position_base_m": [
+        0.5437526702880859,
+        -0.0917593240737915,
+        0.47869646549224854
+      ],
+      "closest_distance_m": 0.011352214962244034,
+      "closest_step": 199,
+      "cube_to_target_base_m_at_closest_step": [
+        0.006151795387268066,
+        -0.006143897771835327,
+        -0.007299363613128662
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.549904465675354,
+        -0.09790322184562683,
+        0.4713971018791199
+      ]
+    },
+    "episode_084": {
+      "closest_cube_position_base_m": [
+        0.5944773554801941,
+        -0.015461921691894531,
+        0.3372199535369873
+      ],
+      "closest_distance_m": 0.004811490420252085,
+      "closest_step": 46,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0031171441078186035,
+        0.0021348893642425537,
+        0.002979278564453125
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5975944995880127,
+        -0.013327032327651978,
+        0.34019923210144043
+      ]
+    },
+    "episode_085": {
+      "closest_cube_position_base_m": [
+        0.47829967737197876,
+        0.031768083572387695,
+        0.41171717643737793
+      ],
+      "closest_distance_m": 0.003819071687757969,
+      "closest_step": 199,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0017546117305755615,
+        -0.0031619369983673096,
+        -0.00122833251953125
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4800542891025543,
+        0.028606146574020386,
+        0.4104888439178467
+      ]
+    },
+    "episode_086": {
+      "closest_cube_position_base_m": [
+        0.5408334732055664,
+        -0.23689699172973633,
+        0.36974284052848816
+      ],
+      "closest_distance_m": 0.0076483674347400665,
+      "closest_step": 56,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0013242363929748535,
+        -0.0049239397048950195,
+        -0.0057007670402526855
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5421577095985413,
+        -0.24182093143463135,
+        0.3640420734882355
+      ]
+    },
+    "episode_087": {
+      "closest_cube_position_base_m": [
+        0.4399418830871582,
+        0.042939186096191406,
+        0.43069595098495483
+      ],
+      "closest_distance_m": 0.005057556089013815,
+      "closest_step": 61,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.00392305850982666,
+        -0.002050042152404785,
+        -0.002446591854095459
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.43601882457733154,
+        0.04088914394378662,
+        0.4282493591308594
+      ]
+    },
+    "episode_088": {
+      "closest_cube_position_base_m": [
+        0.4067859649658203,
+        -0.20249998569488525,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3081696033477783,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.008989483118057251,
+        0.13531211018562317,
+        0.2767278850078583
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.41577544808387756,
+        -0.06718787550926208,
+        0.33172789216041565
+      ]
+    },
+    "episode_089": {
+      "closest_cube_position_base_m": [
+        0.4020819664001465,
+        -0.11082065105438232,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.3139682114124298,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.16071093082427979,
+        0.18485966324806213,
+        0.1964050531387329
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5627928972244263,
+        0.07403901219367981,
+        0.2514050602912903
+      ]
+    },
+    "episode_090": {
+      "closest_cube_position_base_m": [
+        0.4925881624221802,
+        0.021235346794128418,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.31769511103630066,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.07837027311325073,
+        0.06577754020690918,
+        0.30076834559440613
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5709584355354309,
+        0.0870128870010376,
+        0.3557683527469635
+      ]
+    },
+    "episode_091": {
+      "closest_cube_position_base_m": [
+        0.40301382541656494,
+        -0.14947009086608887,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.26975563168525696,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.019968092441558838,
+        0.10912087559700012,
+        0.24589025974273682
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4229819178581238,
+        -0.040349215269088745,
+        0.3008902668952942
+      ]
+    },
+    "episode_092": {
+      "closest_cube_position_base_m": [
+        0.42993342876434326,
+        0.13396716117858887,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.36090296506881714,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.007545351982116699,
+        -0.018864929676055908,
+        0.36033058166503906
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.43747878074645996,
+        0.11510223150253296,
+        0.41533058881759644
+      ]
+    },
+    "episode_093": {
+      "closest_cube_position_base_m": [
+        0.5563917756080627,
+        0.20729076862335205,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.37790706753730774,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        -0.02134603261947632,
+        -0.0612066388130188,
+        0.37230610847473145
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5350457429885864,
+        0.14608412981033325,
+        0.4273061156272888
+      ]
+    },
+    "episode_094": {
+      "closest_cube_position_base_m": [
+        0.47561025619506836,
+        -0.06505203247070312,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.26420170068740845,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0373154878616333,
+        -0.14311477541923523,
+        0.21892520785331726
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5129257440567017,
+        -0.20816680788993835,
+        0.27392521500587463
+      ]
+    },
+    "episode_095": {
+      "closest_cube_position_base_m": [
+        0.546302080154419,
+        0.14181530475616455,
+        0.054999999701976776
+      ],
+      "closest_distance_m": 0.2760128378868103,
+      "closest_step": 0,
+      "cube_to_target_base_m_at_closest_step": [
+        0.022044122219085693,
+        -0.16489149630069733,
+        0.22024518251419067
+      ],
+      "success": false,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.5683462023735046,
+        -0.023076191544532776,
+        0.27524518966674805
+      ]
+    },
+    "episode_096": {
+      "closest_cube_position_base_m": [
+        0.45549726486206055,
+        -0.11463618278503418,
+        0.4251551032066345
+      ],
+      "closest_distance_m": 0.005104208365082741,
+      "closest_step": 68,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0025432705879211426,
+        0.0018461346626281738,
+        -0.004022002220153809
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4580405354499817,
+        -0.112790048122406,
+        0.4211331009864807
+      ]
+    },
+    "episode_097": {
+      "closest_cube_position_base_m": [
+        0.3933086395263672,
+        -0.0603785514831543,
+        0.4476223587989807
+      ],
+      "closest_distance_m": 0.011045829392969608,
+      "closest_step": 135,
+      "cube_to_target_base_m_at_closest_step": [
+        0.00966578722000122,
+        0.004862621426582336,
+        0.002222120761871338
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.4029744267463684,
+        -0.05551593005657196,
+        0.44984447956085205
+      ]
+    },
+    "episode_098": {
+      "closest_cube_position_base_m": [
+        0.483945369720459,
+        -0.08671259880065918,
+        0.3214179575443268
+      ],
+      "closest_distance_m": 0.008875629864633083,
+      "closest_step": 58,
+      "cube_to_target_base_m_at_closest_step": [
+        0.005458801984786987,
+        0.006995067000389099,
+        0.00021752715110778809
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.48940417170524597,
+        -0.07971753180027008,
+        0.32163548469543457
+      ]
+    },
+    "episode_099": {
+      "closest_cube_position_base_m": [
+        0.4751574993133545,
+        0.017822861671447754,
+        0.2519240379333496
+      ],
+      "closest_distance_m": 0.001017186208628118,
+      "closest_step": 44,
+      "cube_to_target_base_m_at_closest_step": [
+        0.0005561709403991699,
+        -0.0008512139320373535,
+        2.7865171432495117e-05
+      ],
+      "success": true,
+      "success_source": "proprio_cube_to_target_norm",
+      "target_position_base_m_at_closest_step": [
+        0.47571367025375366,
+        0.0169716477394104,
+        0.2519519031047821
+      ]
+    }
+  },
+  "consecutive_success_steps": 1,
+  "deterministic": true,
+  "env_id": "Isaac-Lift-Cube-Franka-IK-Rel-v0",
+  "episode_successes": {
+    "episode_000": true,
+    "episode_001": true,
+    "episode_002": true,
+    "episode_003": true,
+    "episode_004": true,
+    "episode_005": true,
+    "episode_006": true,
+    "episode_007": true,
+    "episode_008": false,
+    "episode_009": false,
+    "episode_010": false,
+    "episode_011": false,
+    "episode_012": false,
+    "episode_013": false,
+    "episode_014": false,
+    "episode_015": false,
+    "episode_016": true,
+    "episode_017": true,
+    "episode_018": true,
+    "episode_019": true,
+    "episode_020": true,
+    "episode_021": true,
+    "episode_022": true,
+    "episode_023": true,
+    "episode_024": false,
+    "episode_025": false,
+    "episode_026": false,
+    "episode_027": false,
+    "episode_028": false,
+    "episode_029": false,
+    "episode_030": false,
+    "episode_031": false,
+    "episode_032": false,
+    "episode_033": true,
+    "episode_034": true,
+    "episode_035": false,
+    "episode_036": true,
+    "episode_037": true,
+    "episode_038": false,
+    "episode_039": true,
+    "episode_040": false,
+    "episode_041": false,
+    "episode_042": false,
+    "episode_043": false,
+    "episode_044": false,
+    "episode_045": false,
+    "episode_046": false,
+    "episode_047": false,
+    "episode_048": true,
+    "episode_049": true,
+    "episode_050": true,
+    "episode_051": true,
+    "episode_052": true,
+    "episode_053": true,
+    "episode_054": true,
+    "episode_055": true,
+    "episode_056": false,
+    "episode_057": false,
+    "episode_058": false,
+    "episode_059": false,
+    "episode_060": false,
+    "episode_061": false,
+    "episode_062": false,
+    "episode_063": false,
+    "episode_064": true,
+    "episode_065": true,
+    "episode_066": true,
+    "episode_067": true,
+    "episode_068": true,
+    "episode_069": true,
+    "episode_070": true,
+    "episode_071": true,
+    "episode_072": false,
+    "episode_073": false,
+    "episode_074": false,
+    "episode_075": false,
+    "episode_076": false,
+    "episode_077": false,
+    "episode_078": false,
+    "episode_079": false,
+    "episode_080": true,
+    "episode_081": true,
+    "episode_082": true,
+    "episode_083": true,
+    "episode_084": true,
+    "episode_085": true,
+    "episode_086": true,
+    "episode_087": true,
+    "episode_088": false,
+    "episode_089": false,
+    "episode_090": false,
+    "episode_091": false,
+    "episode_092": false,
+    "episode_093": false,
+    "episode_094": false,
+    "episode_095": false,
+    "episode_096": true,
+    "episode_097": true,
+    "episode_098": true,
+    "episode_099": true
+  },
+  "final_cube_to_target_m": 0.20496468860656022,
+  "gripper_close_near_cube_rate": 0.7431587837837837,
+  "legacy_warning": null,
+  "max_cube_lift_m": 0.47603678703308105,
+  "mean_action_jerk": 0.21082338817417623,
+  "mean_cube_to_target_m": 0.25165368128567933,
+  "mean_episode_length": 118.4,
+  "mean_return": 57.13006872802973,
+  "min_cube_to_target_m": 0.001017186208628118,
+  "min_ee_to_cube_m": 0.000496323686093092,
+  "num_env_steps": 1895487,
+  "num_eval_episodes": 100,
+  "p50_cube_to_target_m": 0.07217726111412048,
+  "seed": 0,
+  "settle_steps": 550,
+  "success_distance_metric": "euclidean_3d_cube_to_target_base_m",
+  "success_distance_source": "norm(proprio[:, 30:33]) where proprio[:, 30:33] = target_pos_base - cube_pos_base",
+  "success_rate": 0.49,
+  "success_source": "proprio_cube_to_target_norm",
+  "success_threshold_m": 0.02,
+  "target_10cm_episode_rate": 0.51,
+  "target_10cm_max_consecutive_steps": 75.77,
+  "target_10cm_step_rate": 0.3788500000000001,
+  "target_20cm_episode_rate": 0.52,
+  "target_20cm_max_consecutive_steps": 79.03,
+  "target_20cm_step_rate": 0.39543333333333336,
+  "target_2cm_episode_rate": 0.49,
+  "target_2cm_max_consecutive_steps": 67.1,
+  "target_2cm_step_rate": 0.3363999999999999,
+  "target_5cm_episode_rate": 0.51,
+  "target_5cm_max_consecutive_steps": 72.6,
+  "target_5cm_step_rate": 0.36325,
+  "target_hold_consecutive_steps": 5,
+  "target_hold_episode_rate": 0.47,
+  "target_hold_max_consecutive_steps": 67.1,
+  "target_position_constant_by_episode": true,
+  "target_positions_base_m_by_episode": {
+    "episode_000": [
+      0.4778972268104553,
+      -0.011624321341514587,
+      0.3608361780643463
+    ],
+    "episode_001": [
+      0.5302055478096008,
+      -0.19310560822486877,
+      0.35655301809310913
+    ],
+    "episode_002": [
+      0.5533742904663086,
+      0.22694408893585205,
+      0.4452805519104004
+    ],
+    "episode_003": [
+      0.46904486417770386,
+      0.18243125081062317,
+      0.4811074733734131
+    ],
+    "episode_004": [
+      0.5875058770179749,
+      -0.119041308760643,
+      0.4812348484992981
+    ],
+    "episode_005": [
+      0.561345100402832,
+      0.07293611764907837,
+      0.3655090034008026
+    ],
+    "episode_006": [
+      0.4980149567127228,
+      -0.21852055191993713,
+      0.44037967920303345
+    ],
+    "episode_007": [
+      0.4358292818069458,
+      0.03531262278556824,
+      0.3793008327484131
+    ],
+    "episode_008": [
+      0.49714457988739014,
+      0.0664873719215393,
+      0.4166055917739868
+    ],
+    "episode_009": [
+      0.5358512997627258,
+      -0.010146021842956543,
+      0.47497931122779846
+    ],
+    "episode_010": [
+      0.5640552043914795,
+      -0.18685445189476013,
+      0.3709484338760376
+    ],
+    "episode_011": [
+      0.43930327892303467,
+      0.1256837248802185,
+      0.49480926990509033
+    ],
+    "episode_012": [
+      0.4592961072921753,
+      -0.034972622990608215,
+      0.35039305686950684
+    ],
+    "episode_013": [
+      0.4847921133041382,
+      0.23317763209342957,
+      0.4704737365245819
+    ],
+    "episode_014": [
+      0.4375406503677368,
+      -0.09746283292770386,
+      0.3795020580291748
+    ],
+    "episode_015": [
+      0.47698384523391724,
+      -0.05872778594493866,
+      0.46524351835250854
+    ],
+    "episode_016": [
+      0.4762401282787323,
+      -0.16047200560569763,
+      0.3449551463127136
+    ],
+    "episode_017": [
+      0.5562828183174133,
+      0.14837536215782166,
+      0.48849403858184814
+    ],
+    "episode_018": [
+      0.5197096467018127,
+      0.192933589220047,
+      0.29012688994407654
+    ],
+    "episode_019": [
+      0.4576447010040283,
+      -0.06708753108978271,
+      0.4593673348426819
+    ],
+    "episode_020": [
+      0.5357213616371155,
+      0.08382627367973328,
+      0.3110613524913788
+    ],
+    "episode_021": [
+      0.4996947646141052,
+      0.12972426414489746,
+      0.40110790729522705
+    ],
+    "episode_022": [
+      0.5623844861984253,
+      0.19620037078857422,
+      0.39436084032058716
+    ],
+    "episode_023": [
+      0.4456779658794403,
+      0.008508443832397461,
+      0.25315001606941223
+    ],
+    "episode_024": [
+      0.41482239961624146,
+      0.11992517113685608,
+      0.4479997754096985
+    ],
+    "episode_025": [
+      0.5278777480125427,
+      -0.15383443236351013,
+      0.2519870102405548
+    ],
+    "episode_026": [
+      0.5883774757385254,
+      0.08655652403831482,
+      0.3023761510848999
+    ],
+    "episode_027": [
+      0.425991952419281,
+      0.23755624890327454,
+      0.33115363121032715
+    ],
+    "episode_028": [
+      0.5503394603729248,
+      -0.1071736067533493,
+      0.4041869044303894
+    ],
+    "episode_029": [
+      0.4291841685771942,
+      -0.06585308909416199,
+      0.4420453906059265
+    ],
+    "episode_030": [
+      0.49278780817985535,
+      0.03243321180343628,
+      0.4450151026248932
+    ],
+    "episode_031": [
+      0.5832762122154236,
+      0.15284448862075806,
+      0.4174707233905792
+    ],
+    "episode_032": [
+      0.5504748821258545,
+      -0.010727465152740479,
+      0.47705233097076416
+    ],
+    "episode_033": [
+      0.414098858833313,
+      -0.0810544341802597,
+      0.40257975459098816
+    ],
+    "episode_034": [
+      0.47287434339523315,
+      -0.21212470531463623,
+      0.333427757024765
+    ],
+    "episode_035": [
+      0.47464266419410706,
+      -0.22509028017520905,
+      0.4630974233150482
+    ],
+    "episode_036": [
+      0.4414774477481842,
+      0.04184037446975708,
+      0.40494489669799805
+    ],
+    "episode_037": [
+      0.4102734923362732,
+      0.07974067330360413,
+      0.2988660931587219
+    ],
+    "episode_038": [
+      0.48454686999320984,
+      0.14274650812149048,
+      0.3546426594257355
+    ],
+    "episode_039": [
+      0.5233164429664612,
+      0.008808940649032593,
+      0.377227783203125
+    ],
+    "episode_040": [
+      0.5498422980308533,
+      0.12986639142036438,
+      0.4878309667110443
+    ],
+    "episode_041": [
+      0.5720083117485046,
+      -0.03948745131492615,
+      0.3953983783721924
+    ],
+    "episode_042": [
+      0.40186041593551636,
+      -0.2275727242231369,
+      0.42589694261550903
+    ],
+    "episode_043": [
+      0.4117530882358551,
+      0.035258352756500244,
+      0.32789647579193115
+    ],
+    "episode_044": [
+      0.4448751211166382,
+      -0.024792522192001343,
+      0.3684077262878418
+    ],
+    "episode_045": [
+      0.40633806586265564,
+      0.03279927372932434,
+      0.3881000876426697
+    ],
+    "episode_046": [
+      0.40498167276382446,
+      -0.20395489037036896,
+      0.364161878824234
+    ],
+    "episode_047": [
+      0.4185408055782318,
+      0.2316603660583496,
+      0.2507704198360443
+    ],
+    "episode_048": [
+      0.4206436574459076,
+      0.01407003402709961,
+      0.39878320693969727
+    ],
+    "episode_049": [
+      0.5981271266937256,
+      0.005369096994400024,
+      0.30411016941070557
+    ],
+    "episode_050": [
+      0.4792160391807556,
+      0.21153029799461365,
+      0.2572903633117676
+    ],
+    "episode_051": [
+      0.4707496464252472,
+      -0.23946401476860046,
+      0.2784225046634674
+    ],
+    "episode_052": [
+      0.5964268445968628,
+      -0.10186412930488586,
+      0.37642693519592285
+    ],
+    "episode_053": [
+      0.45077016949653625,
+      -0.20892710983753204,
+      0.44293397665023804
+    ],
+    "episode_054": [
+      0.4644661247730255,
+      -0.13268214464187622,
+      0.29662954807281494
+    ],
+    "episode_055": [
+      0.4156320095062256,
+      -0.07662074267864227,
+      0.3683696389198303
+    ],
+    "episode_056": [
+      0.40713056921958923,
+      0.10072767734527588,
+      0.4349129796028137
+    ],
+    "episode_057": [
+      0.40344324707984924,
+      -0.1828540861606598,
+      0.27281874418258667
+    ],
+    "episode_058": [
+      0.5643272399902344,
+      -0.007620826363563538,
+      0.34532642364501953
+    ],
+    "episode_059": [
+      0.47775399684906006,
+      0.09363120794296265,
+      0.2709313631057739
+    ],
+    "episode_060": [
+      0.5930517911911011,
+      0.14920935034751892,
+      0.2541024386882782
+    ],
+    "episode_061": [
+      0.4125691056251526,
+      -0.026982352137565613,
+      0.2824171781539917
+    ],
+    "episode_062": [
+      0.44843316078186035,
+      0.18920496106147766,
+      0.32611674070358276
+    ],
+    "episode_063": [
+      0.4333590269088745,
+      0.02763989567756653,
+      0.4082774221897125
+    ],
+    "episode_064": [
+      0.41713693737983704,
+      0.006571978330612183,
+      0.48080354928970337
+    ],
+    "episode_065": [
+      0.44969311356544495,
+      -0.10097575187683105,
+      0.4155656099319458
+    ],
+    "episode_066": [
+      0.5810031890869141,
+      -0.20939019322395325,
+      0.4544858932495117
+    ],
+    "episode_067": [
+      0.5485169887542725,
+      -0.14599262177944183,
+      0.4603055715560913
+    ],
+    "episode_068": [
+      0.5283596515655518,
+      0.026667356491088867,
+      0.4640796184539795
+    ],
+    "episode_069": [
+      0.5852278470993042,
+      -0.14715823531150818,
+      0.4275655746459961
+    ],
+    "episode_070": [
+      0.4914267361164093,
+      0.09594970941543579,
+      0.48908111453056335
+    ],
+    "episode_071": [
+      0.5609998106956482,
+      -0.13360998034477234,
+      0.35790857672691345
+    ],
+    "episode_072": [
+      0.5559159517288208,
+      -0.03829897940158844,
+      0.34847405552864075
+    ],
+    "episode_073": [
+      0.5932146310806274,
+      -0.13450413942337036,
+      0.41597020626068115
+    ],
+    "episode_074": [
+      0.4553775489330292,
+      0.17474699020385742,
+      0.4406425952911377
+    ],
+    "episode_075": [
+      0.43786394596099854,
+      0.019307821989059448,
+      0.47288596630096436
+    ],
+    "episode_076": [
+      0.4006720781326294,
+      0.13651400804519653,
+      0.36468422412872314
+    ],
+    "episode_077": [
+      0.4720859229564667,
+      0.12976649403572083,
+      0.4898805320262909
+    ],
+    "episode_078": [
+      0.5286096930503845,
+      -0.11214487254619598,
+      0.27749037742614746
+    ],
+    "episode_079": [
+      0.4973384737968445,
+      -0.1735367774963379,
+      0.4614124298095703
+    ],
+    "episode_080": [
+      0.5922098755836487,
+      0.21796557307243347,
+      0.3136630654335022
+    ],
+    "episode_081": [
+      0.47670936584472656,
+      -0.014497235417366028,
+      0.4052603840827942
+    ],
+    "episode_082": [
+      0.5919398069381714,
+      0.24982693791389465,
+      0.426108717918396
+    ],
+    "episode_083": [
+      0.549904465675354,
+      -0.09790322184562683,
+      0.4713971018791199
+    ],
+    "episode_084": [
+      0.5975944995880127,
+      -0.013327032327651978,
+      0.34019923210144043
+    ],
+    "episode_085": [
+      0.4800542891025543,
+      0.028606146574020386,
+      0.4104888439178467
+    ],
+    "episode_086": [
+      0.5421577095985413,
+      -0.24182093143463135,
+      0.3640420734882355
+    ],
+    "episode_087": [
+      0.43601882457733154,
+      0.04088914394378662,
+      0.4282493591308594
+    ],
+    "episode_088": [
+      0.41577544808387756,
+      -0.06718787550926208,
+      0.33172789216041565
+    ],
+    "episode_089": [
+      0.5627928972244263,
+      0.07403901219367981,
+      0.2514050602912903
+    ],
+    "episode_090": [
+      0.5709584355354309,
+      0.0870128870010376,
+      0.3557683527469635
+    ],
+    "episode_091": [
+      0.4229819178581238,
+      -0.040349215269088745,
+      0.3008902668952942
+    ],
+    "episode_092": [
+      0.43747878074645996,
+      0.11510223150253296,
+      0.41533058881759644
+    ],
+    "episode_093": [
+      0.5350457429885864,
+      0.14608412981033325,
+      0.4273061156272888
+    ],
+    "episode_094": [
+      0.5129257440567017,
+      -0.20816680788993835,
+      0.27392521500587463
+    ],
+    "episode_095": [
+      0.5683462023735046,
+      -0.023076191544532776,
+      0.27524518966674805
+    ],
+    "episode_096": [
+      0.4580405354499817,
+      -0.112790048122406,
+      0.4211331009864807
+    ],
+    "episode_097": [
+      0.4029744267463684,
+      -0.05551593005657196,
+      0.44984447956085205
+    ],
+    "episode_098": [
+      0.48940417170524597,
+      -0.07971753180027008,
+      0.32163548469543457
+    ],
+    "episode_099": [
+      0.47571367025375366,
+      0.0169716477394104,
+      0.2519519031047821
+    ]
+  },
+  "target_success_step_rate": 0.3363999999999999
+}
