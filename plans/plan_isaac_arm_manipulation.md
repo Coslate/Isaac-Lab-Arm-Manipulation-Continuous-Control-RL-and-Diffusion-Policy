@@ -48,7 +48,7 @@ Robot arm manipulation is a better fit because:
 
 ### 2.3 Current Status
 
-Updated 2026-06-01. The repository has completed the interview/demo vertical slice from
+Updated 2026-06-04. The repository has completed the interview/demo vertical slice from
 `plans/subplan_isaac_arm_manipulation.md`:
 
 ```text
@@ -90,16 +90,26 @@ PR6.16 is now implemented: target-distance funnel shaping at 20 cm -> 10 cm -> 5
 target-near rollout/eval metrics, target-near replay buckets, and the
 `stage_aware:target_funnel_success_return` checkpoint selector are in the active code path. The
 restored `isaac_arm` conda environment currently passes the full fake-backend pytest suite
-(`410 passed, 1 skipped`) and the opt-in Isaac runtime smoke; PyTorch CUDA was confirmed on the
+(`428 passed, 1 skipped`) and the opt-in Isaac runtime smoke; PyTorch CUDA was confirmed on the
 RTX 3090 runtime.
 
-The latest diagnostic run is `sac_franka_2m5_seed0_v13_targetfunnel`. Its W&B plots show that
-the funnel worked as an exploration bridge: reach is reliable, lift and target-near buckets wake
-up late, and train/eval success/target-hold metrics become meaningfully nonzero. The remaining
-failure mode is not a missing target reward; it is late SAC value instability after roughly
-2.0M env steps (`td_error_mean`, `critic_loss`, `q_mean`, and negative `actor_loss` all grow while
-entropy collapses and `alpha` sits on its floor). PR6.17 is now implemented: SAC can opt into
-Huber/SmoothL1 critic loss with `--critic-loss huber` while the default remains MSE. The remaining
+The v13 diagnostic run `sac_franka_2m5_seed0_v13_targetfunnel` showed that the funnel worked as
+an exploration bridge: reach became reliable, lift and target-near buckets woke up late, and
+train/eval success/target-hold metrics became meaningfully nonzero. The remaining failure mode
+was not a missing target reward; it was late SAC value instability after roughly 2.0M env steps
+(`td_error_mean`, `critic_loss`, `q_mean`, and negative `actor_loss` all grew while entropy
+collapsed and `alpha` sat on its floor). PR6.17 is now implemented: SAC can opt into
+Huber/SmoothL1 critic loss with `--critic-loss huber` while the default remains MSE.
+
+The follow-up v14 run `sac_franka_2m5_seed0_v14_huber_stable` proved Huber helps but does not
+make the final checkpoint trustworthy by itself. Fresh 100-episode checkpoint evaluation selected
+the best checkpoint around `1,895,487` env steps (`success_rate=0.49`,
+`target_hold_episode_rate=0.47`, `p50_cube_to_target_m~=0.072`), while later checkpoints degraded
+(`final` fresh `success_rate=0.34`, `p50_cube_to_target_m~=0.337`). Train-time same-env rolling
+eval could still look much better near the tail. PR6.18 is now implemented: post-training fresh
+checkpoint sweeps are first-class via `scripts.sweep_checkpoints_continuous`, with summary
+CSV/JSON, `best_fresh_eval.json`, command/manifest artifacts, and optional explicit best
+checkpoint promotion. The remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -155,6 +165,7 @@ Implementation permission rule:
 | PR 6.15 - Post-v11 target success + stability shaping | Done on 2026-05-06 | Target-success bonus aligned to 2 cm eval success, target-away penalty, near-target action penalty, target z-alignment penalty, target-hold metrics, stability-aware best-checkpoint mode | Targeted PR6.15 slice -> `158 passed`; SAC/TD3 continuous slice -> `37 passed`; full pytest in `isaac_arm` -> `390 passed, 1 skipped` | Tuned/improvement PR after v11. Goal: convert "gets near target" into "enters and quietly holds target." |
 | PR 6.16 - Post-v12 target funnel shaping | Done by 2026-06-01 | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Targeted coverage across reward curriculum, rollout metrics, checkpoint manager, eval/visual, replay, SAC, and TD3 tests; full pytest in `isaac_arm` -> `401 passed, 1 skipped`; opt-in Isaac runtime smoke passed | v13 targetfunnel run proved the funnel unlocks late target behavior, but exposed late SAC critic/Q instability rather than a missing target-reward path. |
 | PR 6.17 - Optional SAC Huber critic loss | Done on 2026-06-01 | SAC-only `critic_loss=mse|huber` option, defaulting to current MSE, plus `critic_huber_beta` for SmoothL1/Huber robustness against high-TD outliers | Targeted pytest in `isaac_arm`: `tests/test_sac_continuous.py tests/test_training_logger_and_scheduler.py` -> `106 passed`; full pytest -> `410 passed, 1 skipped` | First code-level stabilization candidate after v13. Reward, curriculum, replay defaults, TD-error priority feedback, and TD3 behavior are unchanged. |
+| PR 6.18 - Fresh checkpoint eval sweep + selection | Done on 2026-06-04 | `scripts.sweep_checkpoints_continuous` post-training checkpoint sweep tool, reusable target-funnel/success-return ranking helper, per-checkpoint PR11a metrics JSONs, summary CSV/JSON, `best_fresh_eval.json`, `commands_used.txt`, `output_manifest.txt`, and explicit opt-in `--promote-best` checkpoint copy | Targeted pytest in `isaac_arm`: `tests/test_checkpoint_eval_sweep.py` -> `18 passed`; sweep + PR11a eval slice -> `33 passed`; full pytest -> `428 passed, 1 skipped` | v14 showed that `final.pt` and same-env rolling eval can be misleading; this PR makes fresh 100-episode selection reproducible without changing reward, replay, curriculum, or training loss code. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -7082,6 +7093,350 @@ For the test-focused commit, if split from implementation:
 
 ```text
 test(sac): cover critic loss mode selection
+```
+
+---
+
+### PR 6.18 - Fresh Checkpoint Eval Sweep And Selection
+
+**Status**
+
+Done on 2026-06-04 after the v14 Huber run review. This is a tooling and
+checkpoint-selection PR. It does not change SAC/TD3 reward shaping, SAC/TD3 loss formulas,
+replay sampling, curriculum gates, or the Isaac task contract.
+
+**Why This PR Exists**
+
+The v14 run `sac_franka_2m5_seed0_v14_huber_stable` made a separate selection problem visible:
+
+```text
+best checkpoint fresh 100eps success_rate ~= 0.49
+final checkpoint fresh 100eps success_rate ~= 0.34
+step_2450023 fresh 100eps success_rate ~= 0.26
+```
+
+The formal best model was not the final checkpoint. Train-time same-env rolling eval also looked
+too optimistic near the tail, because it used a small in-training monitoring window rather than a
+fresh, post-training checkpoint evaluation sweep. This makes manual checkpoint review slow and
+easy to misread: users must remember which checkpoints were evaluated, copy commands, compare
+JSON files by hand, and avoid treating `final.pt` as the model of record.
+
+PR6.18 makes the desired workflow explicit:
+
+```text
+train and save periodic checkpoints
+run a post-training fresh eval sweep over candidate checkpoints
+write every eval JSON and a summary table
+rank checkpoints by target-funnel success/hold/distance metrics
+promote or report the fresh-eval best checkpoint
+```
+
+This is a post-training tool. It does not attempt to run a second live Isaac environment inside an
+active training loop. For live Isaac training, keep `--eval-every-env-steps 0` unless a later PR
+proves in-process separate-env eval is robust on the target runtime.
+
+**Non-Goals**
+
+- Do not change the SAC or TD3 update rules.
+- Do not change reward component weights or curriculum advancement logic.
+- Do not replace PR11a `scripts.eval_checkpoint_continuous`; reuse it or its underlying eval
+  helpers.
+- Do not require W&B access. The sweep must work from local checkpoint files.
+- Do not make GIF/MP4 recording part of the default sweep; visual recording remains a separate
+  PR12a-style inspection step for selected checkpoints.
+- Do not delete or overwrite checkpoints unless the user explicitly opts into a safe promotion
+  action.
+
+**Code Change 1: Checkpoint Sweep CLI**
+
+Added a script-level entry point:
+
+```bash
+python -m scripts.sweep_checkpoints_continuous
+```
+
+Required CLI shape:
+
+```text
+--backend {isaac,fake}
+--agent-type {sac,td3}
+--checkpoint-glob PATH_GLOB
+--out-dir PATH
+--num-envs INT
+--num-episodes INT
+--max-steps INT
+--seed INT
+--device DEVICE
+--settle-steps INT
+--rank-by {target_funnel,success_return}
+--promote-best
+--dry-run
+```
+
+Compatibility aliases should match the existing project style where reasonable:
+
+```text
+--agent_type
+--checkpoint_glob
+--out_dir
+--num_envs
+--num_episodes
+--max_steps
+--settle_steps
+--rank_by
+--promote_best
+```
+
+Expected outputs under `--out-dir`:
+
+```text
+<stem>_eval_<N>eps.json
+<stem>_eval_<N>eps_command.txt
+<stem>_eval_<N>eps_stdout_stderr.log   # optional if the implementation shells out
+summary_eval_<N>eps.csv
+summary_eval_<N>eps.json
+best_fresh_eval.json
+commands_used.txt
+output_manifest.txt
+```
+
+If `--promote-best` is passed, the tool may copy or symlink the selected checkpoint to a clear
+name such as:
+
+```text
+<checkpoint_name>_best_fresh_eval.pt
+```
+
+The promotion behavior must be explicit, logged in `best_fresh_eval.json`, and tested. The default
+without `--promote-best` should be report-only.
+
+**Code Change 2: Reusable Ranking Helper**
+
+Added a small pure-Python ranking helper in `eval/checkpoint_sweep.py`.
+
+For `--rank-by target_funnel`, rank higher by this tuple:
+
+```text
+success_rate
+target_hold_episode_rate
+target_2cm_episode_rate
+target_5cm_episode_rate
+target_10cm_episode_rate
+target_20cm_episode_rate
+-p50_cube_to_target_m
+-mean_action_jerk
+mean_return
+```
+
+Rationale:
+- success and hold come first because the policy must finish the task, not merely touch the
+  target briefly;
+- 2 cm / 5 cm / 10 cm / 20 cm rates preserve funnel progress when success ties;
+- lower p50 distance beats lucky one-episode success when rates tie;
+- lower jerk breaks ties toward smoother behavior;
+- return is last because shaped reward can be easier to game than target metrics.
+
+For `--rank-by success_return`, provide a simpler fallback:
+
+```text
+success_rate
+mean_return
+-mean_action_jerk
+```
+
+The helper must ignore nonfinite metrics and report unreadable/missing metrics explicitly rather
+than silently selecting a bad checkpoint.
+
+**Code Change 3: Eval Execution Strategy**
+
+The implementation uses the direct-helper route for testability while writing command text files
+that match the equivalent PR11a command:
+
+1. Reuse `scripts.eval_checkpoint_continuous` parsing plus fake/Isaac backend helpers directly.
+2. Write `<stem>_eval_<N>eps_command.txt` and `commands_used.txt` so the exact equivalent eval
+   command remains visible.
+
+Live Isaac runs should remain sequential by default. Parallel live eval may be added later, but it
+must not be the default because multiple simultaneous Isaac Sim launches are runtime fragile.
+
+**Code Change 4: Summary Schema**
+
+Each row in `summary_eval_<N>eps.csv/json` should include at least:
+
+```text
+label
+checkpoint
+num_env_steps
+num_episodes
+mean_return
+success_rate
+target_hold_episode_rate
+target_20cm_episode_rate
+target_10cm_episode_rate
+target_5cm_episode_rate
+target_2cm_episode_rate
+mean_cube_to_target_m
+p50_cube_to_target_m
+final_cube_to_target_m
+min_cube_to_target_m
+max_cube_lift_m
+min_ee_to_cube_m
+gripper_close_near_cube_rate
+mean_action_jerk
+rank_key
+selected
+```
+
+`best_fresh_eval.json` should include:
+
+```text
+selected_checkpoint
+selected_metrics_path
+selected_summary_row
+rank_by
+rank_key
+candidate_count
+failed_candidates
+command
+```
+
+This keeps v14-style post-run artifacts reproducible and easy to upload without large GIFs or
+checkpoints.
+
+**Pytest Coverage Matrix**
+
+Every implementation change in PR6.18 must land with corresponding pytest coverage.
+
+New `tests/test_checkpoint_eval_sweep.py`:
+- parses checkpoint globs deterministically and sorts candidates by checkpoint step/name;
+- `--dry-run` writes the candidate list/commands without launching live eval;
+- ranking helper selects the checkpoint with higher `success_rate` over higher shaped return;
+- when success ties, ranking prefers higher `target_hold_episode_rate`;
+- when hold ties, ranking prefers higher 2 cm / 5 cm / 10 cm / 20 cm funnel rates in order;
+- when funnel rates tie, ranking prefers lower `p50_cube_to_target_m`;
+- when distance ties, ranking prefers lower `mean_action_jerk`;
+- missing/nonfinite required metrics are recorded as failed candidates and are not selected;
+- summary CSV and JSON include the required columns/fields;
+- `best_fresh_eval.json` records the selected checkpoint, ranking mode, rank key, and failures;
+- `--promote-best` creates the expected copied or symlinked best checkpoint in a temp directory;
+- default report-only mode does not copy, delete, or overwrite checkpoints.
+
+`tests/test_eval_sac_td3_checkpoints.py`:
+- fake SAC and fake TD3 checkpoints can be evaluated through the sweep path or a shared helper;
+- eval metrics emitted by the existing PR11a path remain schema-compatible with the sweep summary.
+
+`tests/test_training_logger_and_scheduler.py` only if the implementation adds parser/shared CLI
+helpers there:
+- parser aliases for snake_case/kebab-case are accepted;
+- invalid `--rank-by`, empty checkpoint glob, or invalid episode/env counts fail readably.
+
+No live Isaac test is required for normal CI-style coverage. The implementation should rely on fake
+checkpoints and fake envs for automated tests, with live Isaac sweep commands documented for manual
+diagnostics.
+
+**Test Commands**
+
+Targeted verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_checkpoint_eval_sweep.py \
+  tests/test_eval_sac_td3_checkpoints.py
+```
+
+If parser/shared training helper coverage is touched:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q \
+  tests/test_checkpoint_eval_sweep.py \
+  tests/test_eval_sac_td3_checkpoints.py \
+  tests/test_training_logger_and_scheduler.py
+```
+
+Full verification:
+
+```bash
+timeout 360s env PYTHONPATH=. /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+Actual verification on 2026-06-04 in `isaac_arm`:
+
+```text
+tests/test_checkpoint_eval_sweep.py -> 18 passed
+tests/test_checkpoint_eval_sweep.py tests/test_eval_sac_td3_checkpoints.py -> 33 passed
+full pytest -> 428 passed, 1 skipped
+```
+
+**Recommended Manual Live Command After V15**
+
+After a serious SAC run saves periodic checkpoints, run the sweep post-training:
+
+```bash
+RUN_NAME=sac_franka_2m2_seed0_v15_freshselect_stable
+OUT_DIR=out/${RUN_NAME}_checkpoint_sweep_$(date +%Y%m%d_%H%M%S)
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.sweep_checkpoints_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint-glob "./checkpoints/${RUN_NAME}_*.pt" \
+  --out-dir "${OUT_DIR}" \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --rank-by target_funnel \
+  --promote-best
+```
+
+For cheaper triage, run with fewer episodes first:
+
+```bash
+--num-episodes 32
+```
+
+Then rerun 100 episodes on the top candidates.
+
+**Definition Of Done**
+
+PR6.18 is complete when:
+- a post-training checkpoint sweep CLI exists and is documented;
+- the tool can evaluate SAC and TD3 fake checkpoints in tests;
+- live Isaac usage is a straightforward extension of the existing PR11a eval command;
+- per-checkpoint JSONs, summary CSV/JSON, command manifest, and best-selection JSON are written;
+- target-funnel ranking chooses robust target success/hold/distance metrics over shaped return;
+- failed/missing/corrupt candidates are reported, not silently selected;
+- optional best promotion is explicit and safe;
+- targeted pytest and full pytest pass in the `isaac_arm` environment.
+
+**Suggested Commit Messages**
+
+For this plan update:
+
+```text
+docs(plan): add fresh checkpoint eval sweep PR
+```
+
+For the later implementation:
+
+```text
+feat(eval): add checkpoint sweep selection tool
+```
+
+Implementation commit body:
+
+```text
+Add a post-training SAC/TD3 checkpoint sweep CLI that runs fresh eval over candidate checkpoints,
+writes per-checkpoint metrics plus summary artifacts, and selects a best checkpoint using
+target-funnel success, hold, distance, jerk, and return metrics. Keep training-time reward,
+curriculum, replay, and loss behavior unchanged.
+```
+
+For the test-focused commit, if split from implementation:
+
+```text
+test(eval): cover fresh checkpoint sweep ranking
 ```
 
 ---
