@@ -109,7 +109,11 @@ the best checkpoint around `1,895,487` env steps (`success_rate=0.49`,
 eval could still look much better near the tail. PR6.18 is now implemented: post-training fresh
 checkpoint sweeps are first-class via `scripts.sweep_checkpoints_continuous`, with summary
 CSV/JSON, `best_fresh_eval.json`, command/manifest artifacts, and optional explicit best
-checkpoint promotion. The remaining
+checkpoint promotion. The v15 run exposed one live-Isaac limitation in the PR6.18 implementation:
+evaluating multiple checkpoints inside one Python process can stop after the first candidate
+because the Isaac/Kit app state is not reliably reusable after close. PR6.19 is planned to keep the
+same fresh-sweep artifacts and ranking, but run each live Isaac checkpoint eval in its own
+subprocess. The remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -166,6 +170,7 @@ Implementation permission rule:
 | PR 6.16 - Post-v12 target funnel shaping | Done by 2026-06-01 | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Targeted coverage across reward curriculum, rollout metrics, checkpoint manager, eval/visual, replay, SAC, and TD3 tests; full pytest in `isaac_arm` -> `401 passed, 1 skipped`; opt-in Isaac runtime smoke passed | v13 targetfunnel run proved the funnel unlocks late target behavior, but exposed late SAC critic/Q instability rather than a missing target-reward path. |
 | PR 6.17 - Optional SAC Huber critic loss | Done on 2026-06-01 | SAC-only `critic_loss=mse|huber` option, defaulting to current MSE, plus `critic_huber_beta` for SmoothL1/Huber robustness against high-TD outliers | Targeted pytest in `isaac_arm`: `tests/test_sac_continuous.py tests/test_training_logger_and_scheduler.py` -> `106 passed`; full pytest -> `410 passed, 1 skipped` | First code-level stabilization candidate after v13. Reward, curriculum, replay defaults, TD-error priority feedback, and TD3 behavior are unchanged. |
 | PR 6.18 - Fresh checkpoint eval sweep + selection | Done on 2026-06-04 | `scripts.sweep_checkpoints_continuous` post-training checkpoint sweep tool, reusable target-funnel/success-return ranking helper, per-checkpoint PR11a metrics JSONs, summary CSV/JSON, `best_fresh_eval.json`, `commands_used.txt`, `output_manifest.txt`, and explicit opt-in `--promote-best` checkpoint copy | Targeted pytest in `isaac_arm`: `tests/test_checkpoint_eval_sweep.py` -> `18 passed`; sweep + PR11a eval slice -> `33 passed`; full pytest -> `428 passed, 1 skipped` | v14 showed that `final.pt` and same-env rolling eval can be misleading; this PR makes fresh 100-episode selection reproducible without changing reward, replay, curriculum, or training loss code. |
+| PR 6.19 - Live Isaac subprocess checkpoint sweep | Planned | Extend PR6.18 so live Isaac sweeps launch one fresh `scripts.eval_checkpoint_continuous` subprocess per checkpoint, while fake/backend tests can keep the faster in-process path; record per-candidate command/log/metrics artifacts and continue past failed candidates | Planned tests: `tests/test_checkpoint_eval_sweep.py` mocked subprocess success/failure/missing-metrics cases, in-process fake-path regression, command artifact checks, safe `--promote-best` behavior | v15 showed Isaac/Kit state is not reliably reusable for many checkpoint evals in one process. This PR fixes eval reliability only; it does not change training, rewards, replay, or SAC/TD3 losses. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -7437,6 +7442,157 @@ For the test-focused commit, if split from implementation:
 
 ```text
 test(eval): cover fresh checkpoint sweep ranking
+```
+
+---
+
+### PR 6.19 - Live Isaac Subprocess Checkpoint Sweep
+
+**Problem / Why**
+
+PR6.18 added the right post-training selection idea: do not trust `final.pt` or train-time rolling
+eval, and instead run fresh eval over saved checkpoints. The v15 run exposed a live Isaac runtime
+problem in that implementation path: repeatedly evaluating checkpoints inside one Python process can
+stop after the first candidate or make later candidates unreliable after the Isaac/Kit app has been
+closed once.
+
+The manual workaround is clear but annoying: run `scripts.eval_checkpoint_continuous` as a separate
+Python command for each checkpoint, then merge the JSON metrics afterward. PR6.19 should automate
+that workaround so one sweep command can still evaluate all candidates safely.
+
+This is an eval/tooling reliability PR only. It must not change training behavior, reward shaping,
+replay sampling, curriculum gates, Huber/MSE critic loss, or checkpoint contents.
+
+**Scope**
+
+Add a subprocess execution path to `scripts.sweep_checkpoints_continuous`:
+- default `auto` mode uses subprocesses for `--backend isaac`;
+- fake backend can keep the faster in-process path by default;
+- every checkpoint candidate launches a fresh `scripts.eval_checkpoint_continuous` process;
+- every candidate gets its own metrics JSON, command record, and stdout/stderr log;
+- the parent sweep process loads each metrics JSON after the subprocess exits;
+- failed subprocesses, missing metrics files, invalid JSON, or missing rank fields are written as
+  failure rows and do not abort the whole sweep;
+- existing PR6.18 artifacts remain compatible: summary CSV/JSON, `best_fresh_eval.json`,
+  `commands_used.txt`, `output_manifest.txt`, and explicit opt-in `--promote-best`.
+
+No concurrent live Isaac subprocesses by default. Live Isaac evals should run one at a time because
+the simulator/display/GPU runtime is heavy and stateful.
+
+**CLI Contract**
+
+Extend the sweep CLI with execution controls:
+
+```bash
+--execution-mode auto|in_process|subprocess
+--python-executable PATH
+--conda-env NAME
+--subprocess-timeout-sec INT
+--subprocess-log-dir PATH
+```
+
+Recommended live command shape after PR6.19:
+
+```bash
+RUN_NAME=sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect
+OUT_DIR=out/${RUN_NAME}_checkpoint_sweep_$(date +%Y%m%d_%H%M%S)
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.sweep_checkpoints_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint-glob "./checkpoints/${RUN_NAME}_*.pt" \
+  --out-dir "${OUT_DIR}" \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --rank-by target_funnel \
+  --execution-mode subprocess \
+  --promote-best
+```
+
+`--conda-env isaac_arm` is optional if the sweep itself is already running inside `isaac_arm`.
+When provided, the child command should be built through `conda run -n isaac_arm ...` so the child
+has the same Isaac/PyTorch environment as training.
+
+**Implementation Notes**
+
+Use argv lists for execution, not shell strings, so paths and checkpoint names do not break quoting.
+The human-readable command can still be written to `commands_used.txt`.
+
+Suggested structure:
+- keep the existing in-process evaluator for fake tests and cheap local sweeps;
+- factor candidate command construction into a helper that returns both `argv` and display text;
+- run each candidate with `subprocess.run(..., check=False)` and redirect stdout/stderr to a
+  per-candidate log file;
+- after each subprocess exits, validate that its metrics JSON exists and can be parsed;
+- include `returncode`, command path/log path, and error text in summary rows for failures;
+- only rank successful candidates;
+- only perform `--promote-best` after at least one successful candidate is ranked.
+
+The parent sweep should not import or initialize live Isaac modules for subprocess candidates. Its
+job is to enumerate checkpoints, spawn child eval commands, parse JSON outputs, and rank results.
+
+**Tests**
+
+Add/extend `tests/test_checkpoint_eval_sweep.py` coverage for:
+- `--execution-mode auto` keeps fake backend on the in-process path and does not call
+  `subprocess.run`;
+- `--execution-mode subprocess` builds the expected child argv for a checkpoint candidate;
+- a successful mocked subprocess writes/loads metrics and participates in best-checkpoint ranking;
+- a nonzero return code records a failed row and continues to the next checkpoint;
+- a zero return code with missing metrics records a failed row and continues;
+- invalid metrics JSON records a failed row and continues;
+- `commands_used.txt` and per-candidate command/log artifacts are written;
+- `--promote-best` copies only after at least one candidate succeeded;
+- no live Isaac runtime is required for normal pytest.
+
+Targeted verification should run in `isaac_arm`:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_checkpoint_eval_sweep.py
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_checkpoint_eval_sweep.py tests/test_eval_sac_td3_checkpoints.py
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+```
+
+**Definition Of Done**
+
+PR6.19 is complete when:
+- live Isaac checkpoint sweeps evaluate more than one checkpoint from a single parent sweep command;
+- each live checkpoint eval runs in a fresh child Python process;
+- failed candidates are visible in summary artifacts but do not stop the sweep;
+- PR6.18 output filenames and ranking semantics remain backward-compatible;
+- fake backend tests remain fast and do not require subprocess mode by default;
+- targeted pytest and full pytest pass in `isaac_arm`.
+
+**Suggested Commit Messages**
+
+For this plan update:
+
+```text
+docs(plan): add live Isaac subprocess sweep PR
+```
+
+For the later implementation:
+
+```text
+feat(eval): add subprocess mode for checkpoint sweeps
+```
+
+Implementation commit body:
+
+```text
+Run live Isaac checkpoint sweep candidates in separate eval subprocesses so Isaac/Kit app teardown
+cannot poison later candidates. Keep fake sweeps on the fast in-process path, preserve PR6.18
+summary artifacts, and record per-candidate commands, logs, metrics, and failures.
+```
+
+For the test-focused commit, if split from implementation:
+
+```text
+test(eval): cover subprocess checkpoint sweep failures
 ```
 
 ---

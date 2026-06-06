@@ -1,0 +1,12 @@
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.eval_checkpoint_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect_best.pt \
+  --save-metrics out/v15_checkpoint_diagnostics_20260606_040000/best_eval_100eps.json \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --headless

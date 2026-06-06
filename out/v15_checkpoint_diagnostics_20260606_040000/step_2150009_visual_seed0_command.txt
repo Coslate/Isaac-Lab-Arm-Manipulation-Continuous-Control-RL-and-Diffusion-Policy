@@ -1,0 +1,16 @@
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.record_gif_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint ./checkpoints/sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect_step_002150009.pt \
+  --save-gif out/v15_checkpoint_diagnostics_20260606_040000/step_2150009_visual_seed0.gif \
+  --save-mp4 out/v15_checkpoint_diagnostics_20260606_040000/step_2150009_visual_seed0.mp4 \
+  --save-metrics out/v15_checkpoint_diagnostics_20260606_040000/step_2150009_visual_seed0_metrics.json \
+  --metrics-payload out/v15_checkpoint_diagnostics_20260606_040000/step_2150009_eval_100eps.json \
+  --save-debug-frames-dir out/v15_checkpoint_diagnostics_20260606_040000/step_2150009_visual_seed0_debug_frames \
+  --num-envs 1 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --gif-max-steps 230 \
+  --target-overlay text-reticle \
+  --headless
