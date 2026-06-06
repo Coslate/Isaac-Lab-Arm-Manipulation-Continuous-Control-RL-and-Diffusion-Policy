@@ -1870,3 +1870,18 @@ OUTPUT_PREFIX=./logs/sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001_best \
 CHECKPOINT=./checkpoints/sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001_final.pt \
 OUTPUT_PREFIX=./logs/sac_franka_2m5_seed0_v11_targetapproach_lrmin0p0001_final \
 ./scripts/record_multi_best_envs.sh 10
+
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.sweep_checkpoints_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint-glob "./checkpoints/sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect_*.pt" \
+  --out-dir "out/sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect_checkpoint_sweep_20260606_pr619" \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --rank-by target_funnel \
+  --execution-mode subprocess \
+  --promote-best

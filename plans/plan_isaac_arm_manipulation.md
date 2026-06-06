@@ -109,11 +109,16 @@ the best checkpoint around `1,895,487` env steps (`success_rate=0.49`,
 eval could still look much better near the tail. PR6.18 is now implemented: post-training fresh
 checkpoint sweeps are first-class via `scripts.sweep_checkpoints_continuous`, with summary
 CSV/JSON, `best_fresh_eval.json`, command/manifest artifacts, and optional explicit best
-checkpoint promotion. The v15 run exposed one live-Isaac limitation in the PR6.18 implementation:
-evaluating multiple checkpoints inside one Python process can stop after the first candidate
-because the Isaac/Kit app state is not reliably reusable after close. PR6.19 is planned to keep the
-same fresh-sweep artifacts and ranking, but run each live Isaac checkpoint eval in its own
-subprocess. The remaining
+checkpoint promotion. The follow-up v15 run
+`sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect` did not reproduce v14: fresh eval found
+`success_rate=0.0` even for its promoted best checkpoint, and the final checkpoint had no reliable
+lift/target behavior. The most supported diagnosis is a target-phase consolidation failure caused by
+the v15 training knobs, not a GIF/record/eval artifact; see the dedicated v15 regression note below.
+The v15 run also exposed one live-Isaac limitation in the PR6.18 implementation: evaluating multiple
+checkpoints inside one Python process can stop after the first candidate because the Isaac/Kit app
+state is not reliably reusable after close. PR6.19 is now implemented: it keeps the same fresh-sweep
+artifacts and ranking, but can run each live Isaac checkpoint eval in its own subprocess. The
+remaining
 research-training stack is PPO, pure GRPO, SAC expert demonstrations, Diffusion Policy BC, and
 DAgger.
 
@@ -170,7 +175,7 @@ Implementation permission rule:
 | PR 6.16 - Post-v12 target funnel shaping | Done by 2026-06-01 | Multi-threshold target-distance funnel at 20 cm -> 10 cm -> 5 cm -> 2 cm, wider target proximity/progress shaping, target-near curriculum diagnostics/gates, target-near replay buckets, and funnel-aware checkpoint selection | Targeted coverage across reward curriculum, rollout metrics, checkpoint manager, eval/visual, replay, SAC, and TD3 tests; full pytest in `isaac_arm` -> `401 passed, 1 skipped`; opt-in Isaac runtime smoke passed | v13 targetfunnel run proved the funnel unlocks late target behavior, but exposed late SAC critic/Q instability rather than a missing target-reward path. |
 | PR 6.17 - Optional SAC Huber critic loss | Done on 2026-06-01 | SAC-only `critic_loss=mse|huber` option, defaulting to current MSE, plus `critic_huber_beta` for SmoothL1/Huber robustness against high-TD outliers | Targeted pytest in `isaac_arm`: `tests/test_sac_continuous.py tests/test_training_logger_and_scheduler.py` -> `106 passed`; full pytest -> `410 passed, 1 skipped` | First code-level stabilization candidate after v13. Reward, curriculum, replay defaults, TD-error priority feedback, and TD3 behavior are unchanged. |
 | PR 6.18 - Fresh checkpoint eval sweep + selection | Done on 2026-06-04 | `scripts.sweep_checkpoints_continuous` post-training checkpoint sweep tool, reusable target-funnel/success-return ranking helper, per-checkpoint PR11a metrics JSONs, summary CSV/JSON, `best_fresh_eval.json`, `commands_used.txt`, `output_manifest.txt`, and explicit opt-in `--promote-best` checkpoint copy | Targeted pytest in `isaac_arm`: `tests/test_checkpoint_eval_sweep.py` -> `18 passed`; sweep + PR11a eval slice -> `33 passed`; full pytest -> `428 passed, 1 skipped` | v14 showed that `final.pt` and same-env rolling eval can be misleading; this PR makes fresh 100-episode selection reproducible without changing reward, replay, curriculum, or training loss code. |
-| PR 6.19 - Live Isaac subprocess checkpoint sweep | Planned | Extend PR6.18 so live Isaac sweeps launch one fresh `scripts.eval_checkpoint_continuous` subprocess per checkpoint, while fake/backend tests can keep the faster in-process path; record per-candidate command/log/metrics artifacts and continue past failed candidates | Planned tests: `tests/test_checkpoint_eval_sweep.py` mocked subprocess success/failure/missing-metrics cases, in-process fake-path regression, command artifact checks, safe `--promote-best` behavior | v15 showed Isaac/Kit state is not reliably reusable for many checkpoint evals in one process. This PR fixes eval reliability only; it does not change training, rewards, replay, or SAC/TD3 losses. |
+| PR 6.19 - Live Isaac subprocess checkpoint sweep | Done on 2026-06-06 | `scripts.sweep_checkpoints_continuous` now supports `--execution-mode auto|in_process|subprocess`, `--python-executable`, `--conda-env`, `--subprocess-timeout-sec`, and `--subprocess-log-dir`; live Isaac auto mode runs one fresh `scripts.eval_checkpoint_continuous` child process per checkpoint, fake auto mode keeps the fast in-process path, and summary rows record per-candidate command path, log path, return code, metrics path, and failure text | Targeted pytest in `isaac_arm`: `tests/test_checkpoint_eval_sweep.py` -> `25 passed`; sweep + PR11a eval slice -> `40 passed`; full pytest -> `435 passed, 1 skipped` | Eval/tooling reliability only. Reward, replay, curriculum, SAC/TD3 losses, checkpoint contents, and PR6.18 ranking semantics are unchanged. Use explicit `--execution-mode subprocess` or default `auto` with `--backend isaac` for live sweeps. |
 | PR 11a - SAC/TD3 eval | Done | `scripts.eval_checkpoint_continuous --agent-type/--agent_type sac|td3`, metrics JSON, optional eval HDF5 | `tests/test_eval_sac_td3_checkpoints.py` -> `13 passed` | First trained-checkpoint eval path. |
 | PR 12a - SAC/TD3 visuals | Done | `scripts.record_gif_continuous --agent-type/--agent_type sac|td3`, GIF/MP4/debug PNGs, same-rollout metrics JSON, optional PR11a metrics overlay validation, shared target-reticle/settle helpers | `tests/test_visual_sac_td3_checkpoints.py` -> `11 passed`; visual/demo/eval regression slice -> `66 passed` | SAC/TD3 train -> eval -> GIF path is now wired. Live Isaac still needs an actual trained SAC/TD3 checkpoint plus display/camera runtime. |
 | PR 8-full - SAC demonstrations | Pending | SAC expert rollout collection into existing HDF5 schema | Planned test: `tests/test_sac_demo_collection.py` | Depends on SAC checkpoint plus PR11a/PR12a sanity checks. |
@@ -7446,7 +7451,139 @@ test(eval): cover fresh checkpoint sweep ranking
 
 ---
 
+### V15 Regression Diagnosis - Target-Phase Consolidation Failure
+
+**Status**
+
+Recorded on 2026-06-06 after reviewing the active SAC/reward/replay/checkpoint/eval code paths,
+`RUN.md`, the v14/v15 training logs under `logs/`, and the v14/v15 eval/record artifacts under
+`out/`.
+
+This is a training-regression diagnosis, separate from the PR6.19 Isaac subprocess sweep issue. The
+v15 GIF/MP4/JSON artifacts were generated through the same PR11a/PR12a eval/record code paths as
+v14, using checkpoint policies loaded through the normal checkpoint loader and observation/action
+normalizers. There is no evidence that v15 looked bad because the recorder, evaluator, or visualizer
+used a different policy path.
+
+**What Changed From V14 To V15**
+
+The v14 run `sac_franka_2m5_seed0_v14_huber_stable` used:
+- `--total-env-steps 2500000`
+- `--lr-min-lr 5e-5`
+- `--priority-replay-ratio 0.25`, which gives about `64 / 256` prioritized samples per update
+- `--priority-score-weights 0.50,0.25,0.20,0.05`
+- `--target-overlift-penalty-scale 0.05`
+- `--target-overlift-margin-m 0.05`
+
+The v15 run `sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect` changed the late-learning pressure:
+- `--total-env-steps 2200000`
+- `--lr-min-lr 2e-5`
+- `--priority-replay-ratio 0.15`, which gives about `38 / 256` prioritized samples per update
+- `--priority-score-weights 0.55,0.25,0.18,0.02`
+- `--target-overlift-penalty-scale 0.10`
+- `--target-overlift-margin-m 0.03`
+
+Both runs kept `--protected-replay-fraction 0.01` and `--protected-max-age-env-steps 100000`, so the
+protected replay budget and age limit did not grow to compensate for v15's later and rarer target
+events.
+
+**Observed Failure**
+
+Fresh 100-episode eval in `out/v14_checkpoint_diagnostics_20260603_010637` selected v14 best at
+about `1,895,487` env steps with `success_rate=0.49`, `target_hold_episode_rate=0.47`, and
+`p50_cube_to_target_m~=0.072`. Later v14 checkpoints degraded, but target behavior remained real.
+
+Fresh 100-episode eval in `out/v15_checkpoint_diagnostics_20260606_040000` selected v15 best at
+about `1,525,246` env steps, but it still had `success_rate=0.0`, `target_hold_episode_rate=0.0`,
+and `p50_cube_to_target_m~=0.420`. The v15 final checkpoint was worse: `success_rate=0.0`, only about
+`1%` target-20cm episodes, no target-10cm/5cm/2cm success, and `max_cube_lift_m` near zero.
+
+The v15 best checkpoint had high lift in some rollouts but did not stabilize near the target. Visual
+recording confirms the same pattern: v14 best visual seed0 reached success/hold, while v15 best
+lifted but stayed far from target and had no success/hold.
+
+**Why V15 Became Much Worse**
+
+The strongest explanation is not a single code bug. V15 briefly discovered target behavior, then
+failed to preserve and train on it long enough to consolidate.
+
+Evidence from `logs/*v14*_train.jsonl` vs `logs/*v15*_train.jsonl`:
+- v14 entered stage 3 around `1.065M` env steps; v15 did not enter stage 3 until around `1.475M`.
+- v14 reached target-20cm/10cm/5cm/2cm replay buckets around `1.057M/1.068M/1.068M/1.125M`.
+- v15 reached those buckets much later, around `1.438M/1.489M/1.508M/1.508M`.
+- At v15 final, replay still had many reach/grip samples but almost no target samples:
+  `target_20cm=136`, `target_10cm=17`, `target_5cm=0`, `target_2cm=0`.
+- At v14 final, replay still had a substantial target funnel:
+  `target_20cm=110279`, `target_10cm=106247`, `target_5cm=103946`, `target_2cm=96050`.
+- V15 final same-env eval had `eval_reach=1.0` but `eval_grip_effect=0.0`, `eval_lift_2cm=0.0`,
+  and `eval_target_approach=0.0`; v14 final still had nonzero lift/target behavior.
+
+The replay code explains why this matters. `agents/replay_buffer.py` samples only
+`round(batch_size * priority_replay_ratio)` priority transitions per update. V15 reduced that from
+about `64` to `38` per `256` batch and also lowered the return/TD components in
+`priority_score_weights`. The protected replay path still capped protected slots at about `2400`
+transitions and filtered them by `protected_max_age_env_steps=100000`. Because v15 target events
+were late and rare, they aged out or were diluted before the policy repeatedly trained on them.
+
+The learning-rate schedule made this worse. V14 entered stage 3 while the LR was still roughly in
+the `2e-4` range and had about `1.4M` env steps left. V15 entered stage 3 around `1.475M`, when LR
+was already around `8.6e-5`, then quickly decayed toward the `2e-5` floor with only about `725k`
+steps left. The final v15 diagnostics show high entropy, low Q, and low TD error rather than value
+explosion, so this looks like under-learning/under-consolidation of the late target phase.
+
+The stronger target-overlift penalty is a secondary suspect. In `train/reward_curriculum.py`,
+target funnel labels require both lift and cube-target proximity, while the overlift penalty applies
+when cube height exceeds target height plus margin. V15 doubled the penalty scale and narrowed the
+margin from `0.05m` to `0.03m`. Around the first v15 target window, shaped eval could already be
+negative while target success bonus was still zero, which likely made fragile target attempts easier
+to discard.
+
+Checkpoint selection did what it was told but had no good candidate. `train/checkpoint_manager.py`
+uses target-funnel success/hold/proximity ranking, but the v15 best checkpoint still had train-time
+success/hold of zero and only weak funnel proximity. Promoting that checkpoint did not create a good
+policy; it only selected the least bad checkpoint available from an under-consolidated run.
+
+**Next-Run Guidance**
+
+Treat v15 as a failed training-knob experiment. For the next SAC target run:
+- revert v15's replay pressure toward v14: use at least `--priority-replay-ratio 0.25` and restore
+  `--priority-score-weights 0.50,0.25,0.20,0.05`;
+- restore the v14 LR floor and time budget, or otherwise keep LR high enough after stage 3:
+  `--lr-min-lr 5e-5` and `--total-env-steps 2500000` are the known-good baseline;
+- keep Huber critic loss from v14;
+- relax v15's overlift penalty back toward v14: `--target-overlift-penalty-scale 0.05` and
+  `--target-overlift-margin-m 0.05`;
+- consider increasing target-bucket retention before changing rewards again, for example a longer
+  protected age for target buckets or a target-aware protected replay slice, so rare target-5cm/2cm
+  transitions cannot disappear before consolidation;
+- keep PR6.18/PR6.19 fresh subprocess eval selection for choosing checkpoints, but do not interpret
+  fresh selection as a substitute for preserving target transitions during training.
+
+---
+
 ### PR 6.19 - Live Isaac Subprocess Checkpoint Sweep
+
+**Status**
+
+Done on 2026-06-06.
+
+Implemented files:
+- `scripts/sweep_checkpoints_continuous.py`
+- `eval/checkpoint_sweep.py`
+- `tests/test_checkpoint_eval_sweep.py`
+
+Verification completed in `isaac_arm`:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_checkpoint_eval_sweep.py
+# 25 passed
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_checkpoint_eval_sweep.py tests/test_eval_sac_td3_checkpoints.py
+# 40 passed
+
+/root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+# 435 passed, 1 skipped
+```
 
 **Problem / Why**
 
@@ -7457,15 +7594,15 @@ stop after the first candidate or make later candidates unreliable after the Isa
 closed once.
 
 The manual workaround is clear but annoying: run `scripts.eval_checkpoint_continuous` as a separate
-Python command for each checkpoint, then merge the JSON metrics afterward. PR6.19 should automate
-that workaround so one sweep command can still evaluate all candidates safely.
+Python command for each checkpoint, then merge the JSON metrics afterward. PR6.19 automates that
+workaround so one sweep command can still evaluate all candidates safely.
 
 This is an eval/tooling reliability PR only. It must not change training behavior, reward shaping,
 replay sampling, curriculum gates, Huber/MSE critic loss, or checkpoint contents.
 
-**Scope**
+**Implemented Scope**
 
-Add a subprocess execution path to `scripts.sweep_checkpoints_continuous`:
+Added a subprocess execution path to `scripts.sweep_checkpoints_continuous`:
 - default `auto` mode uses subprocesses for `--backend isaac`;
 - fake backend can keep the faster in-process path by default;
 - every checkpoint candidate launches a fresh `scripts.eval_checkpoint_continuous` process;
@@ -7481,7 +7618,7 @@ the simulator/display/GPU runtime is heavy and stateful.
 
 **CLI Contract**
 
-Extend the sweep CLI with execution controls:
+The sweep CLI now has execution controls:
 
 ```bash
 --execution-mode auto|in_process|subprocess
@@ -7491,7 +7628,7 @@ Extend the sweep CLI with execution controls:
 --subprocess-log-dir PATH
 ```
 
-Recommended live command shape after PR6.19:
+Recommended live command shape after PR6.19, when launching the parent sweep inside `isaac_arm`:
 
 ```bash
 RUN_NAME=sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect
@@ -7513,16 +7650,39 @@ OUT_DIR=out/${RUN_NAME}_checkpoint_sweep_$(date +%Y%m%d_%H%M%S)
   --promote-best
 ```
 
+`--execution-mode auto` is also valid here because `--backend isaac` resolves to subprocess mode.
+Keeping `--execution-mode subprocess` explicit is recommended for live artifact generation because it
+makes `commands_used.txt` and `best_fresh_eval.json` unambiguous.
+
 `--conda-env isaac_arm` is optional if the sweep itself is already running inside `isaac_arm`.
 When provided, the child command should be built through `conda run -n isaac_arm ...` so the child
 has the same Isaac/PyTorch environment as training.
+
+Concrete command without shell variables for a v15 sweep rerun:
+
+```bash
+/root/miniconda3/bin/conda run -n isaac_arm python -u -m scripts.sweep_checkpoints_continuous \
+  --backend isaac \
+  --agent-type sac \
+  --checkpoint-glob "./checkpoints/sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect_*.pt" \
+  --out-dir "out/sac_franka_2m2_seed0_v15_prio015_lrlow_freshselect_checkpoint_sweep_20260606_pr619" \
+  --num-envs 8 \
+  --num-episodes 100 \
+  --max-steps 230 \
+  --seed 0 \
+  --device cuda:0 \
+  --settle-steps 550 \
+  --rank-by target_funnel \
+  --execution-mode subprocess \
+  --promote-best
+```
 
 **Implementation Notes**
 
 Use argv lists for execution, not shell strings, so paths and checkpoint names do not break quoting.
 The human-readable command can still be written to `commands_used.txt`.
 
-Suggested structure:
+Implemented structure:
 - keep the existing in-process evaluator for fake tests and cheap local sweeps;
 - factor candidate command construction into a helper that returns both `argv` and display text;
 - run each candidate with `subprocess.run(..., check=False)` and redirect stdout/stderr to a
@@ -7532,12 +7692,12 @@ Suggested structure:
 - only rank successful candidates;
 - only perform `--promote-best` after at least one successful candidate is ranked.
 
-The parent sweep should not import or initialize live Isaac modules for subprocess candidates. Its
-job is to enumerate checkpoints, spawn child eval commands, parse JSON outputs, and rank results.
+The parent sweep does not call the in-process Isaac evaluator for subprocess candidates. Its job is
+to enumerate checkpoints, spawn child eval commands, parse JSON outputs, and rank results.
 
 **Tests**
 
-Add/extend `tests/test_checkpoint_eval_sweep.py` coverage for:
+Added `tests/test_checkpoint_eval_sweep.py` coverage for:
 - `--execution-mode auto` keeps fake backend on the in-process path and does not call
   `subprocess.run`;
 - `--execution-mode subprocess` builds the expected child argv for a checkpoint candidate;
@@ -7545,21 +7705,29 @@ Add/extend `tests/test_checkpoint_eval_sweep.py` coverage for:
 - a nonzero return code records a failed row and continues to the next checkpoint;
 - a zero return code with missing metrics records a failed row and continues;
 - invalid metrics JSON records a failed row and continues;
+- subprocess timeout records a failed row and continues;
+- all-candidate failure reports `selection_error` and does not promote;
 - `commands_used.txt` and per-candidate command/log artifacts are written;
+- custom `--subprocess-log-dir` is honored;
 - `--promote-best` copies only after at least one candidate succeeded;
 - no live Isaac runtime is required for normal pytest.
 
-Targeted verification should run in `isaac_arm`:
+Targeted verification completed in `isaac_arm`:
 
 ```bash
 /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_checkpoint_eval_sweep.py
+# 25 passed
+
 /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q tests/test_checkpoint_eval_sweep.py tests/test_eval_sac_td3_checkpoints.py
+# 40 passed
+
 /root/miniconda3/bin/conda run -n isaac_arm python -m pytest -q
+# 435 passed, 1 skipped
 ```
 
 **Definition Of Done**
 
-PR6.19 is complete when:
+PR6.19 is complete:
 - live Isaac checkpoint sweeps evaluate more than one checkpoint from a single parent sweep command;
 - each live checkpoint eval runs in a fresh child Python process;
 - failed candidates are visible in summary artifacts but do not stop the sweep;
@@ -7569,13 +7737,7 @@ PR6.19 is complete when:
 
 **Suggested Commit Messages**
 
-For this plan update:
-
-```text
-docs(plan): add live Isaac subprocess sweep PR
-```
-
-For the later implementation:
+Implementation commit:
 
 ```text
 feat(eval): add subprocess mode for checkpoint sweeps
@@ -7584,15 +7746,22 @@ feat(eval): add subprocess mode for checkpoint sweeps
 Implementation commit body:
 
 ```text
-Run live Isaac checkpoint sweep candidates in separate eval subprocesses so Isaac/Kit app teardown
-cannot poison later candidates. Keep fake sweeps on the fast in-process path, preserve PR6.18
-summary artifacts, and record per-candidate commands, logs, metrics, and failures.
+Run checkpoint sweep candidates in separate eval subprocesses for live Isaac so Isaac/Kit app
+teardown cannot poison later candidates. Keep fake sweeps on the fast in-process path, preserve
+PR6.18 summary artifacts, and record per-candidate commands, logs, metrics, return codes, and
+failures.
 ```
 
-For the test-focused commit, if split from implementation:
+Test commit, if split:
 
 ```text
 test(eval): cover subprocess checkpoint sweep failures
+```
+
+Plan/doc commit, if split:
+
+```text
+docs(plan): mark live Isaac subprocess sweep done
 ```
 
 ---
